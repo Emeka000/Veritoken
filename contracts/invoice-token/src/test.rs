@@ -2,13 +2,16 @@
 
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 struct Harness {
     env: Env,
     token: InvoiceTokenClient<'static>,
     kyc: KycRegistryClient<'static>,
+    compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    admin: Address,
 }
 
 fn meta(env: &Env) -> InvoiceMeta {
@@ -53,7 +56,9 @@ fn setup() -> Harness {
         env,
         token,
         kyc,
+        compliance,
         verifier,
+        admin,
     }
 }
 
