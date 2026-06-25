@@ -20,7 +20,8 @@ pub enum DataKey {
     Balance(Address),
     TotalSupply,
     TotalRetired,
-    RetirementReceipts,
+    RetirementCount,
+    Receipt(u32),
 }
 
 #[contracttype]
@@ -49,6 +50,7 @@ pub struct RetirementReceipt {
 const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP: u32 = 365 * DAY_IN_LEDGERS;
 const THRESHOLD: u32 = BUMP - DAY_IN_LEDGERS;
+const MAX_PAGE_SIZE: u32 = 100;
 
 #[contract]
 pub struct CarbonCreditToken;
@@ -74,10 +76,9 @@ impl CarbonCreditToken {
         env.storage().instance().set(&DataKey::ProjectMeta, &meta);
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
         env.storage().instance().set(&DataKey::TotalRetired, &0i128);
-        let receipts: Vec<RetirementReceipt> = Vec::new(&env);
         env.storage()
             .instance()
-            .set(&DataKey::RetirementReceipts, &receipts);
+            .set(&DataKey::RetirementCount, &0u32);
     }
 
     /// Legacy entry point — always panics to prevent post-deploy initialization.
@@ -178,6 +179,12 @@ impl CarbonCreditToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalRetired, &(retired + amount));
+
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0);
         let receipt = RetirementReceipt {
             retiree: retiree.clone(),
             amount,
@@ -185,18 +192,53 @@ impl CarbonCreditToken {
             beneficiary,
             retirement_reason: reason,
         };
-        let mut receipts: Vec<RetirementReceipt> = env
-            .storage()
-            .instance()
-            .get(&DataKey::RetirementReceipts)
-            .unwrap_or_else(|| Vec::new(&env));
-        receipts.push_back(receipt.clone());
+        let key = DataKey::Receipt(index);
+        env.storage().persistent().set(&key, &receipt);
+        env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
         env.storage()
             .instance()
-            .set(&DataKey::RetirementReceipts, &receipts);
+            .set(&DataKey::RetirementCount, &(index + 1));
+
         env.events()
             .publish((symbol_short!("retired"), retiree), amount);
         receipt
+    }
+
+    // ── Read API ─────────────────────────────────────────────────────────────
+
+    pub fn retirement_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_receipt(env: Env, index: u32) -> RetirementReceipt {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Receipt(index))
+            .expect("receipt not found")
+    }
+
+    /// Returns up to `limit` receipts starting at `start`. Limit is capped at MAX_PAGE_SIZE.
+    pub fn get_receipts(env: Env, start: u32, limit: u32) -> Vec<RetirementReceipt> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0);
+        let capped = limit.min(MAX_PAGE_SIZE);
+        let end = (start + capped).min(count);
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            let r: RetirementReceipt = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Receipt(i))
+                .expect("receipt not found");
+            out.push_back(r);
+        }
+        out
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
@@ -213,12 +255,6 @@ impl CarbonCreditToken {
             .instance()
             .get(&DataKey::TotalRetired)
             .unwrap_or(0)
-    }
-    pub fn retirement_receipts(env: Env) -> Vec<RetirementReceipt> {
-        env.storage()
-            .instance()
-            .get(&DataKey::RetirementReceipts)
-            .unwrap_or_else(|| Vec::new(&env))
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
