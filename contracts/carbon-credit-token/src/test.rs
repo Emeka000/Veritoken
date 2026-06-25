@@ -164,9 +164,10 @@ fn test_retire_records_receipt() {
     assert_eq!(h.token.total_supply(), 60);
     assert_eq!(h.token.total_retired(), 40);
 
-    let receipts = h.token.retirement_receipts();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts.get(0).unwrap().amount, 40);
+    assert_eq!(h.token.retirement_count(), 1);
+    let r = h.token.get_receipt(&0);
+    assert_eq!(r.amount, 40);
+    assert_eq!(r.retiree, alice);
 }
 
 #[test]

@@ -124,7 +124,7 @@ impl PropertyToken {
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + shares);
         Self::reset_debt(&env, to.clone());
-        Self::register_holder(&env, to.clone());
+        Self::register_holder(&env, &to);
         env.events().publish((symbol_short!("mint"), to), shares);
     }
 
@@ -149,7 +149,7 @@ impl PropertyToken {
         Self::write_balance(&env, to.clone(), to_bal + shares);
         Self::reset_debt(&env, from.clone());
         Self::reset_debt(&env, to.clone());
-        Self::register_holder(&env, to.clone());
+        Self::register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), shares);
     }
@@ -318,7 +318,7 @@ impl PropertyToken {
         }
     }
 
-    fn register_holder(env: &Env, addr: Address) {
+    fn register_holder(env: &Env, addr: &Address) {
         let engine: Address = env
             .storage()
             .instance()

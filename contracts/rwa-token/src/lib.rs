@@ -193,6 +193,7 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply + amount);
+        compliance::register_holder(&env, &to);
         env.events().publish((symbol_short!("mint"), to), amount);
     }
 
