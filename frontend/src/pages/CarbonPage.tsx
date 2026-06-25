@@ -3,9 +3,20 @@ import { useWallet } from "../lib/wallet";
 import { CONTRACT_IDS } from "../lib/stellar";
 import { PageHeader, Card, Field, Select, Icon } from "../components/ui";
 
+interface RetirementReceipt {
+  index: number;
+  retiree: string;
+  amount: number;
+  timestamp: number;
+  beneficiary: string;
+  retirement_reason: string;
+}
+
+const PAGE_SIZE = 10;
+
 export default function CarbonPage() {
   const { connected } = useWallet();
-  const [tab, setTab] = useState<"issue" | "retire">("issue");
+  const [tab, setTab] = useState<"issue" | "retire" | "receipts">("issue");
 
   const [issueForm, setIssueForm] = useState({
     project_id: "",
@@ -20,6 +31,12 @@ export default function CarbonPage() {
   });
 
   const [retireForm, setRetireForm] = useState({ amount: "", beneficiary: "", reason: "" });
+
+  // Receipts pagination state
+  const [receipts, setReceipts] = useState<RetirementReceipt[]>([]);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
+  const [page, setPage] = useState(0);
+  const [loadingReceipts, setLoadingReceipts] = useState(false);
 
   const issue = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setIssueForm((f) => ({ ...f, [k]: e.target.value }));
@@ -37,6 +54,31 @@ export default function CarbonPage() {
     if (!connected) return alert("Connect wallet first");
     alert(`Would retire ${retireForm.amount} credits for "${retireForm.beneficiary}"`);
   };
+
+  const loadReceipts = async (targetPage: number) => {
+    setLoadingReceipts(true);
+    try {
+      // In a real integration these would be contract view calls via the Stellar SDK.
+      // For now we surface the call shape so wiring is straightforward.
+      const start = targetPage * PAGE_SIZE;
+      alert(
+        `Would call retirement_count() then get_receipts(start=${start}, limit=${PAGE_SIZE}) ` +
+          `on ${CONTRACT_IDS.carbonToken || "<not configured>"}`
+      );
+      setPage(targetPage);
+    } finally {
+      setLoadingReceipts(false);
+    }
+  };
+
+  const handleTabReceipts = () => {
+    setTab("receipts");
+    if (receipts.length === 0 && totalCount === null) {
+      loadReceipts(0);
+    }
+  };
+
+  const totalPages = totalCount !== null ? Math.ceil(totalCount / PAGE_SIZE) : null;
 
   return (
     <div className="form-narrow">
@@ -62,9 +104,16 @@ export default function CarbonPage() {
         >
           Retire Credits
         </button>
+        <button
+          onClick={handleTabReceipts}
+          className={tab === "receipts" ? "" : "btn-ghost"}
+          style={styles.tab}
+        >
+          Receipts
+        </button>
       </div>
 
-      {tab === "issue" ? (
+      {tab === "issue" && (
         <Card>
           <form onSubmit={handleIssue}>
             <Field label="Project ID" value={issueForm.project_id} onChange={issue("project_id")} required />
@@ -95,7 +144,9 @@ export default function CarbonPage() {
             </button>
           </form>
         </Card>
-      ) : (
+      )}
+
+      {tab === "retire" && (
         <Card>
           <form onSubmit={handleRetire}>
             <Field label="Amount to Retire (tonnes CO₂e)" type="number" value={retireForm.amount} onChange={retire("amount")} required />
@@ -108,6 +159,76 @@ export default function CarbonPage() {
               Retire Credits (Permanent)
             </button>
           </form>
+        </Card>
+      )}
+
+      {tab === "receipts" && (
+        <Card>
+          <div style={styles.receiptsHeader}>
+            <span style={{ fontWeight: 600 }}>
+              Retirement Receipts
+              {totalCount !== null && (
+                <span className="muted" style={{ fontWeight: 400, marginLeft: "0.4rem" }}>
+                  ({totalCount} total)
+                </span>
+              )}
+            </span>
+            <button
+              className="btn-ghost"
+              style={{ fontSize: "0.8rem" }}
+              onClick={() => loadReceipts(page)}
+              disabled={loadingReceipts}
+            >
+              {loadingReceipts ? "Loading…" : "Refresh"}
+            </button>
+          </div>
+
+          {receipts.length === 0 && !loadingReceipts && (
+            <p className="muted" style={{ fontSize: "0.85rem", margin: "1rem 0" }}>
+              No receipts loaded. Connect your wallet and click Refresh.
+            </p>
+          )}
+
+          {receipts.map((r) => (
+            <div key={r.index} style={styles.receiptRow}>
+              <div style={styles.receiptIndex}>#{r.index}</div>
+              <div style={styles.receiptBody}>
+                <div style={{ fontWeight: 500 }}>
+                  {r.amount} tCO₂e — {r.beneficiary || "—"}
+                </div>
+                <div className="muted" style={{ fontSize: "0.78rem" }}>
+                  {r.retiree} · {new Date(r.timestamp * 1000).toLocaleDateString()}
+                </div>
+                {r.retirement_reason && (
+                  <div className="muted" style={{ fontSize: "0.78rem" }}>
+                    {r.retirement_reason}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {totalPages !== null && totalPages > 1 && (
+            <div style={styles.pagination}>
+              <button
+                className="btn-ghost"
+                onClick={() => loadReceipts(page - 1)}
+                disabled={page === 0 || loadingReceipts}
+              >
+                ← Prev
+              </button>
+              <span className="muted" style={{ fontSize: "0.85rem" }}>
+                Page {page + 1} / {totalPages}
+              </span>
+              <button
+                className="btn-ghost"
+                onClick={() => loadReceipts(page + 1)}
+                disabled={page >= totalPages - 1 || loadingReceipts}
+              >
+                Next →
+              </button>
+            </div>
+          )}
         </Card>
       )}
     </div>
@@ -125,4 +246,34 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 12,
   },
   tab: { boxShadow: "none" },
+  receiptsHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "0.75rem",
+  },
+  receiptRow: {
+    display: "flex",
+    gap: "0.75rem",
+    padding: "0.6rem 0",
+    borderBottom: "1px solid var(--border)",
+  },
+  receiptIndex: {
+    minWidth: 36,
+    color: "var(--muted)",
+    fontSize: "0.8rem",
+    paddingTop: 2,
+  },
+  receiptBody: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.15rem",
+  },
+  pagination: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: "1rem",
+  },
 };
