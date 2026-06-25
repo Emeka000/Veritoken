@@ -766,6 +766,7 @@ checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 name = "invoice-token"
 version = "0.1.0"
 dependencies = [
+ "compliance-engine",
  "kyc-registry",
  "soroban-sdk",
 ]

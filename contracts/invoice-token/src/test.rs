@@ -1,14 +1,18 @@
 #![cfg(test)]
 
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 struct Harness {
     env: Env,
     token: InvoiceTokenClient<'static>,
     kyc: KycRegistryClient<'static>,
+    compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    admin: Address,
 }
 
 fn meta(env: &Env) -> InvoiceMeta {
@@ -36,15 +40,26 @@ fn setup() -> Harness {
     kyc.add_verifier(&verifier);
 
     let compliance_id = env.register(KycRegistry, ()); // placeholder address; unused by invoice token
-    let token_id = env.register(InvoiceToken, ());
+
+    // Invoice token — constructor args passed atomically at register time
+    let token_id = env.register(
+        InvoiceToken,
+        (
+            admin.clone(),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            meta(&env),
+        ),
+    );
     let token = InvoiceTokenClient::new(&env, &token_id);
-    token.initialize(&admin, &kyc_id, &compliance_id, &meta(&env));
 
     Harness {
         env,
         token,
         kyc,
+        compliance,
         verifier,
+        admin,
     }
 }
 
@@ -123,4 +138,17 @@ fn test_redeem_insufficient_balance() {
     h.token.issue(&holder, &100);
     h.token.settle();
     assert!(h.token.try_redeem(&holder, &101).is_err());
+}
+
+#[test]
+fn test_non_deployer_cannot_reinitialize() {
+    let h = setup();
+    let attacker = Address::generate(&h.env);
+    let kyc_id = Address::generate(&h.env);
+    let ce_id = Address::generate(&h.env);
+    // initialize must always panic — the constructor has already run
+    let result = h
+        .token
+        .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
+    assert!(result.is_err());
 }

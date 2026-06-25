@@ -58,12 +58,15 @@ fn test_blocklist() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
+    assert!(!client.is_blocklisted(&from));
     client.add_to_blocklist(&from);
+    assert!(client.is_blocklisted(&from));
     assert!(!client.can_transfer(&from, &to, &1));
     // The receiver being blocked also blocks
     assert!(!client.can_transfer(&to, &from, &1));
 
     client.remove_from_blocklist(&from);
+    assert!(!client.is_blocklisted(&from));
     assert!(client.can_transfer(&from, &to, &1));
 }
 
@@ -109,28 +112,30 @@ fn test_register_holder_is_idempotent() {
 }
 
 #[test]
-fn test_register_holder_resets_holding_period_on_receipt() {
+fn test_unregister_holder_decrements_count() {
     let (env, client, _admin) = setup();
     let holder = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    client.set_rules(&rules(0, 1_000, 0, false));
-
-    env.ledger().set_timestamp(1_000);
     client.register_holder(&holder);
     assert_eq!(client.holder_count(), 1);
 
-    env.ledger().set_timestamp(1_500);
-    assert!(!client.can_transfer(&holder, &recipient, &1));
+    client.unregister_holder(&holder);
+    assert_eq!(client.holder_count(), 0);
+}
 
-    env.ledger().set_timestamp(2_000);
-    client.register_holder(&holder);
-    assert_eq!(client.holder_count(), 1);
+#[test]
+fn test_max_holders_blocks_new_holder_but_allows_existing_holder() {
+    let (env, client, _admin) = setup();
+    let holder1 = Address::generate(&env);
+    let holder2 = Address::generate(&env);
+    let new_holder = Address::generate(&env);
 
-    env.ledger().set_timestamp(2_500);
-    assert!(!client.can_transfer(&holder, &recipient, &1));
+    client.set_rules(&rules(0, 0, 2, false));
+    client.register_holder(&holder1);
+    client.register_holder(&holder2);
+    assert_eq!(client.holder_count(), 2);
 
-    env.ledger().set_timestamp(3_001);
-    assert!(client.can_transfer(&holder, &recipient, &1));
+    assert!(!client.can_transfer(&holder1, &new_holder, &1));
+    assert!(client.can_transfer(&holder1, &holder2, &1));
 }
 
 #[test]

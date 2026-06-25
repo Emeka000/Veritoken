@@ -3,6 +3,8 @@
 //! Carbon Credit Token — 1 token = 1 verified tonne of CO₂ equivalent retired.
 //! Tokens are burned ("retired") to claim the carbon offset; retired credits
 //! are permanently removed from circulation with an on-chain retirement receipt.
+//! Minting is admin-gated and still enforces active KYC plus mint-time
+//! compliance checks for pause/blocklist rules.
 
 #[cfg(test)]
 mod test;
@@ -53,16 +55,15 @@ pub struct CarbonCreditToken;
 
 #[contractimpl]
 impl CarbonCreditToken {
-    pub fn initialize(
+    /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
+    /// Eliminates the deploy→initialize front-running window.
+    pub fn __constructor(
         env: Env,
         admin: Address,
         kyc_registry: Address,
         compliance_engine: Address,
         meta: ProjectMeta,
     ) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
-        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -77,6 +78,17 @@ impl CarbonCreditToken {
         env.storage()
             .instance()
             .set(&DataKey::RetirementReceipts, &receipts);
+    }
+
+    /// Legacy entry point — always panics to prevent post-deploy initialization.
+    pub fn initialize(
+        _env: Env,
+        _admin: Address,
+        _kyc_registry: Address,
+        _compliance_engine: Address,
+        _meta: ProjectMeta,
+    ) {
+        panic!("already initialized");
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────
@@ -100,6 +112,7 @@ impl CarbonCreditToken {
     pub fn mint(env: Env, to: Address, amount: i128) {
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
+        Self::check_mint_compliance(&env, &to);
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + amount);
         Self::register_holder(&env, to.clone());
@@ -223,6 +236,21 @@ impl CarbonCreditToken {
         }
     }
 
+    fn check_mint_compliance(env: &Env, to: &Address) {
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        if client.get_rules().paused {
+            panic!("mint blocked by compliance pause");
+        }
+        if client.is_blocklisted(to) {
+            panic!("mint recipient is blocklisted");
+        }
+    }
+
     fn check_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
         let engine: Address = env
             .storage()
@@ -273,8 +301,24 @@ mod compliance_iface {
     #[contractclient(name = "ComplianceEngineClient")]
     #[allow(dead_code)]
     pub trait ComplianceEngine {
+        fn get_rules(env: soroban_sdk::Env) -> super::compliance_engine::ComplianceRules;
+        fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
         fn register_holder(env: soroban_sdk::Env, addr: Address);
+    }
+}
+
+mod compliance_engine {
+    use soroban_sdk::contracttype;
+
+    #[contracttype]
+    #[derive(Clone)]
+    pub struct ComplianceRules {
+        pub max_transfer_amount: i128,
+        pub min_holding_period: u64,
+        pub max_holders: u32,
+        pub require_same_jurisdiction: bool,
+        pub paused: bool,
     }
 }
 

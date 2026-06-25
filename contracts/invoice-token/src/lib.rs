@@ -3,6 +3,8 @@
 //! Invoice Token — tokenizes accounts-receivable invoices.
 //! Each token unit represents 1 USD (7-decimal precision) of invoice face value.
 //! Adds invoice-specific metadata: issuer, debtor, due date, face value, discount rate.
+//! After settlement, redemption remains subject to compliance enforcement: a
+//! paused engine or blocklisted holder cannot redeem invoice tokens.
 
 #[cfg(test)]
 mod test;
@@ -16,8 +18,16 @@ pub enum DataKey {
     ComplianceEngine,
     InvoiceMeta,
     Balance(Address),
+    Allowance(Address, Address),
     TotalSupply,
     Settled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AllowanceValue {
+    pub amount: i128,
+    pub expiration_ledger: u32,
 }
 
 #[contracttype]
@@ -42,16 +52,19 @@ pub struct InvoiceToken;
 
 #[contractimpl]
 impl InvoiceToken {
-    pub fn initialize(
+    /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
+    /// This eliminates the deploy→initialize front-running window: there is no state in which
+    /// the contract exists but is uninitialized.
+    #[allow(clippy::too_many_arguments)]
+    pub fn __constructor(
         env: Env,
         admin: Address,
         kyc_registry: Address,
         compliance_engine: Address,
         meta: InvoiceMeta,
     ) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
-        }
+        // __constructor is only callable by the host at deploy time; it cannot be
+        // invoked again, so no "already initialized" guard is needed here.
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -62,6 +75,19 @@ impl InvoiceToken {
         env.storage().instance().set(&DataKey::InvoiceMeta, &meta);
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
         env.storage().instance().set(&DataKey::Settled, &false);
+    }
+
+    /// Legacy entry point — always panics. Retained so that any attempt to call
+    /// `initialize` post-deploy fails loudly rather than silently succeeding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn initialize(
+        _env: Env,
+        _admin: Address,
+        _kyc_registry: Address,
+        _compliance_engine: Address,
+        _meta: InvoiceMeta,
+    ) {
+        panic!("already initialized");
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────
@@ -111,6 +137,9 @@ impl InvoiceToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(supply + amount));
+        
+        Self::register_holder(&env, &to);
+
         env.events().publish((symbol_short!("issued"), to), amount);
     }
 
@@ -132,6 +161,7 @@ impl InvoiceToken {
         {
             panic!("invoice not yet settled");
         }
+        Self::check_redeem_compliance(&env, &from);
         let bal = Self::read_balance(&env, from.clone());
         if bal < amount {
             panic!("insufficient balance");
@@ -153,6 +183,96 @@ impl InvoiceToken {
 
     pub fn balance(env: Env, id: Address) -> i128 {
         Self::read_balance(&env, id)
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::Settled).unwrap_or(false) {
+            panic!("invoice already settled");
+        }
+        if amount < 0 {
+            panic!("negative amount");
+        }
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::require_compliance(&env, &from, &to, amount);
+
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < amount {
+            panic!("insufficient balance");
+        }
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &(from_bal - amount));
+        
+        let to_bal = Self::read_balance(&env, to.clone());
+        env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_bal + amount));
+        
+        env.storage().persistent().extend_ttl(&DataKey::Balance(from.clone()), THRESHOLD, BUMP);
+        env.storage().persistent().extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+
+        Self::register_holder(&env, &to);
+        env.events().publish((symbol_short!("transfer"), from, to), amount);
+    }
+
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
+        spender.require_auth();
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::Settled).unwrap_or(false) {
+            panic!("invoice already settled");
+        }
+        if amount < 0 {
+            panic!("negative amount");
+        }
+        Self::require_kyc(&env, &from);
+        Self::require_kyc(&env, &to);
+        Self::require_compliance(&env, &from, &to, amount);
+
+        let allowance = Self::read_allowance(&env, from.clone(), spender.clone());
+        if allowance.amount < amount {
+            panic!("insufficient allowance");
+        }
+        if allowance.expiration_ledger < env.ledger().sequence() {
+            panic!("allowance expired");
+        }
+        
+        let new_allowance = AllowanceValue {
+            amount: allowance.amount - amount,
+            expiration_ledger: allowance.expiration_ledger,
+        };
+        env.storage().persistent().set(&DataKey::Allowance(from.clone(), spender.clone()), &new_allowance);
+
+        let from_bal = Self::read_balance(&env, from.clone());
+        if from_bal < amount {
+            panic!("insufficient balance");
+        }
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &(from_bal - amount));
+        
+        let to_bal = Self::read_balance(&env, to.clone());
+        env.storage().persistent().set(&DataKey::Balance(to.clone()), &(to_bal + amount));
+        
+        env.storage().persistent().extend_ttl(&DataKey::Balance(from.clone()), THRESHOLD, BUMP);
+        env.storage().persistent().extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+
+        Self::register_holder(&env, &to);
+        env.events().publish((symbol_short!("transfer"), from, to), amount);
+    }
+
+    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
+        from.require_auth();
+        if amount < 0 {
+            panic!("negative amount");
+        }
+        let allowance = AllowanceValue { amount, expiration_ledger };
+        env.storage().persistent().set(&DataKey::Allowance(from.clone(), spender.clone()), &allowance);
+        env.storage().persistent().extend_ttl(&DataKey::Allowance(from.clone(), spender.clone()), THRESHOLD, BUMP);
+        env.events().publish((symbol_short!("approve"), from, spender), (amount, expiration_ledger));
+    }
+
+    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        let allowance = Self::read_allowance(&env, from, spender);
+        if allowance.expiration_ledger < env.ledger().sequence() {
+            0
+        } else {
+            allowance.amount
+        }
     }
 
     pub fn total_supply(env: Env) -> i128 {
@@ -184,10 +304,19 @@ impl InvoiceToken {
         }
     }
 
-    fn register_holder(env: &Env, addr: Address) {
-        let engine: Address = env.storage().instance().get(&DataKey::ComplianceEngine).unwrap();
+    fn check_redeem_compliance(env: &Env, holder: &Address) {
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .unwrap();
         let client = ComplianceEngineClient::new(env, &engine);
-        client.register_holder(addr);
+        if client.get_rules().paused {
+            panic!("redemption blocked by compliance pause");
+        }
+        if client.is_blocklisted(holder) {
+            panic!("redemption blocked for blocklisted holder");
+        }
     }
 
     fn read_balance(env: &Env, addr: Address) -> i128 {
@@ -195,6 +324,27 @@ impl InvoiceToken {
             .persistent()
             .get(&DataKey::Balance(addr))
             .unwrap_or(0)
+    }
+
+    fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceValue {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Allowance(from, spender))
+            .unwrap_or(AllowanceValue { amount: 0, expiration_ledger: 0 })
+    }
+
+    fn require_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
+        let engine: Address = env.storage().instance().get(&DataKey::ComplianceEngine).unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        if !client.can_transfer(from, to, &amount) {
+            panic!("transfer rejected by compliance engine");
+        }
+    }
+
+    fn register_holder(env: &Env, addr: &Address) {
+        let engine: Address = env.storage().instance().get(&DataKey::ComplianceEngine).unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        client.register_holder(addr);
     }
 }
 
@@ -212,9 +362,35 @@ mod compliance_iface {
     #[contractclient(name = "ComplianceEngineClient")]
     #[allow(dead_code)]
     pub trait ComplianceEngine {
-        fn register_holder(env: soroban_sdk::Env, addr: Address);
+        fn get_rules(env: soroban_sdk::Env) -> super::compliance_engine::ComplianceRules;
+        fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
+    }
+}
+
+mod compliance_engine {
+    use soroban_sdk::contracttype;
+
+    #[contracttype]
+    #[derive(Clone)]
+    pub struct ComplianceRules {
+        pub max_transfer_amount: i128,
+        pub min_holding_period: u64,
+        pub max_holders: u32,
+        pub require_same_jurisdiction: bool,
+        pub paused: bool,
     }
 }
 
 use compliance_iface::ComplianceEngineClient;
 use kyc_iface::KycRegistryClient;
+
+mod compliance_iface {
+    use soroban_sdk::{contractclient, Address};
+    #[contractclient(name = "ComplianceEngineClient")]
+    #[allow(dead_code)]
+    pub trait ComplianceEngine {
+        fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
+        fn register_holder(env: soroban_sdk::Env, addr: Address);
+    }
+}
+use compliance_iface::ComplianceEngineClient;

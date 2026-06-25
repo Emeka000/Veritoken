@@ -86,6 +86,49 @@ fn test_revoke_and_reject() {
     assert!(client.is_approved(&subject));
     client.reject(&verifier, &subject);
     assert!(!client.is_approved(&subject));
+
+    let record = client.get_record(&subject);
+    assert!(matches!(record.status, crate::KycStatus::Rejected));
+    assert_eq!(record.verifier, verifier);
+    assert_eq!(record.tier, 0);
+    assert_eq!(record.expiry, 0);
+    assert_eq!(record.jurisdiction, String::from_str(&env, "US"));
+}
+
+#[test]
+fn test_reject_without_existing_record_creates_terminal_record() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.reject(&verifier, &subject);
+
+    assert!(!client.is_approved(&subject));
+    let record = client.get_record(&subject);
+    assert!(matches!(record.status, crate::KycStatus::Rejected));
+    assert_eq!(record.verifier, verifier);
+    assert_eq!(record.tier, 0);
+    assert_eq!(record.expiry, 0);
+    assert_eq!(record.jurisdiction, String::from_str(&env, ""));
+}
+
+#[test]
+fn test_revoke_without_existing_record_creates_terminal_record() {
+    let (env, client, _admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.revoke(&verifier, &subject);
+
+    assert!(!client.is_approved(&subject));
+    let record = client.get_record(&subject);
+    assert!(matches!(record.status, crate::KycStatus::Revoked));
+    assert_eq!(record.verifier, verifier);
+    assert_eq!(record.tier, 0);
+    assert_eq!(record.expiry, 0);
+    assert_eq!(record.jurisdiction, String::from_str(&env, ""));
 }
 
 #[test]

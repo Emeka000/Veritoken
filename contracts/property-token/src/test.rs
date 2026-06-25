@@ -9,6 +9,7 @@ struct Harness {
     env: Env,
     token: PropertyTokenClient<'static>,
     kyc: KycRegistryClient<'static>,
+    compliance: ComplianceEngineClient<'static>,
     verifier: Address,
 }
 
@@ -41,24 +42,37 @@ fn setup() -> Harness {
     let compliance = ComplianceEngineClient::new(&env, &compliance_id);
     compliance.initialize(&admin);
 
-    let token_id = env.register(PropertyToken, ());
+    // Property token — constructor args passed atomically at register time
+    let token_id = env.register(
+        PropertyToken,
+        (
+            admin.clone(),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            meta(&env),
+        ),
+    );
     let token = PropertyTokenClient::new(&env, &token_id);
-    token.initialize(&admin, &kyc_id, &compliance_id, &meta(&env));
 
     Harness {
         env,
         token,
         kyc,
+        compliance,
         verifier,
     }
 }
 
 impl Harness {
     fn approve_kyc(&self, addr: &Address) {
+        self.approve_kyc_with_tier(addr, 1);
+    }
+
+    fn approve_kyc_with_tier(&self, addr: &Address, tier: u32) {
         self.kyc.approve(
             &self.verifier,
             addr,
-            &1,
+            &tier,
             &0,
             &String::from_str(&self.env, "US"),
         );
@@ -92,6 +106,35 @@ fn test_mint_and_transfer() {
     h.token.transfer(&alice, &bob, &40);
     assert_eq!(h.token.balance(&alice), 60);
     assert_eq!(h.token.balance(&bob), 40);
+}
+
+#[test]
+fn test_mint_rejects_recipient_below_required_tier() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 0);
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
+}
+
+#[test]
+fn test_mint_rejects_blocklisted_recipient() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.compliance.add_to_blocklist(&alice);
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
+}
+
+#[test]
+fn test_mint_rejects_when_compliance_paused() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.compliance.pause();
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
 }
 
 #[test]
@@ -131,6 +174,19 @@ fn test_deposit_dividend_requires_shares() {
     h.token.deposit_dividend(&1_000);
     let alice = Address::generate(&h.env);
     assert_eq!(h.token.pending_dividend(&alice), 0);
+}
+
+#[test]
+fn test_non_deployer_cannot_reinitialize() {
+    let h = setup();
+    let attacker = Address::generate(&h.env);
+    let kyc_id = Address::generate(&h.env);
+    let ce_id = Address::generate(&h.env);
+    // initialize must always panic — the constructor has already run
+    let result = h
+        .token
+        .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
+    assert!(result.is_err());
 }
 
 #[test]

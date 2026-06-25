@@ -2,6 +2,8 @@
 
 //! Property Token — fractional ownership of real estate.
 //! Each token = 1 share out of total_shares. Dividends distributed in XLM/USDC.
+//! Minting is admin-gated and still enforces active KYC, the configured minimum
+//! KYC tier, and mint-time compliance checks for pause/blocklist rules.
 
 #[cfg(test)]
 mod test;
@@ -49,16 +51,15 @@ pub struct PropertyToken;
 
 #[contractimpl]
 impl PropertyToken {
-    pub fn initialize(
+    /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
+    /// Eliminates the deploy→initialize front-running window.
+    pub fn __constructor(
         env: Env,
         admin: Address,
         kyc_registry: Address,
         compliance_engine: Address,
         meta: PropertyMeta,
     ) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
-        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -74,6 +75,17 @@ impl PropertyToken {
             .instance()
             .set(&DataKey::DividendPerShare, &0i128);
         env.storage().instance().set(&DataKey::PropertyMeta, &meta);
+    }
+
+    /// Legacy entry point — always panics to prevent post-deploy initialization.
+    pub fn initialize(
+        _env: Env,
+        _admin: Address,
+        _kyc_registry: Address,
+        _compliance_engine: Address,
+        _meta: PropertyMeta,
+    ) {
+        panic!("already initialized");
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────
@@ -100,6 +112,8 @@ impl PropertyToken {
     pub fn mint(env: Env, to: Address, shares: i128) {
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
+        Self::require_tier(&env, &to);
+        Self::check_mint_compliance(&env, &to);
         if shares <= 0 {
             panic!("shares must be positive");
         }
@@ -267,6 +281,31 @@ impl PropertyToken {
         }
     }
 
+    fn require_tier(env: &Env, addr: &Address) {
+        let registry: Address = env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+        let client = KycRegistryClient::new(env, &registry);
+        let required = Self::get_meta(env.clone()).kyc_tier_required;
+        let actual = client.get_tier(addr);
+        if actual < required {
+            panic!("KYC tier below property requirement");
+        }
+    }
+
+    fn check_mint_compliance(env: &Env, to: &Address) {
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        if client.get_rules().paused {
+            panic!("mint blocked by compliance pause");
+        }
+        if client.is_blocklisted(to) {
+            panic!("mint recipient is blocklisted");
+        }
+    }
+
     fn check_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
         let engine: Address = env
             .storage()
@@ -309,6 +348,7 @@ mod kyc_iface {
     #[allow(dead_code)]
     pub trait KycRegistry {
         fn is_approved(env: soroban_sdk::Env, addr: Address) -> bool;
+        fn get_tier(env: soroban_sdk::Env, addr: Address) -> u32;
     }
 }
 
@@ -317,8 +357,24 @@ mod compliance_iface {
     #[contractclient(name = "ComplianceEngineClient")]
     #[allow(dead_code)]
     pub trait ComplianceEngine {
+        fn get_rules(env: soroban_sdk::Env) -> super::compliance_engine::ComplianceRules;
+        fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
         fn register_holder(env: soroban_sdk::Env, addr: Address);
+    }
+}
+
+mod compliance_engine {
+    use soroban_sdk::contracttype;
+
+    #[contracttype]
+    #[derive(Clone)]
+    pub struct ComplianceRules {
+        pub max_transfer_amount: i128,
+        pub min_holding_period: u64,
+        pub max_holders: u32,
+        pub require_same_jurisdiction: bool,
+        pub paused: bool,
     }
 }
 

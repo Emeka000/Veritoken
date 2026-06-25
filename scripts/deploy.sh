@@ -2,12 +2,18 @@
 # Veritoken deployment script — Stellar Testnet
 # Usage: bash scripts/deploy.sh [identity-name]
 # Requires: stellar CLI, cargo, wasm32 target
+#
+# SECURITY: All asset tokens use Soroban constructors (__constructor) so that
+# admin, kyc_registry, and compliance_engine are set atomically at deploy time.
+# There is no window between deploy and initialization — front-running is not
+# possible. Do NOT revert to a two-step deploy-then-initialize pattern.
 
 set -euo pipefail
 
 NETWORK="${STELLAR_NETWORK:-testnet}"
 IDENTITY="${1:-alice}"
 SOURCE="--source-account $IDENTITY --network $NETWORK"
+ADMIN_ADDR="$(stellar keys address $IDENTITY)"
 
 echo "==> Building all contracts..."
 cargo build --release --target wasm32-unknown-unknown
@@ -32,7 +38,7 @@ KYC_ID=$(stellar contract deploy \
   $SOURCE \
   --wasm "$WASM_DIR/kyc_registry.wasm" \
   -- \
-  --admin "$(stellar keys address $IDENTITY)")
+  --admin "$ADMIN_ADDR")
 echo "    KYC_REGISTRY_ID=$KYC_ID"
 
 echo "==> Deploying Compliance Engine..."
@@ -40,25 +46,43 @@ CE_ID=$(stellar contract deploy \
   $SOURCE \
   --wasm "$WASM_DIR/compliance_engine.wasm" \
   -- \
-  --admin "$(stellar keys address $IDENTITY)")
+  --admin "$ADMIN_ADDR")
 echo "    COMPLIANCE_ENGINE_ID=$CE_ID"
+
+# Asset tokens pass all constructor args atomically — no separate initialize call needed or possible.
+# The '--' separator passes arguments directly to the contract constructor (__constructor).
 
 echo "==> Deploying Invoice Token..."
 INV_ID=$(stellar contract deploy \
   $SOURCE \
-  --wasm "$WASM_DIR/invoice_token.wasm")
+  --wasm "$WASM_DIR/invoice_token.wasm" \
+  -- \
+  --admin "$ADMIN_ADDR" \
+  --kyc-registry "$KYC_ID" \
+  --compliance-engine "$CE_ID" \
+  --meta '{"invoice_id":"PLACEHOLDER","issuer":"","debtor":"","face_value_usd":0,"discount_rate_bps":0,"due_date":0,"currency":"USD","ipfs_doc_hash":""}')
 echo "    INVOICE_TOKEN_ID=$INV_ID"
 
 echo "==> Deploying Property Token..."
 PROP_ID=$(stellar contract deploy \
   $SOURCE \
-  --wasm "$WASM_DIR/property_token.wasm")
+  --wasm "$WASM_DIR/property_token.wasm" \
+  -- \
+  --admin "$ADMIN_ADDR" \
+  --kyc-registry "$KYC_ID" \
+  --compliance-engine "$CE_ID" \
+  --meta '{"property_id":"PLACEHOLDER","legal_name":"","jurisdiction":"","address":"","total_valuation_usd":0,"total_shares":1000000,"property_type":"residential","ipfs_title_hash":"","kyc_tier_required":1}')
 echo "    PROPERTY_TOKEN_ID=$PROP_ID"
 
 echo "==> Deploying Carbon Credit Token..."
 CARBON_ID=$(stellar contract deploy \
   $SOURCE \
-  --wasm "$WASM_DIR/carbon_credit_token.wasm")
+  --wasm "$WASM_DIR/carbon_credit_token.wasm" \
+  -- \
+  --admin "$ADMIN_ADDR" \
+  --kyc-registry "$KYC_ID" \
+  --compliance-engine "$CE_ID" \
+  --meta '{"project_id":"PLACEHOLDER","standard":"VCS","vintage_year":2024,"project_name":"","project_type":"forestry","country":"","verifier":"","ipfs_cert_hash":""}')
 echo "    CARBON_TOKEN_ID=$CARBON_ID"
 
 echo ""
@@ -74,4 +98,5 @@ EOF
 
 echo ""
 echo "Done! Contract IDs written to frontend/.env"
+echo "IMPORTANT: Update the placeholder --meta values above with real asset metadata before production deployment."
 echo "Next: cd frontend && npm install && npm run dev"

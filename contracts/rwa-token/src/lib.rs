@@ -18,9 +18,10 @@ pub struct RwaToken;
 
 #[contractimpl]
 impl RwaToken {
-    /// Initialize the RWA token with metadata and compliance configuration.
+    /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
+    /// Eliminates the deploy→initialize front-running window.
     #[allow(clippy::too_many_arguments)]
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         admin: Address,
         decimal: u32,
@@ -30,15 +31,27 @@ impl RwaToken {
         kyc_registry: Address,
         compliance_engine: Address,
     ) {
-        if storage_types::has_admin(&env) {
-            panic!("already initialized");
-        }
         admin::write_admin(&env, &admin);
         metadata::write_metadata(&env, decimal, name, symbol);
         metadata::write_asset_type(&env, asset_type);
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+    }
+
+    /// Legacy entry point — always panics to prevent post-deploy initialization.
+    #[allow(clippy::too_many_arguments)]
+    pub fn initialize(
+        _env: Env,
+        _admin: Address,
+        _decimal: u32,
+        _name: String,
+        _symbol: String,
+        _asset_type: String,
+        _kyc_registry: Address,
+        _compliance_engine: Address,
+    ) {
+        panic!("already initialized");
     }
 
     // ── Admin ────────────────────────────────────────────────────────────────
@@ -87,9 +100,18 @@ impl RwaToken {
         kyc::require_kyc(&env, &from);
         kyc::require_kyc(&env, &to);
         compliance::check_transfer(&env, &from, &to, amount);
+        let from_balance_before = balance::read_balance(&env, from.clone());
+        let to_balance_before = balance::read_balance(&env, to.clone());
         balance::spend_balance(&env, from.clone(), amount);
         balance::receive_balance(&env, to.clone(), amount);
-        compliance::register_holder(&env, &to);
+        if from != to {
+            if amount > 0 && to_balance_before == 0 {
+                compliance::register_holder(&env, &to);
+            }
+            if amount > 0 && from_balance_before == amount {
+                compliance::unregister_holder(&env, &from);
+            }
+        }
         env.events()
             .publish((symbol_short!("transfer"), from, to), amount);
     }
@@ -99,10 +121,19 @@ impl RwaToken {
         kyc::require_kyc(&env, &from);
         kyc::require_kyc(&env, &to);
         compliance::check_transfer(&env, &from, &to, amount);
+        let from_balance_before = balance::read_balance(&env, from.clone());
+        let to_balance_before = balance::read_balance(&env, to.clone());
         allowance::spend_allowance(&env, from.clone(), spender, amount);
         balance::spend_balance(&env, from.clone(), amount);
         balance::receive_balance(&env, to.clone(), amount);
-        compliance::register_holder(&env, &to);
+        if from != to {
+            if amount > 0 && to_balance_before == 0 {
+                compliance::register_holder(&env, &to);
+            }
+            if amount > 0 && from_balance_before == amount {
+                compliance::unregister_holder(&env, &from);
+            }
+        }
         env.events()
             .publish((symbol_short!("transfer"), from, to), amount);
     }
@@ -110,7 +141,11 @@ impl RwaToken {
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
         kyc::require_kyc(&env, &from);
+        let from_balance_before = balance::read_balance(&env, from.clone());
         balance::spend_balance(&env, from.clone(), amount);
+        if amount > 0 && from_balance_before == amount {
+            compliance::unregister_holder(&env, &from);
+        }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply - amount);
         env.events().publish((symbol_short!("burn"), from), amount);
@@ -118,8 +153,12 @@ impl RwaToken {
 
     pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
         spender.require_auth();
+        let from_balance_before = balance::read_balance(&env, from.clone());
         allowance::spend_allowance(&env, from.clone(), spender, amount);
         balance::spend_balance(&env, from.clone(), amount);
+        if amount > 0 && from_balance_before == amount {
+            compliance::unregister_holder(&env, &from);
+        }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply - amount);
         env.events().publish((symbol_short!("burn"), from), amount);
@@ -147,8 +186,11 @@ impl RwaToken {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         kyc::require_kyc(&env, &to);
+        let previous_balance = balance::read_balance(&env, to.clone());
         balance::receive_balance(&env, to.clone(), amount);
-        compliance::register_holder(&env, &to);
+        if amount > 0 && previous_balance == 0 {
+            compliance::register_holder(&env, &to);
+        }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply + amount);
         env.events().publish((symbol_short!("mint"), to), amount);

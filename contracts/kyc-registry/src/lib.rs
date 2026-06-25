@@ -100,7 +100,7 @@ impl KycRegistry {
     pub fn reject(env: Env, verifier: Address, subject: Address) {
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
-        let mut record = Self::get_record(&env, subject.clone());
+        let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
         record.status = KycStatus::Rejected;
         Self::write_record(&env, subject.clone(), record);
         env.events()
@@ -110,7 +110,7 @@ impl KycRegistry {
     pub fn revoke(env: Env, verifier: Address, subject: Address) {
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
-        let mut record = Self::get_record(&env, subject.clone());
+        let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
         record.status = KycStatus::Revoked;
         Self::write_record(&env, subject.clone(), record);
         env.events()
@@ -165,6 +165,19 @@ impl KycRegistry {
             .instance()
             .get(&DataKey::VerifierList)
             .unwrap_or_else(|| Vec::new(env))
+    }
+
+    fn get_record_or_default(env: &Env, addr: Address, verifier: &Address) -> KycRecord {
+        env.storage()
+            .persistent()
+            .get(&DataKey::KycStatus(addr))
+            .unwrap_or_else(|| KycRecord {
+                status: KycStatus::Pending,
+                verifier: verifier.clone(),
+                tier: 0,
+                expiry: 0,
+                jurisdiction: String::from_str(env, ""),
+            })
     }
 
     fn write_record(env: &Env, addr: Address, record: KycRecord) {
