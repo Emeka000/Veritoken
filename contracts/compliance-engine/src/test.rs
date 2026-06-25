@@ -58,12 +58,15 @@ fn test_blocklist() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
+    assert!(!client.is_blocklisted(&from));
     client.add_to_blocklist(&from);
+    assert!(client.is_blocklisted(&from));
     assert!(!client.can_transfer(&from, &to, &1));
     // The receiver being blocked also blocks
     assert!(!client.can_transfer(&to, &from, &1));
 
     client.remove_from_blocklist(&from);
+    assert!(!client.is_blocklisted(&from));
     assert!(client.can_transfer(&from, &to, &1));
 }
 

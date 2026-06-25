@@ -88,6 +88,10 @@ impl ComplianceEngine {
         env.storage().instance().set(&DataKey::Blocklist, &new_list);
     }
 
+    pub fn is_blocklisted(env: Env, addr: Address) -> bool {
+        Self::blocklist(&env).contains(&addr)
+    }
+
     pub fn pause(env: Env) {
         Self::require_admin(&env);
         let mut rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();

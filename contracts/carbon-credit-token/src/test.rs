@@ -94,6 +94,26 @@ fn test_mint_and_transfer() {
 }
 
 #[test]
+fn test_mint_rejects_blocklisted_recipient() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.compliance.add_to_blocklist(&alice);
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
+}
+
+#[test]
+fn test_mint_rejects_when_compliance_paused() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.compliance.pause();
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
+}
+
+#[test]
 fn test_transfer_requires_kyc() {
     let h = setup();
     let alice = Address::generate(&h.env);

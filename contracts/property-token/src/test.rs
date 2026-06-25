@@ -9,6 +9,7 @@ struct Harness {
     env: Env,
     token: PropertyTokenClient<'static>,
     kyc: KycRegistryClient<'static>,
+    compliance: ComplianceEngineClient<'static>,
     verifier: Address,
 }
 
@@ -49,16 +50,21 @@ fn setup() -> Harness {
         env,
         token,
         kyc,
+        compliance,
         verifier,
     }
 }
 
 impl Harness {
     fn approve_kyc(&self, addr: &Address) {
+        self.approve_kyc_with_tier(addr, 1);
+    }
+
+    fn approve_kyc_with_tier(&self, addr: &Address, tier: u32) {
         self.kyc.approve(
             &self.verifier,
             addr,
-            &1,
+            &tier,
             &0,
             &String::from_str(&self.env, "US"),
         );
@@ -92,6 +98,35 @@ fn test_mint_and_transfer() {
     h.token.transfer(&alice, &bob, &40);
     assert_eq!(h.token.balance(&alice), 60);
     assert_eq!(h.token.balance(&bob), 40);
+}
+
+#[test]
+fn test_mint_rejects_recipient_below_required_tier() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 0);
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
+}
+
+#[test]
+fn test_mint_rejects_blocklisted_recipient() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.compliance.add_to_blocklist(&alice);
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
+}
+
+#[test]
+fn test_mint_rejects_when_compliance_paused() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.compliance.pause();
+
+    assert!(h.token.try_mint(&alice, &100).is_err());
 }
 
 #[test]
