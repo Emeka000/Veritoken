@@ -128,6 +128,7 @@ impl InvoiceToken {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Balance(to.clone()), THRESHOLD, BUMP);
+        Self::register_holder(&env, to.clone());
         let supply: i128 = env
             .storage()
             .instance()
