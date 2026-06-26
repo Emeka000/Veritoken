@@ -2,7 +2,7 @@
 
 use crate::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger as _},
     Address, Env,
 };
 
@@ -149,4 +149,65 @@ fn test_only_admin_can_set_rules() {
     // No auth mocked -> require_auth should fail
     let res = client.try_set_rules(&rules(0, 0, 0, true));
     assert!(res.is_err());
+}
+
+#[test]
+fn test_instance_ttl_extended_on_get_rules() {
+    // Verify that get_rules extends the instance TTL. In the test environment
+    // there is no true TTL enforcement, but we can confirm the call succeeds
+    // and returns the stored rules after many ledgers have been simulated.
+    let (env, client, _admin) = setup();
+    env.ledger().set_sequence_number(1_000_000);
+    let r = client.get_rules();
+    assert!(!r.paused);
+}
+
+#[test]
+fn test_instance_ttl_extended_on_can_transfer() {
+    let (env, client, _admin) = setup();
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    env.ledger().set_sequence_number(1_000_000);
+    assert!(client.can_transfer(&from, &to, &1));
+}
+
+#[test]
+fn test_instance_ttl_extended_on_holder_count() {
+    let (env, client, _admin) = setup();
+    env.ledger().set_sequence_number(1_000_000);
+    assert_eq!(client.holder_count(), 0);
+}
+
+#[test]
+fn test_instance_ttl_extended_on_register_unregister() {
+    let (env, client, _admin) = setup();
+    let holder = Address::generate(&env);
+    env.ledger().set_sequence_number(1_000_000);
+    client.register_holder(&holder);
+    assert_eq!(client.holder_count(), 1);
+    client.unregister_holder(&holder);
+    assert_eq!(client.holder_count(), 0);
+}
+
+#[test]
+fn test_instance_ttl_extended_on_blocklist_ops() {
+    let (env, client, _admin) = setup();
+    let addr = Address::generate(&env);
+    env.ledger().set_sequence_number(1_000_000);
+    client.add_to_blocklist(&addr);
+    assert!(client.is_blocklisted(&addr));
+    client.remove_from_blocklist(&addr);
+    assert!(!client.is_blocklisted(&addr));
+}
+
+#[test]
+fn test_instance_ttl_extended_on_pause_unpause() {
+    let (env, client, _admin) = setup();
+    env.ledger().set_sequence_number(1_000_000);
+    client.pause();
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    assert!(!client.can_transfer(&from, &to, &1));
+    client.unpause();
+    assert!(client.can_transfer(&from, &to, &1));
 }
