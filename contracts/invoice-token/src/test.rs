@@ -3,7 +3,6 @@
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 struct Harness {
@@ -39,7 +38,9 @@ fn setup() -> Harness {
     let verifier = Address::generate(&env);
     kyc.add_verifier(&verifier);
 
-    let compliance_id = env.register(KycRegistry, ()); // placeholder address; unused by invoice token
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin);
 
     // Invoice token — constructor args passed atomically at register time
     let token_id = env.register(
@@ -61,6 +62,22 @@ fn setup() -> Harness {
         verifier,
         admin,
     }
+}
+
+#[test]
+fn test_issue_idempotency_holder_count() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    
+    // First issue
+    h.token.issue(&holder, &1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+    
+    // Second issue
+    h.token.issue(&holder, &500);
+    assert_eq!(h.compliance.holder_count(), 1);
+    assert_eq!(h.token.balance(&holder), 1_500);
 }
 
 impl Harness {
