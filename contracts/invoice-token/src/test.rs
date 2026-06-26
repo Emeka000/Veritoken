@@ -3,7 +3,6 @@
 use crate::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 struct Harness {
@@ -39,9 +38,10 @@ fn setup() -> Harness {
     let verifier = Address::generate(&env);
     kyc.add_verifier(&verifier);
 
-    let compliance_id = env.register(KycRegistry, ()); // placeholder address; unused by invoice token
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin);
 
-    // Invoice token — constructor args passed atomically at register time
     let token_id = env.register(
         InvoiceToken,
         (
@@ -151,4 +151,32 @@ fn test_non_deployer_cannot_reinitialize() {
         .token
         .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env));
     assert!(result.is_err());
+}
+
+#[test]
+#[should_panic(expected = "invoice already settled")]
+fn test_transfer_blocked_after_settlement() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.issue(&alice, &100);
+    h.token.settle();
+    h.token.transfer(&alice, &bob, &100);
+}
+
+#[test]
+#[should_panic(expected = "invoice already settled")]
+fn test_transfer_from_blocked_after_settlement() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.issue(&alice, &100);
+    h.token.approve(&alice, &spender, &100, &1_000_000);
+    h.token.settle();
+    h.token.transfer_from(&spender, &alice, &bob, &100);
 }
