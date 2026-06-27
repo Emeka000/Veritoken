@@ -116,7 +116,6 @@ impl CarbonCreditToken {
         Self::check_mint_compliance(&env, &to);
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + amount);
-        Self::register_holder(&env, to.clone());
         let supply: i128 = env
             .storage()
             .instance()
