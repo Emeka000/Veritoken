@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useWallet } from "../lib/wallet";
 
@@ -14,12 +14,15 @@ const NAV = [
 export default function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const { address, connected, connect, disconnect } = useWallet();
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const closeMenu = () => setMenuOpen(false);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
       <header style={styles.header}>
         <div className="container" style={styles.headerInner}>
-          <Link to="/" style={styles.brand}>
+          <Link to="/" style={styles.brand} onClick={closeMenu}>
             <img src="/veritoken.svg" alt="" width={34} height={34} style={{ borderRadius: 9 }} />
             <span style={styles.brandName}>Veritoken</span>
             <span className="badge badge-accent" style={{ marginLeft: "0.4rem" }}>
@@ -27,7 +30,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </span>
           </Link>
 
-          <nav style={styles.nav}>
+          <nav style={styles.nav} className="nav-desktop">
             {NAV.map((n) => {
               const active = n.to === "/" ? pathname === "/" : pathname.startsWith(n.to);
               return (
@@ -42,7 +45,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             })}
           </nav>
 
-          <div style={{ display: "flex", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
             {connected ? (
               <div style={styles.walletInfo}>
                 <span style={styles.address} className="mono">
@@ -56,9 +59,37 @@ export default function Layout({ children }: { children: ReactNode }) {
             ) : (
               <button onClick={connect}>Connect Wallet</button>
             )}
+            <button
+              className="hamburger"
+              onClick={() => setMenuOpen(!menuOpen)}
+              style={styles.hamburger}
+              aria-label="Toggle menu"
+            >
+              <span style={styles.hamburgerLine} />
+              <span style={styles.hamburgerLine} />
+              <span style={styles.hamburgerLine} />
+            </button>
           </div>
         </div>
       </header>
+
+      {menuOpen && <div style={styles.overlay} onClick={closeMenu} />}
+
+      <nav style={{ ...styles.drawer, ...(menuOpen ? styles.drawerOpen : {}) }}>
+        {NAV.map((n) => {
+          const active = n.to === "/" ? pathname === "/" : pathname.startsWith(n.to);
+          return (
+            <Link
+              key={n.to}
+              to={n.to}
+              onClick={closeMenu}
+              style={{ ...styles.drawerLink, ...(active ? styles.drawerLinkActive : {}) }}
+            >
+              {n.label}
+            </Link>
+          );
+        })}
+      </nav>
 
       <main style={styles.main}>
         <div className="container animate-in" key={pathname}>
@@ -131,9 +162,85 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid var(--border)",
   },
   disconnectBtn: { fontSize: "0.75rem", padding: "0.4rem 0.8rem" },
+  hamburger: {
+    display: "none",
+    flexDirection: "column",
+    gap: "0.35rem",
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: 0,
+  },
+  hamburgerLine: {
+    width: "1.5rem",
+    height: "0.2rem",
+    background: "var(--text)",
+    borderRadius: "0.1rem",
+    transition: "all 0.3s ease",
+  },
+  overlay: {
+    display: "none",
+    position: "fixed",
+    top: 66,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: "rgba(0, 0, 0, 0.5)",
+    zIndex: 39,
+  },
+  drawer: {
+    position: "fixed",
+    top: 66,
+    left: 0,
+    width: "100%",
+    background: "var(--surface)",
+    borderBottom: "1px solid var(--border)",
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.5rem",
+    padding: "1rem",
+    zIndex: 40,
+    transform: "translateY(-100%)",
+    transition: "transform 0.3s ease",
+  },
+  drawerOpen: {
+    transform: "translateY(0)",
+  },
+  drawerLink: {
+    color: "var(--text)",
+    fontWeight: 500,
+    fontSize: "1rem",
+    padding: "0.75rem 1rem",
+    borderRadius: "0.5rem",
+    textDecoration: "none",
+    transition: "background 0.18s ease",
+  },
+  drawerLinkActive: {
+    background: "var(--surface-2)",
+  },
   main: { flex: 1, padding: "2.5rem 0 3.5rem" },
   footer: {
     borderTop: "1px solid var(--border)",
     padding: "1.5rem 0",
   },
 };
+
+// Add responsive media queries via global styles
+const mediaStyles = `
+  @media (max-width: 768px) {
+    .nav-desktop {
+      display: none !important;
+    }
+    
+    [class*="hamburger"] {
+      display: flex !important;
+    }
+  }
+`;
+
+if (typeof document !== "undefined" && !document.getElementById("layout-responsive-styles")) {
+  const style = document.createElement("style");
+  style.id = "layout-responsive-styles";
+  style.textContent = mediaStyles;
+  document.head.appendChild(style);
+}
