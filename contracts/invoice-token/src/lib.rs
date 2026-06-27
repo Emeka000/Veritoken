@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 //! Invoice Token — tokenizes accounts-receivable invoices.
 //! Each token unit represents 1 USD (7-decimal precision) of invoice face value.
@@ -9,7 +10,27 @@
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
+    Address, Env, String,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum InvoiceError {
+    AlreadyInitialized = 1,
+    AlreadySettled = 2,
+    NotSettled = 3,
+    InsufficientBalance = 4,
+    NegativeAmount = 5,
+    InsufficientAllowance = 6,
+    AllowanceExpired = 7,
+    KycNotApproved = 8,
+    CompliancePaused = 9,
+    Blocklisted = 10,
+    TransferBlocked = 11,
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -53,8 +74,7 @@ pub struct InvoiceToken;
 #[contractimpl]
 impl InvoiceToken {
     /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
-    /// This eliminates the deploy→initialize front-running window: there is no state in which
-    /// the contract exists but is uninitialized.
+    /// This eliminates the deploy→initialize front-running window.
     #[allow(clippy::too_many_arguments)]
     pub fn __constructor(
         env: Env,
@@ -79,13 +99,13 @@ impl InvoiceToken {
     /// `initialize` post-deploy fails loudly rather than silently succeeding.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
-        _env: Env,
+        env: Env,
         _admin: Address,
         _kyc_registry: Address,
         _compliance_engine: Address,
         _meta: InvoiceMeta,
     ) {
-        panic!("already initialized");
+        panic_with_error!(env, InvoiceError::AlreadyInitialized);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
@@ -133,7 +153,6 @@ impl InvoiceToken {
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     /// Mint tokens to represent this invoice. Admin-only.
-    /// face_value_usd in the meta determines the max supply.
     pub fn issue(env: Env, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
@@ -144,7 +163,7 @@ impl InvoiceToken {
             .get::<DataKey, bool>(&DataKey::Settled)
             .unwrap_or(false)
         {
-            panic!("invoice already settled");
+            panic_with_error!(env, InvoiceError::AlreadySettled);
         }
         let bal = Self::read_balance(&env, to.clone());
         env.storage()
@@ -184,12 +203,12 @@ impl InvoiceToken {
             .get::<DataKey, bool>(&DataKey::Settled)
             .unwrap_or(false)
         {
-            panic!("invoice not yet settled");
+            panic_with_error!(env, InvoiceError::NotSettled);
         }
         Self::check_redeem_compliance(&env, &from, amount);
         let bal = Self::read_balance(&env, from.clone());
         if bal < amount {
-            panic!("insufficient balance");
+            panic_with_error!(env, InvoiceError::InsufficientBalance);
         }
         env.storage()
             .persistent()
@@ -289,7 +308,7 @@ impl InvoiceToken {
             panic!("invoice already settled");
         }
         if amount < 0 {
-            panic!("negative amount");
+            panic_with_error!(env, InvoiceError::NegativeAmount);
         }
         Self::require_kyc(&env, &from);
         Self::require_kyc(&env, &to);
@@ -297,7 +316,7 @@ impl InvoiceToken {
 
         let from_bal = Self::read_balance(&env, from.clone());
         if from_bal < amount {
-            panic!("insufficient balance");
+            panic_with_error!(env, InvoiceError::InsufficientBalance);
         }
         env.storage()
             .persistent()
@@ -337,7 +356,7 @@ impl InvoiceToken {
             panic!("invoice already settled");
         }
         if amount < 0 {
-            panic!("negative amount");
+            panic_with_error!(env, InvoiceError::NegativeAmount);
         }
         Self::require_kyc(&env, &from);
         Self::require_kyc(&env, &to);
@@ -345,7 +364,7 @@ impl InvoiceToken {
 
         let allowance = Self::read_allowance(&env, from.clone(), spender.clone());
         if allowance.expiration_ledger < env.ledger().sequence() {
-            panic!("allowance expired");
+            panic_with_error!(env, InvoiceError::AllowanceExpired);
         }
 
         let new_allowance = AllowanceValue {
@@ -359,7 +378,7 @@ impl InvoiceToken {
 
         let from_bal = Self::read_balance(&env, from.clone());
         if from_bal < amount {
-            panic!("insufficient balance");
+            panic_with_error!(env, InvoiceError::InsufficientBalance);
         }
         env.storage()
             .persistent()
@@ -391,7 +410,7 @@ impl InvoiceToken {
     ) {
         from.require_auth();
         if amount < 0 {
-            panic!("negative amount");
+            panic_with_error!(env, InvoiceError::NegativeAmount);
         }
         let allowance = AllowanceValue {
             amount,
@@ -441,15 +460,23 @@ impl InvoiceToken {
     // ── Internals ────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin must be set");
         admin.require_auth();
     }
 
     fn require_kyc(env: &Env, addr: &Address) {
-        let registry: Address = env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+        let registry: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::KycRegistry)
+            .expect("kyc registry must be set");
         let client = KycRegistryClient::new(env, &registry);
         if !client.is_approved(addr) {
-            panic!("KYC not approved");
+            panic_with_error!(env, InvoiceError::KycNotApproved);
         }
     }
 
@@ -458,7 +485,7 @@ impl InvoiceToken {
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
-            .unwrap();
+            .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         if !client.can_transfer(holder, holder, &amount) {
             panic!("redemption blocked by compliance");
@@ -512,7 +539,7 @@ impl InvoiceToken {
             .unwrap();
         let client = ComplianceEngineClient::new(env, &engine);
         if !client.can_transfer(from, to, &amount) {
-            panic!("transfer rejected by compliance engine");
+            panic_with_error!(env, InvoiceError::TransferBlocked);
         }
     }
 

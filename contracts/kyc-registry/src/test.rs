@@ -28,6 +28,16 @@ fn test_add_verifier_and_approve() {
     client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "US"));
     assert!(client.is_approved(&subject));
     assert_eq!(client.get_tier(&subject), 1);
+
+    // Assert that the "approved" event was emitted with the expected topic
+    let events = env.events().all();
+    let approved_topic = soroban_sdk::symbol_short!("approved").into_val(&env);
+    assert!(
+        events
+            .iter()
+            .any(|(_, topics, _)| topics.first() == Some(&approved_topic)),
+        "approved event should have been emitted"
+    );
 }
 
 #[test]
@@ -38,13 +48,13 @@ fn test_double_initialize_panics() {
 }
 
 #[test]
-#[should_panic(expected = "not an authorized verifier")]
 fn test_unauthorized_verifier_cannot_approve() {
     let (env, client, _admin) = setup();
     let rogue = Address::generate(&env);
     let subject = Address::generate(&env);
-    // rogue was never added as a verifier
-    client.approve(&rogue, &subject, &0, &0, &String::from_str(&env, "US"));
+    // rogue was never added as a verifier — must return an error
+    let res = client.try_approve(&rogue, &subject, &0, &0, &String::from_str(&env, "US"));
+    assert!(res.is_err());
 }
 
 #[test]

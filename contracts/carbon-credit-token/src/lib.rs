@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 //! Carbon Credit Token — 1 token = 1 verified tonne of CO₂ equivalent retired.
 //! Tokens are burned ("retired") to claim the carbon offset; retired credits
@@ -9,7 +10,22 @@
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
+    Address, Env, String, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum CarbonError {
+    AlreadyInitialized = 1,
+    InsufficientBalance = 2,
+    KycNotApproved = 3,
+    CompliancePaused = 4,
+    Blocklisted = 5,
+    TransferBlocked = 6,
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -43,7 +59,7 @@ pub struct RetirementReceipt {
     pub retiree: Address,
     pub amount: i128,
     pub timestamp: u64,
-    pub beneficiary: String, // optional free-text beneficiary name
+    pub beneficiary: String,
     pub retirement_reason: String,
 }
 
@@ -83,13 +99,13 @@ impl CarbonCreditToken {
 
     /// Legacy entry point — always panics to prevent post-deploy initialization.
     pub fn initialize(
-        _env: Env,
+        env: Env,
         _admin: Address,
         _kyc_registry: Address,
         _compliance_engine: Address,
         _meta: ProjectMeta,
     ) {
-        panic!("already initialized");
+        panic_with_error!(env, CarbonError::AlreadyInitialized);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
@@ -165,7 +181,7 @@ impl CarbonCreditToken {
         Self::check_compliance(&env, &from, &to, amount);
         let from_bal = Self::read_balance(&env, from.clone());
         if from_bal < amount {
-            panic!("insufficient balance");
+            panic_with_error!(env, CarbonError::InsufficientBalance);
         }
         Self::write_balance(&env, from.clone(), from_bal - amount);
         let to_bal = Self::read_balance(&env, to.clone());
@@ -189,7 +205,7 @@ impl CarbonCreditToken {
         retiree.require_auth();
         let bal = Self::read_balance(&env, retiree.clone());
         if bal < amount {
-            panic!("insufficient balance");
+            panic_with_error!(env, CarbonError::InsufficientBalance);
         }
         Self::write_balance(&env, retiree.clone(), bal - amount);
         let supply: i128 = env
@@ -295,15 +311,23 @@ impl CarbonCreditToken {
     // ── Internals ────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin must be set");
         admin.require_auth();
     }
 
     fn require_kyc(env: &Env, addr: &Address) {
-        let registry: Address = env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+        let registry: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::KycRegistry)
+            .expect("kyc registry must be set");
         let client = KycRegistryClient::new(env, &registry);
         if !client.is_approved(addr) {
-            panic!("KYC not approved");
+            panic_with_error!(env, CarbonError::KycNotApproved);
         }
     }
 
@@ -312,13 +336,13 @@ impl CarbonCreditToken {
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
-            .unwrap();
+            .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         if client.get_rules().paused {
-            panic!("mint blocked by compliance pause");
+            panic_with_error!(env, CarbonError::CompliancePaused);
         }
         if client.is_blocklisted(to) {
-            panic!("mint recipient is blocklisted");
+            panic_with_error!(env, CarbonError::Blocklisted);
         }
     }
 
@@ -327,10 +351,10 @@ impl CarbonCreditToken {
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
-            .unwrap();
+            .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         if !client.can_transfer(from, to, &amount) {
-            panic!("transfer blocked by compliance engine");
+            panic_with_error!(env, CarbonError::TransferBlocked);
         }
     }
 
@@ -339,7 +363,7 @@ impl CarbonCreditToken {
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
-            .unwrap();
+            .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         client.register_holder(addr);
     }

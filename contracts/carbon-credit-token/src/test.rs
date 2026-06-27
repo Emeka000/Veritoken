@@ -3,7 +3,7 @@
 use crate::{CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Env, IntoVal, String};
 
 struct Harness {
     env: Env,
@@ -170,6 +170,16 @@ fn test_retire_records_receipt() {
     let r = h.token.get_receipt(&0);
     assert_eq!(r.amount, 40);
     assert_eq!(r.retiree, alice);
+
+    // Assert that the "retired" event was emitted
+    let events = h.env.events().all();
+    let retired_topic = soroban_sdk::symbol_short!("retired").into_val(&h.env);
+    assert!(
+        events
+            .iter()
+            .any(|(_, topics, _)| topics.first() == Some(&retired_topic)),
+        "retired event should have been emitted"
+    );
 }
 
 #[test]

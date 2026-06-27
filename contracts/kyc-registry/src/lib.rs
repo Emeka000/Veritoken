@@ -1,9 +1,23 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
+    Address, Env, String, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum KycError {
+    AlreadyInitialized = 1,
+    NotVerifier = 2,
+    NotApproved = 3,
+    NoRecord = 4,
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -43,7 +57,7 @@ pub struct KycRegistry;
 impl KycRegistry {
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!(env, KycError::AlreadyInitialized);
         }
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -235,14 +249,18 @@ impl KycRegistry {
     // ── Internals ────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin must be set");
         admin.require_auth();
     }
 
     fn require_verifier(env: &Env, verifier: &Address) {
         let list = Self::verifier_list(env);
         if !list.contains(verifier) {
-            panic!("not an authorized verifier");
+            panic_with_error!(env, KycError::NotVerifier);
         }
     }
 

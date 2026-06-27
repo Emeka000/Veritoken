@@ -1,9 +1,20 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
+    Address, Env, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ComplianceError {
+    AlreadyInitialized = 1,
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -39,7 +50,7 @@ pub struct ComplianceEngine;
 impl ComplianceEngine {
     pub fn initialize(env: Env, admin: Address, kyc_registry: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!(env, ComplianceError::AlreadyInitialized);
         }
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -228,7 +239,11 @@ impl ComplianceEngine {
     // ── Internals ────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin must be set");
         admin.require_auth();
     }
 

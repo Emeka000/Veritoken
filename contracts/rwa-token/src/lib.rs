@@ -1,6 +1,10 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, contracterror, panic_with_error, symbol_short, Address, Env, String,
+    Symbol,
+};
 
 mod admin;
 mod allowance;
@@ -12,6 +16,18 @@ mod storage_types;
 
 #[cfg(test)]
 mod test;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum RwaError {
+    AlreadyInitialized = 1,
+    KycNotApproved = 2,
+    TransferBlocked = 3,
+    InsufficientBalance = 4,
+    AllowanceExpired = 5,
+    InsufficientAllowance = 6,
+}
 
 #[contract]
 pub struct RwaToken;
@@ -42,7 +58,7 @@ impl RwaToken {
     /// Legacy entry point — always panics to prevent post-deploy initialization.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
-        _env: Env,
+        env: Env,
         _admin: Address,
         _decimal: u32,
         _name: String,
@@ -51,7 +67,7 @@ impl RwaToken {
         _kyc_registry: Address,
         _compliance_engine: Address,
     ) {
-        panic!("already initialized");
+        panic_with_error!(env, RwaError::AlreadyInitialized);
     }
 
     // ── Admin ────────────────────────────────────────────────────────────────

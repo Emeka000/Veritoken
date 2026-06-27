@@ -125,6 +125,16 @@ fn test_issue_requires_kyc() {
     h.token.issue(&holder, &1_000);
     assert_eq!(h.token.balance(&holder), 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
+
+    // Assert that the "issued" event was emitted
+    let events = h.env.events().all();
+    let issued_topic = soroban_sdk::symbol_short!("issued").into_val(&h.env);
+    assert!(
+        events
+            .iter()
+            .any(|(_, topics, _)| topics.first() == Some(&issued_topic)),
+        "issued event should have been emitted"
+    );
 }
 
 #[test]

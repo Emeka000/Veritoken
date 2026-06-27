@@ -1,6 +1,9 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
 use soroban_sdk::{Address, Env, String, Symbol};
 
 use crate::storage_types::{DataKey, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
+use crate::RwaError;
 
 pub fn read_compliance_engine(env: &Env) -> Address {
     env.storage()
@@ -9,7 +12,7 @@ pub fn read_compliance_engine(env: &Env) -> Address {
     env.storage()
         .instance()
         .get(&DataKey::ComplianceEngine)
-        .unwrap()
+        .expect("compliance engine must be set")
 }
 
 pub fn write_compliance_engine(env: &Env, engine: &Address) {
@@ -39,7 +42,7 @@ pub fn check_transfer(env: &Env, from: &Address, to: &Address, amount: i128) {
     let engine = read_compliance_engine(env);
     let client = ComplianceEngineClient::new(env, &engine);
     if !client.can_transfer(from, to, &amount) {
-        panic!("transfer blocked by compliance engine");
+        soroban_sdk::panic_with_error!(env, RwaError::TransferBlocked);
     }
 }
 

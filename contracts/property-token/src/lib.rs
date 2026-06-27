@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 //! Property Token — fractional ownership of real estate.
 //! Each token = 1 share out of total_shares. Dividends distributed in XLM/USDC.
@@ -8,7 +9,25 @@
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
+    Address, Env, String,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum PropertyError {
+    AlreadyInitialized = 1,
+    NegativeShares = 2,
+    InsufficientShares = 3,
+    NoShares = 4,
+    KycNotApproved = 5,
+    KycTierTooLow = 6,
+    CompliancePaused = 7,
+    Blocklisted = 8,
+    TransferBlocked = 9,
+}
 
 #[contracttype]
 pub enum DataKey {
@@ -19,11 +38,7 @@ pub enum DataKey {
     Balance(Address),
     TotalShares,
     DividendPool,
-    /// Reward debt: shares * dividend_per_share at the time of the holder's
-    /// last balance change. Dividends accrued beyond this are owed to them.
     ClaimedDividend(Address),
-    /// Dividends accrued to a holder that have not yet been claimed. Snapshotted
-    /// on every balance change so transfers never move accrued dividends.
     Unclaimed(Address),
     DividendPerShare,
     /// SEP-41 delegated-transfer allowance: (owner, spender) → AllowanceValue.
@@ -95,13 +110,13 @@ impl PropertyToken {
 
     /// Legacy entry point — always panics to prevent post-deploy initialization.
     pub fn initialize(
-        _env: Env,
+        env: Env,
         _admin: Address,
         _kyc_registry: Address,
         _compliance_engine: Address,
         _meta: PropertyMeta,
     ) {
-        panic!("already initialized");
+        panic_with_error!(env, PropertyError::AlreadyInitialized);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
@@ -133,7 +148,7 @@ impl PropertyToken {
         env.storage()
             .instance()
             .get(&DataKey::PropertyMeta)
-            .unwrap()
+            .expect("property meta must be set")
     }
 
     pub fn name(env: Env) -> String {
@@ -158,11 +173,8 @@ impl PropertyToken {
         Self::require_tier(&env, &to);
         Self::check_mint_compliance(&env, &to, shares);
         if shares <= 0 {
-            panic!("shares must be positive");
+            panic_with_error!(env, PropertyError::NegativeShares);
         }
-        // Snapshot dividends accrued on the existing balance, then reset the
-        // reward debt for the new (larger) balance so freshly minted shares do
-        // not earn dividends declared before they existed.
         Self::accrue(&env, to.clone());
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + shares);
@@ -178,15 +190,13 @@ impl PropertyToken {
         Self::require_kyc(&env, &to);
         Self::check_compliance(&env, &from, &to, shares);
         if shares <= 0 {
-            panic!("shares must be positive");
+            panic_with_error!(env, PropertyError::NegativeShares);
         }
-        // Snapshot both parties' accrued dividends before balances move so that
-        // transferring shares never transfers already-accrued dividends.
         Self::accrue(&env, from.clone());
         Self::accrue(&env, to.clone());
         let from_bal = Self::read_balance(&env, from.clone());
         if from_bal < shares {
-            panic!("insufficient shares");
+            panic_with_error!(env, PropertyError::InsufficientShares);
         }
         Self::write_balance(&env, from.clone(), from_bal - shares);
         let to_bal = Self::read_balance(&env, to.clone());
@@ -274,9 +284,13 @@ impl PropertyToken {
     pub fn deposit_dividend(env: Env, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
-        let total: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap();
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .expect("total shares must be set");
         if total == 0 {
-            panic!("no shares issued");
+            panic_with_error!(env, PropertyError::NoShares);
         }
         let dps: i128 = env
             .storage()
@@ -301,7 +315,6 @@ impl PropertyToken {
     pub fn claim_dividend(env: Env, holder: Address) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
-        // Fold any newly accrued dividends into the unclaimed accumulator.
         Self::accrue(&env, holder.clone());
         let key = DataKey::Unclaimed(holder.clone());
         let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
@@ -353,8 +366,6 @@ impl PropertyToken {
             .unwrap_or(0)
     }
 
-    /// Dividends owed to `holder` since their reward debt was last reset, based
-    /// on their current balance.
     fn accrued(env: &Env, holder: Address) -> i128 {
         let bal = Self::read_balance(env, holder.clone());
         let debt: i128 = env
@@ -365,8 +376,6 @@ impl PropertyToken {
         bal * Self::dps(env) - debt
     }
 
-    /// Move any accrued dividends into the holder's unclaimed accumulator and
-    /// reset their reward debt to the current balance.
     fn accrue(env: &Env, holder: Address) {
         let owed = Self::accrued(env, holder.clone());
         if owed > 0 {
@@ -377,8 +386,6 @@ impl PropertyToken {
         Self::reset_debt(env, holder);
     }
 
-    /// Set the holder's reward debt to their current balance times the running
-    /// dividend-per-share, so future dividends accrue only from this point.
     fn reset_debt(env: &Env, holder: Address) {
         let bal = Self::read_balance(env, holder.clone());
         let debt = bal * Self::dps(env);
@@ -388,25 +395,37 @@ impl PropertyToken {
     }
 
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin must be set");
         admin.require_auth();
     }
 
     fn require_kyc(env: &Env, addr: &Address) {
-        let registry: Address = env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+        let registry: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::KycRegistry)
+            .expect("kyc registry must be set");
         let client = KycRegistryClient::new(env, &registry);
         if !client.is_approved(addr) {
-            panic!("KYC not approved");
+            panic_with_error!(env, PropertyError::KycNotApproved);
         }
     }
 
     fn require_tier(env: &Env, addr: &Address) {
-        let registry: Address = env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+        let registry: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::KycRegistry)
+            .expect("kyc registry must be set");
         let client = KycRegistryClient::new(env, &registry);
         let required = Self::get_meta(env.clone()).kyc_tier_required;
         let actual = client.get_tier(addr);
         if actual < required {
-            panic!("KYC tier below property requirement");
+            panic_with_error!(env, PropertyError::KycTierTooLow);
         }
     }
 
@@ -415,7 +434,7 @@ impl PropertyToken {
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
-            .unwrap();
+            .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if !client.can_transfer(&admin, to, &shares) {
@@ -428,10 +447,10 @@ impl PropertyToken {
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
-            .unwrap();
+            .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         if !client.can_transfer(from, to, &amount) {
-            panic!("transfer blocked by compliance engine");
+            panic_with_error!(env, PropertyError::TransferBlocked);
         }
     }
 
@@ -440,7 +459,7 @@ impl PropertyToken {
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
-            .unwrap();
+            .expect("compliance engine must be set");
         let client = ComplianceEngineClient::new(env, &engine);
         client.register_holder(addr);
     }
