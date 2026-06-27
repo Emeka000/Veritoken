@@ -70,7 +70,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ matrix.crate }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-${{ matrix.crate }}-
-      - name: Run tests
+      - name: Run contract tests with testutils
         run: cargo test --features testutils -p ${{ matrix.crate }}
 
   build-wasm:

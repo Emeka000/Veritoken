@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Contract, scValToNative, TransactionBuilder, Account, xdr } from "@stellar/stellar-sdk";
 import { useWallet } from "../lib/wallet";
 import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
-import { PageHeader, Card, Field, Icon } from "../components/ui";
+import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
 import { useToast } from "../lib/toast";
 import type { ComplianceRules, ContractEvent } from "../types";
@@ -185,7 +185,16 @@ function RecentTransactions({ events, loading }: { events: ContractEvent[]; load
   return (
     <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
       {loading ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>Loading…</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          {[1, 2, 3].map((i) => (
+            <div key={i} style={{ display: "flex", gap: "1rem", padding: "0.75rem 0" }}>
+              <Skeleton width="80px" height="1.25rem" />
+              <Skeleton width="100px" height="1.25rem" />
+              <Skeleton width="150px" height="1.25rem" />
+              <Skeleton width="120px" height="1.25rem" />
+            </div>
+          ))}
+        </div>
       ) : events.length === 0 ? (
         <p className="muted" style={{ fontSize: "0.875rem" }}>No recent events found.</p>
       ) : (

@@ -333,6 +333,15 @@ select {
   animation: fade-up 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

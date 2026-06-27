@@ -3,7 +3,7 @@
 use crate::{RwaToken, RwaTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, String};
 
 #[allow(dead_code)]
 struct Harness {
@@ -198,6 +198,37 @@ fn test_max_holder_cap_blocks_new_holder_and_maintains_count() {
 }
 
 #[test]
+fn test_max_holders_blocks_new_holders_via_token() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let charlie = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&charlie);
+
+    h.compliance.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 2,
+        require_same_jurisdiction: false,
+        paused: false,
+    });
+
+    // First two distinct holders fill the cap.
+    h.token.mint(&alice, &1_000);
+    h.token.mint(&bob, &1_000);
+    assert_eq!(h.compliance.holder_count(), 2);
+
+    // A mint to a third distinct holder must be rejected by the compliance engine.
+    assert!(h.token.try_mint(&charlie, &1_000).is_err());
+
+    // The failed mint leaves the holder count unchanged.
+    assert_eq!(h.compliance.holder_count(), 2);
+    assert_eq!(h.token.balance(&charlie), 0);
+}
+
+#[test]
 fn test_approve_and_transfer_from() {
     let h = setup();
     let alice = Address::generate(&h.env);
@@ -285,4 +316,27 @@ fn test_mint_twice_same_address_holder_count_is_one() {
     assert_eq!(h.compliance.holder_count(), 1);
     assert_eq!(h.token.balance(&user), 1_500);
     assert_eq!(h.token.total_supply(), 1_500);
+}
+
+#[test]
+#[should_panic(expected = "invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'")]
+fn test_invalid_asset_type() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let kyc_id = env.register(KycRegistry, ());
+    let compliance_id = env.register(ComplianceEngine, ());
+
+    // Try to register token with invalid asset type
+    let _ = env.register(
+        RwaToken,
+        (
+            admin,
+            7u32,
+            String::from_str(&env, "Bad Token"),
+            String::from_str(&env, "BAD"),
+            String::from_str(&env, "banana"),
+            kyc_id,
+            compliance_id,
+        ),
+    );
 }

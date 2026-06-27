@@ -52,6 +52,13 @@ export interface RetirementReceipt {
   retirement_reason: string;
 }
 
+export interface ContractEvent {
+  type: string;
+  amount: string;
+  counterparty: string;
+  timestamp: string;
+}
+
 export interface ComplianceRules {
   max_transfer_amount: bigint;
   min_holding_period: number;

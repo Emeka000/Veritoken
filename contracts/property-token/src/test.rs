@@ -1,11 +1,11 @@
 #![cfg(test)]
 
 use crate::{PropertyMeta, PropertyToken, PropertyTokenClient};
-use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address, Env, String,
+    Address, Env, IntoVal, String,
 };
 
 struct Harness {
@@ -195,6 +195,39 @@ fn test_non_deployer_cannot_reinitialize() {
 }
 
 #[test]
+fn test_transfer_blocked_by_holding_period() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    // Configure a one-hour minimum holding period on the real compliance engine.
+    h.compliance.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 3600,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+    });
+
+    // Minting registers alice as a holder at the current ledger timestamp.
+    h.token.mint(&alice, &100);
+
+    // A transfer immediately after minting is blocked: the holding period has
+    // not elapsed.
+    assert!(h.token.try_transfer(&alice, &bob, &10).is_err());
+
+    // Advance past the holding period; the transfer now succeeds.
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + 3601);
+    h.token.transfer(&alice, &bob, &10);
+    assert_eq!(h.token.balance(&bob), 10);
+    assert_eq!(h.token.balance(&alice), 90);
+}
+
+#[test]
 fn test_transfer_snapshots_dividends() {
     let h = setup();
     let alice = Address::generate(&h.env);
@@ -367,3 +400,114 @@ fn test_update_compliance_engine_admin_only() {
     h.approve_kyc(&alice);
     assert!(h.token.try_mint(&alice, &10).is_err());
 }
+
+// ── Buyback tests ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_buyback_successful() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+
+    // Mint 100 shares to alice
+    h.token.mint(&alice, &100);
+    assert_eq!(h.token.balance(&alice), 100);
+    assert_eq!(h.token.total_shares(), 1_000);
+
+    // Deposit dividend before buyback
+    h.token.deposit_dividend(&1_000); // 1 per share
+    assert_eq!(h.token.pending_dividend(&alice), 100);
+
+    // Admin buys back 50 shares
+    h.token.buyback(&alice, &50);
+
+    // Balance and total shares decreased
+    assert_eq!(h.token.balance(&alice), 50);
+    assert_eq!(h.token.total_shares(), 950);
+
+    // Alice still has her accrued dividend from before buyback
+    assert_eq!(h.token.pending_dividend(&alice), 100);
+
+    // She can still claim it
+    let claimed = h.token.claim_dividend(&alice);
+    assert_eq!(claimed, 100);
+}
+
+#[test]
+fn test_buyback_insufficient_shares() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+
+    h.token.mint(&alice, &50);
+    // Try to buy back 51 shares — should fail
+    assert!(h.token.try_buyback(&alice, &51).is_err());
+}
+
+#[test]
+fn test_buyback_removes_holder_on_zero_balance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &50);
+    h.token.mint(&bob, &30);
+    assert_eq!(h.token.holder_count(), 2);
+
+    // Buy back all of alice's shares
+    h.token.buyback(&alice, &50);
+
+    // Alice is removed from holder list
+    assert_eq!(h.token.holder_count(), 1);
+    let holders = h.token.get_holders(&0, &50);
+    assert_eq!(holders.len(), 1);
+    assert_eq!(holders.get(0).unwrap(), bob);
+}
+
+#[test]
+fn test_buyback_non_admin_rejected() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let attacker = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&attacker);
+
+    h.token.mint(&alice, &100);
+
+    // Attacker cannot buyback
+    let env2 = Env::default();
+    let token_id2 = env2.register(
+        PropertyToken,
+        (
+            attacker.clone(),
+            Address::generate(&env2),
+            Address::generate(&env2),
+            meta(&env2),
+        ),
+    );
+    let client2 = PropertyTokenClient::new(&env2, &token_id2);
+
+    // Should fail because attacker is not the admin
+    assert!(client2.try_buyback(&alice, &50).is_err());
+}
+
+#[test]
+fn test_buyback_rejects_kyc_unapproved_holder() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+
+    h.token.mint(&alice, &100);
+
+    // Revoke alice's KYC by spinning up a new registry with no approvals
+    let new_kyc_id = h.env.register(KycRegistry, ());
+    let new_kyc = KycRegistryClient::new(&h.env, &new_kyc_id);
+    new_kyc.initialize(&h.admin);
+    h.token.update_kyc_registry(&new_kyc_id);
+
+    // Buyback should now fail — alice no longer has active KYC
+    assert!(h.token.try_buyback(&alice, &50).is_err());
+}
+
