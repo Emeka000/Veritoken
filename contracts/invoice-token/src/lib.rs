@@ -63,8 +63,6 @@ impl InvoiceToken {
         compliance_engine: Address,
         meta: InvoiceMeta,
     ) {
-        // __constructor is only callable by the host at deploy time; it cannot be
-        // invoked again, so no "already initialized" guard is needed here.
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -115,16 +113,20 @@ impl InvoiceToken {
     // ── Metadata ─────────────────────────────────────────────────────────────
 
     pub fn get_meta(env: Env) -> InvoiceMeta {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().get(&DataKey::InvoiceMeta).unwrap()
     }
 
     pub fn name(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "Veritoken Invoice")
     }
     pub fn symbol(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "VTINV")
     }
-    pub fn decimals(_env: Env) -> u32 {
+    pub fn decimals(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         7
     }
 
@@ -133,6 +135,7 @@ impl InvoiceToken {
     /// Mint tokens to represent this invoice. Admin-only.
     /// face_value_usd in the meta determines the max supply.
     pub fn issue(env: Env, to: Address, amount: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
         if env
@@ -165,6 +168,7 @@ impl InvoiceToken {
 
     /// Mark invoice as settled and enable redemption burns.
     pub fn settle(env: Env) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         env.storage().instance().set(&DataKey::Settled, &true);
         env.events().publish((symbol_short!("settled"),), ());
@@ -172,6 +176,7 @@ impl InvoiceToken {
 
     /// Burn tokens upon settlement / redemption.
     pub fn redeem(env: Env, from: Address, amount: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
         if !env
             .storage()
@@ -202,10 +207,12 @@ impl InvoiceToken {
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::read_balance(&env, id)
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
         if env
             .storage()
@@ -271,9 +278,6 @@ impl InvoiceToken {
         Self::require_compliance(&env, &from, &to, amount);
 
         let allowance = Self::read_allowance(&env, from.clone(), spender.clone());
-        if allowance.amount < amount {
-            panic!("insufficient allowance");
-        }
         if allowance.expiration_ledger < env.ledger().sequence() {
             panic!("allowance expired");
         }
@@ -343,6 +347,7 @@ impl InvoiceToken {
     }
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let allowance = Self::read_allowance(&env, from, spender);
         if allowance.expiration_ledger < env.ledger().sequence() {
             0
@@ -352,6 +357,7 @@ impl InvoiceToken {
     }
 
     pub fn total_supply(env: Env) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::TotalSupply)
@@ -359,6 +365,7 @@ impl InvoiceToken {
     }
 
     pub fn is_settled(env: Env) -> bool {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::Settled)
@@ -390,6 +397,28 @@ impl InvoiceToken {
         if !client.can_transfer(holder, holder, &amount) {
             panic!("redemption blocked by compliance");
         }
+    }
+
+    fn require_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        if !client.can_transfer(from, to, &amount) {
+            panic!("transfer rejected by compliance engine");
+        }
+    }
+
+    fn register_holder(env: &Env, addr: &Address) {
+        let engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ComplianceEngine)
+            .unwrap();
+        let client = ComplianceEngineClient::new(env, &engine);
+        client.register_holder(addr);
     }
 
     fn read_balance(env: &Env, addr: Address) -> i128 {

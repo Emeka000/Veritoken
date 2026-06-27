@@ -11,6 +11,7 @@ struct Harness {
     kyc: KycRegistryClient<'static>,
     compliance: ComplianceEngineClient<'static>,
     verifier: Address,
+    #[allow(dead_code)]
     admin: Address,
 }
 

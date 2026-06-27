@@ -117,22 +117,27 @@ impl CarbonCreditToken {
     // ── Metadata ─────────────────────────────────────────────────────────────
 
     pub fn get_meta(env: Env) -> ProjectMeta {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().get(&DataKey::ProjectMeta).unwrap()
     }
 
     pub fn name(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "Veritoken Carbon Credit")
     }
     pub fn symbol(env: Env) -> String {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "VTCC")
     }
-    pub fn decimals(_env: Env) -> u32 {
+    pub fn decimals(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         0
     }
 
     // ── Issuance ─────────────────────────────────────────────────────────────
 
     pub fn mint(env: Env, to: Address, amount: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
         Self::check_mint_compliance(&env, &to);
@@ -153,6 +158,7 @@ impl CarbonCreditToken {
     // ── Transfer ─────────────────────────────────────────────────────────────
 
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
         Self::require_kyc(&env, &from);
         Self::require_kyc(&env, &to);
@@ -179,6 +185,7 @@ impl CarbonCreditToken {
         beneficiary: String,
         reason: String,
     ) -> RetirementReceipt {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         retiree.require_auth();
         let bal = Self::read_balance(&env, retiree.clone());
         if bal < amount {
@@ -229,6 +236,7 @@ impl CarbonCreditToken {
     // ── Read API ─────────────────────────────────────────────────────────────
 
     pub fn retirement_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::RetirementCount)
@@ -236,6 +244,7 @@ impl CarbonCreditToken {
     }
 
     pub fn get_receipt(env: Env, index: u32) -> RetirementReceipt {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .persistent()
             .get(&DataKey::Receipt(index))
@@ -244,6 +253,7 @@ impl CarbonCreditToken {
 
     /// Returns up to `limit` receipts starting at `start`. Limit is capped at MAX_PAGE_SIZE.
     pub fn get_receipts(env: Env, start: u32, limit: u32) -> Vec<RetirementReceipt> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let count: u32 = env
             .storage()
             .instance()
@@ -264,15 +274,18 @@ impl CarbonCreditToken {
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::read_balance(&env, id)
     }
     pub fn total_supply(env: Env) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0)
     }
     pub fn total_retired(env: Env) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
             .instance()
             .get(&DataKey::TotalRetired)
