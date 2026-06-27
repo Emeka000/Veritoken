@@ -142,6 +142,28 @@ fn test_redeem_insufficient_balance() {
 }
 
 #[test]
+fn test_redeem_blocked_when_compliance_paused() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&holder, &1_000);
+    h.token.settle();
+    h.compliance.pause();
+    assert!(h.token.try_redeem(&holder, &500).is_err());
+}
+
+#[test]
+fn test_redeem_blocked_for_blocklisted_holder() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&holder, &1_000);
+    h.token.settle();
+    h.compliance.add_to_blocklist(&holder);
+    assert!(h.token.try_redeem(&holder, &500).is_err());
+}
+
+#[test]
 fn test_non_deployer_cannot_reinitialize() {
     let h = setup();
     let attacker = Address::generate(&h.env);

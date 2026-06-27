@@ -140,7 +140,7 @@ impl PropertyToken {
         Self::require_admin(&env);
         Self::require_kyc(&env, &to);
         Self::require_tier(&env, &to);
-        Self::check_mint_compliance(&env, &to);
+        Self::check_mint_compliance(&env, &to, shares);
         if shares <= 0 {
             panic!("shares must be positive");
         }
@@ -324,18 +324,16 @@ impl PropertyToken {
         }
     }
 
-    fn check_mint_compliance(env: &Env, to: &Address) {
+    fn check_mint_compliance(env: &Env, to: &Address, shares: i128) {
         let engine: Address = env
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
             .unwrap();
         let client = ComplianceEngineClient::new(env, &engine);
-        if client.get_rules().paused {
-            panic!("mint blocked by compliance pause");
-        }
-        if client.is_blocklisted(to) {
-            panic!("mint recipient is blocklisted");
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if !client.can_transfer(&admin, to, &shares) {
+            panic!("mint blocked by compliance");
         }
     }
 

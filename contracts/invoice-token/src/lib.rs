@@ -181,7 +181,7 @@ impl InvoiceToken {
         {
             panic!("invoice not yet settled");
         }
-        Self::check_redeem_compliance(&env, &from);
+        Self::check_redeem_compliance(&env, &from, amount);
         let bal = Self::read_balance(&env, from.clone());
         if bal < amount {
             panic!("insufficient balance");
@@ -380,18 +380,15 @@ impl InvoiceToken {
         }
     }
 
-    fn check_redeem_compliance(env: &Env, holder: &Address) {
+    fn check_redeem_compliance(env: &Env, holder: &Address, amount: i128) {
         let engine: Address = env
             .storage()
             .instance()
             .get(&DataKey::ComplianceEngine)
             .unwrap();
         let client = ComplianceEngineClient::new(env, &engine);
-        if client.get_rules().paused {
-            panic!("redemption blocked by compliance pause");
-        }
-        if client.is_blocklisted(holder) {
-            panic!("redemption blocked for blocklisted holder");
+        if !client.can_transfer(holder, holder, &amount) {
+            panic!("redemption blocked by compliance");
         }
     }
 
