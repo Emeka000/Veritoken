@@ -192,3 +192,23 @@ fn test_instance_ttl_bump() {
     });
     assert_eq!(bumped_ttl, bump);
 }
+
+#[test]
+fn test_two_step_admin_transfer() {
+    let (env, client, _admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+    client.accept_admin();
+
+    // Verify new admin is set by calling add_verifier (admin-only)
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+}
+
+#[test]
+fn test_accept_admin_fails_when_no_pending() {
+    let (_env, client, _admin) = setup();
+    let res = client.try_accept_admin();
+    assert!(res.is_err());
+}

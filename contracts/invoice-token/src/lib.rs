@@ -35,6 +35,7 @@ pub enum InvoiceError {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     KycRegistry,
     ComplianceEngine,
     InvoiceMeta,
@@ -130,6 +131,21 @@ impl InvoiceToken {
             .set(&DataKey::ComplianceEngine, &new_engine);
         env.events()
             .publish((symbol_short!("upd_ce"),), new_engine);
+    }
+
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        Self::require_admin(&env);
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        env.events().publish((symbol_short!("proposed"),), new_admin);
+    }
+
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).expect("no pending admin");
+        pending.require_auth();
+        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────

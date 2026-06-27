@@ -72,6 +72,7 @@ impl RwaToken {
 
     // ── Admin ────────────────────────────────────────────────────────────────
 
+    #[deprecated(since = "0.2.0", note = "Use propose_admin and accept_admin instead")]
     pub fn set_admin(env: Env, new_admin: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
