@@ -20,6 +20,8 @@ mod test;
 #[cfg(test)]
 mod sep41_compliance;
 
+// ── Errors ────────────────────────────────────────────────────────────────────
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -31,7 +33,13 @@ pub enum RwaError {
     AllowanceExpired = 5,
     InsufficientAllowance = 6,
     AccountFrozen = 7,
+    /// Transfer amount is zero or negative.
+    NegativeAmount = 8,
+    /// Batch recipient list exceeds the maximum of 10 entries.
+    BatchTooLarge = 9,
 }
+
+// ── Public types ──────────────────────────────────────────────────────────────
 
 pub const META_LEGAL_ENTITY: &str = "legal_ent";
 pub const META_GOVERNING_LAW: &str = "gov_law";
@@ -54,13 +62,16 @@ pub struct RecipientEntry {
     pub amount: i128,
 }
 
+// ── Contract ──────────────────────────────────────────────────────────────────
+
 #[contract]
 pub struct RwaToken;
 
 #[contractimpl]
 impl RwaToken {
-    /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
-    /// Eliminates the deploy→initialize front-running window.
+    // ── Constructor ───────────────────────────────────────────────────────────
+
+    /// Deploy-time constructor — eliminates the deploy→initialize front-running window.
     #[allow(clippy::too_many_arguments)]
     pub fn __constructor(
         env: Env,
@@ -68,7 +79,7 @@ impl RwaToken {
         decimal: u32,
         name: String,
         symbol: String,
-        asset_type: String, // "invoice" | "property" | "carbon_credit"
+        asset_type: String,
         kyc_registry: Address,
         compliance_engine: Address,
         compliance_metadata: Option<ComplianceMetadata>,
@@ -79,7 +90,6 @@ impl RwaToken {
         {
             panic!("invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'");
         }
-
         admin::write_admin(&env, &admin);
         metadata::write_metadata(&env, decimal, name, symbol);
         metadata::write_asset_type(&env, asset_type);
@@ -102,7 +112,7 @@ impl RwaToken {
         }
     }
 
-    /// Legacy entry point — always panics to prevent post-deploy initialization.
+    /// Legacy entry point — always panics.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
@@ -117,7 +127,7 @@ impl RwaToken {
         panic_with_error!(env, RwaError::AlreadyInitialized);
     }
 
-    // ── Admin ────────────────────────────────────────────────────────────────
+    // ── Admin ─────────────────────────────────────────────────────────────────
 
     #[deprecated(since = "0.2.0", note = "Use propose_admin and accept_admin instead")]
     pub fn set_admin(env: Env, new_admin: Address) {
@@ -144,9 +154,8 @@ impl RwaToken {
             .publish((symbol_short!("upd_ce"),), new_engine);
     }
 
-    // ── Freeze / Unfreeze ────────────────────────────────────────────────────
+    // ── Freeze / Unfreeze ─────────────────────────────────────────────────────
 
-    /// Freeze an individual address, blocking it from sending or receiving tokens.
     pub fn freeze(env: Env, addr: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
@@ -154,7 +163,6 @@ impl RwaToken {
         env.events().publish((symbol_short!("frozen"),), addr);
     }
 
-    /// Unfreeze a previously frozen address, restoring transfer access.
     pub fn unfreeze(env: Env, addr: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
@@ -162,12 +170,11 @@ impl RwaToken {
         env.events().publish((symbol_short!("unfrozen"),), addr);
     }
 
-    /// Returns true if the given address is currently frozen.
     pub fn is_frozen(env: Env, addr: Address) -> bool {
         compliance::is_frozen(&env, &addr)
     }
 
-    // ── SEP-41 Token Interface ───────────────────────────────────────────────
+    // ── SEP-41 Token Interface ────────────────────────────────────────────────
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
         allowance::read_allowance(&env, from, spender).amount
@@ -181,13 +188,7 @@ impl RwaToken {
         expiration_ledger: u32,
     ) {
         from.require_auth();
-        allowance::write_allowance(
-            &env,
-            from.clone(),
-            spender.clone(),
-            amount,
-            expiration_ledger,
-        );
+        allowance::write_allowance(&env, from.clone(), spender.clone(), amount, expiration_ledger);
         env.events().publish(
             (symbol_short!("approve"), from, spender),
             (amount, expiration_ledger),
@@ -198,56 +199,31 @@ impl RwaToken {
         balance::read_balance(&env, id)
     }
 
+    /// Single transfer: validates sender + recipient against all invariants, then
+    /// applies balance changes and holder registration/deregistration atomically.
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
-        if amount <= 0 {
-            panic!("amount must be positive");
-        }
-        if compliance::is_frozen(&env, &from) || compliance::is_frozen(&env, &to) {
-            panic_with_error!(env, RwaError::AccountFrozen);
-        }
-        kyc::require_kyc(&env, &from);
-        kyc::require_kyc(&env, &to);
-        compliance::check_transfer(&env, &from, &to, amount);
-        let from_balance_before = balance::read_balance(&env, from.clone());
-        let to_balance_before = balance::read_balance(&env, to.clone());
-        balance::spend_balance(&env, from.clone(), amount);
-        balance::receive_balance(&env, to.clone(), amount);
-        if from != to {
-            if amount > 0 && to_balance_before == 0 {
-                compliance::register_holder(&env, &to);
-            }
-            if amount > 0 && from_balance_before == amount {
-                compliance::unregister_holder(&env, &from);
-            }
+        Self::validate_sender(&env, &from);
+        Self::validate_recipient(&env, &from, &to, amount);
+        let from_bal = balance::read_balance(&env, from.clone());
+        Self::apply_transfer_leg(&env, &from, &to, amount);
+        if from != to && from_bal == amount {
+            compliance::unregister_holder(&env, &from);
         }
         env.events()
             .publish((symbol_short!("transfer"), from, to), amount);
     }
 
+    /// Delegated single transfer: identical invariants to `transfer`, plus allowance deduction.
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
-        if amount <= 0 {
-            panic!("amount must be positive");
-        }
-        if compliance::is_frozen(&env, &from) || compliance::is_frozen(&env, &to) {
-            panic_with_error!(env, RwaError::AccountFrozen);
-        }
-        kyc::require_kyc(&env, &from);
-        kyc::require_kyc(&env, &to);
-        compliance::check_transfer(&env, &from, &to, amount);
-        let from_balance_before = balance::read_balance(&env, from.clone());
-        let to_balance_before = balance::read_balance(&env, to.clone());
+        Self::validate_sender(&env, &from);
+        Self::validate_recipient(&env, &from, &to, amount);
         allowance::spend_allowance(&env, from.clone(), spender, amount);
-        balance::spend_balance(&env, from.clone(), amount);
-        balance::receive_balance(&env, to.clone(), amount);
-        if from != to {
-            if amount > 0 && to_balance_before == 0 {
-                compliance::register_holder(&env, &to);
-            }
-            if amount > 0 && from_balance_before == amount {
-                compliance::unregister_holder(&env, &from);
-            }
+        let from_bal = balance::read_balance(&env, from.clone());
+        Self::apply_transfer_leg(&env, &from, &to, amount);
+        if from != to && from_bal == amount {
+            compliance::unregister_holder(&env, &from);
         }
         env.events()
             .publish((symbol_short!("transfer"), from, to), amount);
@@ -256,7 +232,7 @@ impl RwaToken {
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(env, RwaError::NegativeAmount);
         }
         if compliance::is_frozen(&env, &from) {
             panic_with_error!(env, RwaError::AccountFrozen);
@@ -264,7 +240,7 @@ impl RwaToken {
         kyc::require_kyc(&env, &from);
         let from_balance_before = balance::read_balance(&env, from.clone());
         balance::spend_balance(&env, from.clone(), amount);
-        if amount > 0 && from_balance_before == amount {
+        if from_balance_before == amount {
             compliance::unregister_holder(&env, &from);
         }
         let supply = balance::read_total_supply(&env);
@@ -275,7 +251,7 @@ impl RwaToken {
     pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
         spender.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(env, RwaError::NegativeAmount);
         }
         if compliance::is_frozen(&env, &from) {
             panic_with_error!(env, RwaError::AccountFrozen);
@@ -284,7 +260,7 @@ impl RwaToken {
         let from_balance_before = balance::read_balance(&env, from.clone());
         allowance::spend_allowance(&env, from.clone(), spender, amount);
         balance::spend_balance(&env, from.clone(), amount);
-        if amount > 0 && from_balance_before == amount {
+        if from_balance_before == amount {
             compliance::unregister_holder(&env, &from);
         }
         let supply = balance::read_total_supply(&env);
@@ -308,25 +284,21 @@ impl RwaToken {
         balance::read_total_supply(&env)
     }
 
-    // ── Minting (admin-only) ─────────────────────────────────────────────────
+    // ── Minting ───────────────────────────────────────────────────────────────
 
     pub fn mint(env: Env, to: Address, amount: i128) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!(env, RwaError::NegativeAmount);
         }
         kyc::require_kyc(&env, &to);
         let previous_balance = balance::read_balance(&env, to.clone());
-        // A mint that introduces a brand-new holder must satisfy the compliance
-        // engine (e.g. the max_holders cap, pause, blocklist), mirroring the
-        // transfer path. Without this, register_holder could push the holder
-        // count past max_holders.
-        if amount > 0 && previous_balance == 0 {
+        if previous_balance == 0 {
             compliance::check_transfer(&env, &to, &to, amount);
         }
         balance::receive_balance(&env, to.clone(), amount);
-        if amount > 0 && previous_balance == 0 {
+        if previous_balance == 0 {
             compliance::register_holder(&env, &to);
         }
         let supply = balance::read_total_supply(&env);
@@ -334,7 +306,111 @@ impl RwaToken {
         env.events().publish((symbol_short!("mint"), to), amount);
     }
 
-    // ── RWA Compliance Metadata ──────────────────────────────────────────────
+    // ── Batch Transfer ────────────────────────────────────────────────────────
+
+    /// Atomic batch transfer from `from` to up to 10 recipients.
+    ///
+    /// Invariants enforced before any state change:
+    /// - Recipient list must not exceed 10 entries.
+    /// - `from` must not be frozen and must have KYC approval.
+    /// - Each entry amount must be positive.
+    /// - Each recipient must not be frozen and must have KYC approval.
+    /// - Each leg must pass the compliance engine's `can_transfer` check.
+    /// - `from` must hold at least the sum of all entry amounts (total balance check).
+    ///
+    /// If any check fails, the entire batch is rejected with no state changes.
+    pub fn batch_transfer(env: Env, from: Address, recipients: Vec<RecipientEntry>) {
+        let len = recipients.len();
+        if len > 10 {
+            panic_with_error!(env, RwaError::BatchTooLarge);
+        }
+        from.require_auth();
+        Self::validate_sender(&env, &from);
+
+        // ── Validation pass (no state changes) ───────────────────────────────
+        let mut total_amount: i128 = 0;
+        for i in 0..len {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            Self::validate_recipient(&env, &from, &entry.to, entry.amount);
+            total_amount = total_amount
+                .checked_add(entry.amount)
+                .unwrap_or(i128::MAX);
+        }
+
+        // Total balance check — guarantees the execution pass cannot fail due
+        // to an insufficient-balance panic midway through, which would leave
+        // recipients-before-the-failure with tokens while later ones have none.
+        let from_balance = balance::read_balance(&env, from.clone());
+        if from_balance < total_amount {
+            panic_with_error!(env, RwaError::InsufficientBalance);
+        }
+
+        // ── Execution pass (guaranteed to succeed after validation) ───────────
+        for i in 0..len {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
+            env.events().publish(
+                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
+                entry.amount,
+            );
+        }
+
+        // Deregister sender if their balance was fully drained.
+        if balance::read_balance(&env, from.clone()) == 0 {
+            compliance::unregister_holder(&env, &from);
+        }
+    }
+
+    /// Atomic delegated batch transfer: identical invariants to `batch_transfer`,
+    /// plus a single upfront allowance deduction for the total transferred amount.
+    pub fn batch_transfer_from(
+        env: Env,
+        spender: Address,
+        from: Address,
+        recipients: Vec<RecipientEntry>,
+    ) {
+        let len = recipients.len();
+        if len > 10 {
+            panic_with_error!(env, RwaError::BatchTooLarge);
+        }
+        spender.require_auth();
+        Self::validate_sender(&env, &from);
+
+        // ── Validation pass ───────────────────────────────────────────────────
+        let mut total_amount: i128 = 0;
+        for i in 0..len {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            Self::validate_recipient(&env, &from, &entry.to, entry.amount);
+            total_amount = total_amount
+                .checked_add(entry.amount)
+                .unwrap_or(i128::MAX);
+        }
+
+        // Balance check before any mutation.
+        let from_balance = balance::read_balance(&env, from.clone());
+        if from_balance < total_amount {
+            panic_with_error!(env, RwaError::InsufficientBalance);
+        }
+
+        // Consume the entire allowance for the batch upfront.
+        allowance::spend_allowance(&env, from.clone(), spender, total_amount);
+
+        // ── Execution pass ────────────────────────────────────────────────────
+        for i in 0..len {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
+            env.events().publish(
+                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
+                entry.amount,
+            );
+        }
+
+        if balance::read_balance(&env, from.clone()) == 0 {
+            compliance::unregister_holder(&env, &from);
+        }
+    }
+
+    // ── RWA Compliance Metadata ───────────────────────────────────────────────
 
     pub fn asset_type(env: Env) -> String {
         metadata::read_asset_type(&env)
@@ -371,55 +447,43 @@ impl RwaToken {
         }
     }
 
-    /// Batch transfer tokens from `from` to up to 10 recipients in a single transaction.
-    /// All KYC and compliance checks run per-recipient before any balance changes occur.
-    /// Panics if the recipient count exceeds 10 or any compliance/KYC check fails.
-    pub fn batch_transfer(env: Env, from: Address, recipients: Vec<RecipientEntry>) {
-        if recipients.len() > 10 {
-            panic!("batch_transfer: exceeds maximum of 10 recipients");
-        }
-        from.require_auth();
-        if compliance::is_frozen(&env, &from) {
-            panic_with_error!(env, RwaError::AccountFrozen);
-        }
-        kyc::require_kyc(&env, &from);
-
-        let len = recipients.len();
-        // Validate all recipients before executing any balance changes.
-        for i in 0..len {
-            let entry = recipients.get(i).expect("recipient index out of bounds");
-            if entry.amount <= 0 {
-                panic!("amount must be positive");
-            }
-            if compliance::is_frozen(&env, &entry.to) {
-                panic_with_error!(env, RwaError::AccountFrozen);
-            }
-            kyc::require_kyc(&env, &entry.to);
-            compliance::check_transfer(&env, &from, &entry.to, entry.amount);
-        }
-
-        // Execute all balance changes.
-        for i in 0..len {
-            let entry = recipients.get(i).expect("recipient index out of bounds");
-            let to_balance_before = balance::read_balance(&env, entry.to.clone());
-            balance::spend_balance(&env, from.clone(), entry.amount);
-            balance::receive_balance(&env, entry.to.clone(), entry.amount);
-            if from != entry.to && to_balance_before == 0 {
-                compliance::register_holder(&env, &entry.to);
-            }
-            env.events().publish(
-                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
-                entry.amount,
-            );
-        }
-
-        // Unregister from if balance dropped to zero.
-        if balance::read_balance(&env, from.clone()) == 0 {
-            compliance::unregister_holder(&env, &from);
-        }
-    }
-
     pub fn version(env: Env) -> String {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// Validates the sending side of a transfer: frozen check + KYC.
+    /// Called once per transfer (or once per batch, not per entry).
+    fn validate_sender(env: &Env, from: &Address) {
+        if compliance::is_frozen(env, from) {
+            panic_with_error!(env, RwaError::AccountFrozen);
+        }
+        kyc::require_kyc(env, from);
+    }
+
+    /// Validates one recipient entry: positive amount, frozen check, KYC, and
+    /// the compliance engine's `can_transfer` rule set.
+    fn validate_recipient(env: &Env, from: &Address, to: &Address, amount: i128) {
+        if amount <= 0 {
+            panic_with_error!(env, RwaError::NegativeAmount);
+        }
+        if compliance::is_frozen(env, to) {
+            panic_with_error!(env, RwaError::AccountFrozen);
+        }
+        kyc::require_kyc(env, to);
+        compliance::check_transfer(env, from, to, amount);
+    }
+
+    /// Applies the balance mutations and recipient holder registration for one
+    /// transfer leg. Does NOT handle sender deregistration — callers must do
+    /// that after all legs are applied so batch semantics remain correct.
+    fn apply_transfer_leg(env: &Env, from: &Address, to: &Address, amount: i128) {
+        let to_balance_before = balance::read_balance(env, to.clone());
+        balance::spend_balance(env, from.clone(), amount);
+        balance::receive_balance(env, to.clone(), amount);
+        if from != to && to_balance_before == 0 {
+            compliance::register_holder(env, to);
+        }
     }
 }

@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use crate::{ComplianceMetadata, RwaToken, RwaTokenClient, RwaError, META_ISIN, META_LEGAL_ENTITY};
+use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, RwaError, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, String};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
 
 #[allow(dead_code)]
 struct Harness {
@@ -157,6 +157,7 @@ fn test_transfer_blocked_by_max_amount() {
         max_holders: 0,
         require_same_jurisdiction: false,
         paused: false,
+        allowlist_mode: false,
     });
 
     assert!(h.token.try_transfer(&alice, &bob, &51).is_err());
@@ -180,6 +181,7 @@ fn test_max_holder_cap_blocks_new_holder_and_maintains_count() {
         max_holders: 2,
         require_same_jurisdiction: false,
         paused: false,
+        allowlist_mode: false,
     });
 
     h.token.mint(&alice, &1_000);
@@ -214,6 +216,7 @@ fn test_max_holders_blocks_new_holders_via_token() {
         max_holders: 2,
         require_same_jurisdiction: false,
         paused: false,
+        allowlist_mode: false,
     });
 
     // First two distinct holders fill the cap.
@@ -422,4 +425,409 @@ fn test_version_returns_nonempty() {
     let h = setup();
     let v = h.token.version();
     assert!(v.len() > 0);
+}
+
+// ── batch_transfer ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_batch_transfer_two_recipients_success() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &1_000);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 300 },
+        RecipientEntry { to: carol.clone(), amount: 200 },
+    ];
+    h.token.batch_transfer(&alice, &recipients);
+
+    assert_eq!(h.token.balance(&alice), 500);
+    assert_eq!(h.token.balance(&bob), 300);
+    assert_eq!(h.token.balance(&carol), 200);
+}
+
+#[test]
+fn test_batch_transfer_state_unchanged_on_kyc_failure() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env); // no KYC
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 300 },
+        RecipientEntry { to: carol.clone(), amount: 200 }, // fails here
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    // No state changes: balances untouched
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+}
+
+#[test]
+fn test_batch_transfer_state_unchanged_on_insufficient_balance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &400); // only 400, but batch asks for 300 + 200 = 500
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 300 },
+        RecipientEntry { to: carol.clone(), amount: 200 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    // State must be fully unchanged
+    assert_eq!(h.token.balance(&alice), 400);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+}
+
+#[test]
+fn test_batch_transfer_state_unchanged_on_frozen_recipient() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &1_000);
+    h.token.freeze(&carol);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 300 },
+        RecipientEntry { to: carol.clone(), amount: 200 }, // frozen → validation fails
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+}
+
+#[test]
+fn test_batch_transfer_frozen_sender_rejected() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+    h.token.freeze(&alice);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+    assert_eq!(h.token.balance(&alice), 1_000);
+}
+
+#[test]
+fn test_batch_transfer_exceeds_max_recipients() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &10_000);
+
+    // Build 11 recipients — must be rejected before any transfer
+    let mut recipients = soroban_sdk::Vec::new(&h.env);
+    for _ in 0..11 {
+        let addr = Address::generate(&h.env);
+        h.approve_kyc(&addr);
+        recipients.push_back(RecipientEntry { to: addr, amount: 1 });
+    }
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+    assert_eq!(h.token.balance(&alice), 10_000);
+}
+
+#[test]
+fn test_batch_transfer_zero_amount_entry_rejected() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 0 }, // invalid
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+}
+
+#[test]
+fn test_batch_transfer_sender_unregistered_when_balance_drained() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &500);
+    assert_eq!(h.compliance.holder_count(), 1);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 500 }, // drains alice
+    ];
+    h.token.batch_transfer(&alice, &recipients);
+
+    assert_eq!(h.token.balance(&alice), 0);
+    assert_eq!(h.token.balance(&bob), 500);
+    // alice deregistered, bob registered → still 1 holder
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+#[test]
+fn test_batch_transfer_holder_count_correct_after_batch() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 400 },
+        RecipientEntry { to: carol.clone(), amount: 300 },
+    ];
+    h.token.batch_transfer(&alice, &recipients);
+
+    // alice (300 remaining), bob (400), carol (300) → 3 holders
+    assert_eq!(h.compliance.holder_count(), 3);
+    assert_eq!(h.token.balance(&alice), 300);
+}
+
+#[test]
+fn test_batch_transfer_compliance_paused_state_unchanged() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+    h.compliance.pause();
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+}
+
+#[test]
+fn test_batch_transfer_max_amount_rule_per_entry() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    h.compliance.set_rules(&ComplianceRules {
+        max_transfer_amount: 50,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+    });
+
+    // Single entry of 51 exceeds per-transfer cap
+    let recipients_over = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 51 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients_over).is_err());
+
+    // Single entry within cap succeeds
+    let recipients_ok = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 50 },
+    ];
+    h.token.batch_transfer(&alice, &recipients_ok);
+    assert_eq!(h.token.balance(&bob), 50);
+}
+
+// ── batch_transfer_from ───────────────────────────────────────────────────────
+
+#[test]
+fn test_batch_transfer_from_success() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &1_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &600, &expiration);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 300 },
+        RecipientEntry { to: carol.clone(), amount: 200 },
+    ];
+    h.token.batch_transfer_from(&spender, &alice, &recipients);
+
+    assert_eq!(h.token.balance(&alice), 500);
+    assert_eq!(h.token.balance(&bob), 300);
+    assert_eq!(h.token.balance(&carol), 200);
+    // Allowance reduced by total = 500; 600 - 500 = 100 remaining
+    assert_eq!(h.token.allowance(&alice, &spender), 100);
+}
+
+#[test]
+fn test_batch_transfer_from_insufficient_allowance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &100, &expiration); // only 100
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 200 }, // needs 200
+    ];
+    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.allowance(&alice, &spender), 100); // unchanged
+}
+
+#[test]
+fn test_batch_transfer_from_expired_allowance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    let expiration = h.env.ledger().sequence() + 10;
+    h.token.approve(&alice, &spender, &500, &expiration);
+
+    h.env.ledger().set_sequence_number(expiration + 1);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+    ];
+    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+}
+
+#[test]
+fn test_batch_transfer_from_state_unchanged_on_kyc_failure() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env); // no KYC
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &600, &expiration);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 300 },
+        RecipientEntry { to: carol.clone(), amount: 200 }, // KYC fails
+    ];
+    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    // Allowance must also be unchanged (consumed only after validation pass)
+    assert_eq!(h.token.allowance(&alice, &spender), 600);
+}
+
+#[test]
+fn test_batch_transfer_from_allowance_consumed_atomically() {
+    // Ensure allowance is consumed for the full batch total, not incrementally
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.token.mint(&alice, &1_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &500, &expiration);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 250 },
+        RecipientEntry { to: carol.clone(), amount: 250 },
+    ];
+    h.token.batch_transfer_from(&spender, &alice, &recipients);
+
+    assert_eq!(h.token.allowance(&alice, &spender), 0);
+    assert_eq!(h.token.balance(&alice), 500);
+    assert_eq!(h.token.balance(&bob), 250);
+    assert_eq!(h.token.balance(&carol), 250);
+}
+
+#[test]
+fn test_batch_transfer_from_exceeds_max_recipients() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &10_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &10_000, &expiration);
+
+    let mut recipients = soroban_sdk::Vec::new(&h.env);
+    for _ in 0..11 {
+        let addr = Address::generate(&h.env);
+        h.approve_kyc(&addr);
+        recipients.push_back(RecipientEntry { to: addr, amount: 1 });
+    }
+    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert_eq!(h.token.balance(&alice), 10_000);
 }
