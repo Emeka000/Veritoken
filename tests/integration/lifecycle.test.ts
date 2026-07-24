@@ -167,6 +167,7 @@ const WASM_DIR = path.resolve(
 
 describe("KYC Registry lifecycle", () => {
   let kycContractId: string;
+  const verifier = Keypair.random();
 
   beforeAll(async () => {
     const wasmHash = await uploadWasm(
@@ -181,12 +182,8 @@ describe("KYC Registry lifecycle", () => {
       )
     );
     kycContractId = await deployContract(admin, wasmHash, [adminAddr]);
-  });
 
-  it("deploys KYC registry and admin can add a verifier", async () => {
-    expect(kycContractId).toBeTruthy();
-
-    const verifier = Keypair.random();
+    // Register verifier once for all tests in this suite
     const verifierAddr = xdr.ScVal.scvAddress(
       xdr.ScAddress.scAddressTypeAccount(
         xdr.PublicKey.publicKeyTypeEd25519(
@@ -194,10 +191,168 @@ describe("KYC Registry lifecycle", () => {
         )
       )
     );
-
     await invokeContract(admin, kycContractId, "add_verifier", [verifierAddr]);
+  });
+
+  it("deploys KYC registry and admin can add a verifier", async () => {
+    expect(kycContractId).toBeTruthy();
     const count = await invokeContract(admin, kycContractId, "verifier_count", []);
     expect(count.u32()).toBe(1);
+  });
+
+  it("lifecycle_count starts at zero for an unknown subject", async () => {
+    const unknown = Keypair.random();
+    const unknownAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(unknown.rawPublicKey()))
+      )
+    );
+    const result = await invokeContract(
+      admin,
+      kycContractId,
+      "get_lifecycle_count",
+      [unknownAddr]
+    );
+    expect(result.u32()).toBe(0);
+  });
+
+  it("approve records a lifecycle entry and advances count to 1", async () => {
+    const subject = Keypair.random();
+    const subjectAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
+      )
+    );
+    const verifierAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
+      )
+    );
+
+    await invokeContract(verifier, kycContractId, "approve", [
+      verifierAddr,
+      subjectAddr,
+      xdr.ScVal.scvU32(1),
+      xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
+      xdr.ScVal.scvString("US"),
+    ]);
+
+    const countResult = await invokeContract(
+      admin,
+      kycContractId,
+      "get_lifecycle_count",
+      [subjectAddr]
+    );
+    expect(countResult.u32()).toBe(1);
+  });
+
+  it("approve → revoke produces two lifecycle entries", async () => {
+    const subject = Keypair.random();
+    const subjectAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
+      )
+    );
+    const verifierAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
+      )
+    );
+
+    await invokeContract(verifier, kycContractId, "approve", [
+      verifierAddr,
+      subjectAddr,
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
+      xdr.ScVal.scvString("DE"),
+    ]);
+    await invokeContract(verifier, kycContractId, "revoke", [
+      verifierAddr,
+      subjectAddr,
+    ]);
+
+    const countResult = await invokeContract(
+      admin,
+      kycContractId,
+      "get_lifecycle_count",
+      [subjectAddr]
+    );
+    expect(countResult.u32()).toBe(2);
+  });
+
+  it("get_lifecycle_history returns a non-empty vec after transitions", async () => {
+    const subject = Keypair.random();
+    const subjectAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
+      )
+    );
+    const verifierAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
+      )
+    );
+
+    await invokeContract(verifier, kycContractId, "approve", [
+      verifierAddr,
+      subjectAddr,
+      xdr.ScVal.scvU32(2),
+      xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
+      xdr.ScVal.scvString("GB"),
+    ]);
+
+    const histResult = await invokeContract(
+      admin,
+      kycContractId,
+      "get_lifecycle_history",
+      [subjectAddr, xdr.ScVal.scvU32(0), xdr.ScVal.scvU32(10)]
+    );
+    // Should be a vec with at least one element
+    expect(histResult.vec()!.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("is_approved returns true after approve and false after revoke", async () => {
+    const subject = Keypair.random();
+    const subjectAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
+      )
+    );
+    const verifierAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
+      )
+    );
+
+    await invokeContract(verifier, kycContractId, "approve", [
+      verifierAddr,
+      subjectAddr,
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
+      xdr.ScVal.scvString("JP"),
+    ]);
+    const approved = await invokeContract(admin, kycContractId, "is_approved", [subjectAddr]);
+    expect(approved.bool()).toBe(true);
+
+    await invokeContract(verifier, kycContractId, "revoke", [verifierAddr, subjectAddr]);
+    const revoked = await invokeContract(admin, kycContractId, "is_approved", [subjectAddr]);
+    expect(revoked.bool()).toBe(false);
+  });
+
+  it("get_lifecycle_history returns empty vec for unknown subject", async () => {
+    const unknown = Keypair.random();
+    const unknownAddr = xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(unknown.rawPublicKey()))
+      )
+    );
+    const histResult = await invokeContract(
+      admin,
+      kycContractId,
+      "get_lifecycle_history",
+      [unknownAddr, xdr.ScVal.scvU32(0), xdr.ScVal.scvU32(10)]
+    );
+    expect(histResult.vec()!.length).toBe(0);
   });
 });
 
