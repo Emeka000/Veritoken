@@ -9,6 +9,10 @@ use soroban_sdk::{
     Address, Env, String, Vec,
 };
 
+// Version tag stored on every lifecycle transition so readers can detect
+// schema changes across contract upgrades.
+const LIFECYCLE_MODEL_VERSION: u32 = 1;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -22,6 +26,16 @@ pub enum KycError {
     EmptyAdminList = 7,
 }
 
+/// Composite key for per-subject lifecycle history entries.
+/// Stored as a `contracttype` struct so it serialises deterministically
+/// as part of a `DataKey` enum variant.
+#[contracttype]
+#[derive(Clone)]
+pub struct HistoryKey {
+    pub subject: Address,
+    pub seq: u32,
+}
+
 #[contracttype]
 pub enum DataKey {
     AdminList,
@@ -33,7 +47,50 @@ pub enum DataKey {
     ExpiryIndexCount,
     VerifierLog(u32),
     VerifierLogCount,
+    /// Subject address list per verifier, used by bulk-revoke and paged queries.
+    VerifierSubjects(Address),
+    /// A single lifecycle transition for a subject, keyed by (subject, seq).
+    LifecycleEntry(HistoryKey),
+    /// Monotonically increasing count of transitions recorded for a subject.
+    LifecycleCount(Address),
 }
+
+// ── Lifecycle model ───────────────────────────────────────────────────────────
+
+/// What kind of state change produced a lifecycle transition.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum KycTransitionKind {
+    Approve,
+    Reject,
+    Revoke,
+    TierUpdate,
+}
+
+/// An immutable, versioned record of a single KYC state change.
+///
+/// Every field is a snapshot captured at the moment of the transition, so
+/// the full state at any point in history can be reconstructed by replaying
+/// the sequence forward from seq 0.
+#[contracttype]
+#[derive(Clone)]
+pub struct KycTransition {
+    /// 0-based sequence number scoped to a single subject.
+    pub seq: u32,
+    /// Lifecycle model version; currently always `1`.
+    pub model_version: u32,
+    pub kind: KycTransitionKind,
+    pub verifier: Address,
+    pub timestamp: u64,
+    /// Tier snapshot at this point in the lifecycle.
+    pub tier: u32,
+    /// Expiry snapshot (0 = no expiry).
+    pub expiry: u64,
+    /// ISO-3166-1 alpha-2 jurisdiction snapshot.
+    pub jurisdiction: String,
+}
+
+// ── Supporting storage types ──────────────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone)]
@@ -77,9 +134,13 @@ pub struct KycRecord {
     pub jurisdiction: String,
 }
 
+// ── TTL constants ─────────────────────────────────────────────────────────────
+
 const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP: u32 = 30 * DAY_IN_LEDGERS;
 const THRESHOLD: u32 = BUMP - DAY_IN_LEDGERS;
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct KycRegistry;
@@ -110,7 +171,11 @@ impl KycRegistry {
     /// The pending admin accepts and is added to the AdminList.
     pub fn accept_admin(env: Env) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).expect("no pending admin");
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("no pending admin");
         pending.require_auth();
         let mut list = Self::admin_list(&env);
         if !list.contains(&pending) {
@@ -150,7 +215,8 @@ impl KycRegistry {
             }
         }
         env.storage().instance().set(&DataKey::AdminList, &new_list);
-        env.events().publish((symbol_short!("admin_rem"),), admin_to_remove);
+        env.events()
+            .publish((symbol_short!("admin_rem"),), admin_to_remove);
     }
 
     /// Returns the list of current admins.
@@ -220,13 +286,12 @@ impl KycRegistry {
             .unwrap_or(0)
     }
 
-    /// Returns the full verifier list (internal use; prefer `get_verifiers` from external callers).
+    /// Returns the full verifier list.
     pub fn verifier_list_pub(env: Env) -> Vec<Address> {
         Self::verifier_list(&env)
     }
 
     /// Paged verifier query. `start` is a zero-based offset; `limit` is capped at 20.
-    /// Returns an empty vec when `start` is beyond the end of the list.
     pub fn get_verifiers(env: Env, start: u32, limit: u32) -> Vec<Address> {
         let cap: u32 = 20;
         let effective_limit = if limit > cap { cap } else { limit };
@@ -257,6 +322,15 @@ impl KycRegistry {
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
         Self::validate_jurisdiction(&env, &jurisdiction);
+        Self::record_transition(
+            &env,
+            &subject,
+            KycTransitionKind::Approve,
+            &verifier,
+            tier,
+            expiry,
+            jurisdiction.clone(),
+        );
         let record = KycRecord {
             status: KycStatus::Approved,
             verifier: verifier.clone(),
@@ -270,7 +344,11 @@ impl KycRegistry {
             .publish((symbol_short!("approved"), subject), verifier);
     }
 
-    pub fn approve_batch(env: Env, verifier: Address, subjects: Vec<(Address, u32, u64, String)>) {
+    pub fn approve_batch(
+        env: Env,
+        verifier: Address,
+        subjects: Vec<(Address, u32, u64, String)>,
+    ) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
@@ -278,14 +356,25 @@ impl KycRegistry {
             panic!("batch too large");
         }
         for (subject, tier, expiry, jurisdiction) in subjects.iter() {
+            Self::validate_jurisdiction(&env, &jurisdiction);
+            Self::record_transition(
+                &env,
+                &subject,
+                KycTransitionKind::Approve,
+                &verifier,
+                tier,
+                expiry,
+                jurisdiction.clone(),
+            );
             let record = KycRecord {
                 status: KycStatus::Approved,
                 verifier: verifier.clone(),
-                tier: *tier,
-                expiry: *expiry,
+                tier,
+                expiry,
                 jurisdiction: jurisdiction.clone(),
             };
             Self::write_record(&env, subject.clone(), record);
+            Self::append_log(&env, &verifier, &subject, "approve");
             env.events()
                 .publish((symbol_short!("approved"), subject.clone()), verifier.clone());
         }
@@ -297,6 +386,15 @@ impl KycRegistry {
         Self::require_verifier(&env, &verifier);
         let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
         record.status = KycStatus::Rejected;
+        Self::record_transition(
+            &env,
+            &subject,
+            KycTransitionKind::Reject,
+            &verifier,
+            record.tier,
+            record.expiry,
+            record.jurisdiction.clone(),
+        );
         Self::write_record(&env, subject.clone(), record);
         Self::append_log(&env, &verifier, &subject, "reject");
         env.events()
@@ -309,6 +407,15 @@ impl KycRegistry {
         Self::require_verifier(&env, &verifier);
         let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
         record.status = KycStatus::Revoked;
+        Self::record_transition(
+            &env,
+            &subject,
+            KycTransitionKind::Revoke,
+            &verifier,
+            record.tier,
+            record.expiry,
+            record.jurisdiction.clone(),
+        );
         Self::write_record(&env, subject.clone(), record);
         Self::append_log(&env, &verifier, &subject, "revoke");
         env.events()
@@ -325,7 +432,17 @@ impl KycRegistry {
         for subject in subjects.iter() {
             let mut record = Self::get_record_or_default(&env, subject.clone(), &verifier);
             record.status = KycStatus::Revoked;
+            Self::record_transition(
+                &env,
+                &subject,
+                KycTransitionKind::Revoke,
+                &verifier,
+                record.tier,
+                record.expiry,
+                record.jurisdiction.clone(),
+            );
             Self::write_record(&env, subject.clone(), record);
+            Self::append_log(&env, &verifier, &subject, "revoke");
             env.events()
                 .publish((symbol_short!("revoked"), subject.clone()), verifier.clone());
         }
@@ -333,7 +450,6 @@ impl KycRegistry {
 
     /// Update only the `tier` field of an existing, Approved KYC record.
     /// Requires verifier auth and the subject must currently be Approved.
-    /// Emits a `tier_upd` event with `(subject, new_tier)`.
     pub fn update_tier(env: Env, verifier: Address, subject: Address, new_tier: u32) {
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
@@ -346,9 +462,62 @@ impl KycRegistry {
             panic!("subject is not currently approved");
         }
         record.tier = new_tier;
+        Self::record_transition(
+            &env,
+            &subject,
+            KycTransitionKind::TierUpdate,
+            &verifier,
+            new_tier,
+            record.expiry,
+            record.jurisdiction.clone(),
+        );
         Self::write_record(&env, subject.clone(), record);
         env.events()
             .publish((symbol_short!("tier_upd"), subject), new_tier);
+    }
+
+    /// Bulk-revoke all subjects approved by a specific verifier. Admin-only.
+    /// Capped at 50 subjects per call; call again if more subjects remain.
+    pub fn revoke_all_by_verifier(env: Env, caller: Address, verifier: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        let key = DataKey::VerifierSubjects(verifier.clone());
+        let subjects: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let cap: u32 = 50;
+        let count = subjects.len().min(cap);
+        let mut revoked: u32 = 0;
+        for i in 0..count {
+            let subject = subjects.get(i).unwrap();
+            let sk = DataKey::KycStatus(subject.clone());
+            if let Some(mut record) =
+                env.storage().persistent().get::<DataKey, KycRecord>(&sk)
+            {
+                if record.status == KycStatus::Approved {
+                    record.status = KycStatus::Revoked;
+                    Self::record_transition(
+                        &env,
+                        &subject,
+                        KycTransitionKind::Revoke,
+                        &verifier,
+                        record.tier,
+                        record.expiry,
+                        record.jurisdiction.clone(),
+                    );
+                    env.storage().persistent().set(&sk, &record);
+                    env.storage().persistent().extend_ttl(&sk, THRESHOLD, BUMP);
+                    env.events()
+                        .publish((symbol_short!("revoked"), subject), verifier.clone());
+                    revoked += 1;
+                }
+            }
+        }
+        env.events()
+            .publish((symbol_short!("bulk_rvkd"),), (verifier, revoked));
     }
 
     // ── Queries ──────────────────────────────────────────────────────────────
@@ -370,28 +539,31 @@ impl KycRegistry {
         }
     }
 
-    pub fn get_record(env: &Env, addr: Address) -> KycRecord {
+    /// Returns the current canonical KYC record for a subject.
+    pub fn get_record(env: Env, addr: Address) -> KycRecord {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        env.storage()
-            .persistent()
-            .get(&DataKey::KycStatus(addr))
-            .expect("no KYC record")
+        Self::fetch_record(&env, addr)
     }
 
     pub fn get_tier(env: Env, addr: Address) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::get_record(&env, addr).tier
+        Self::fetch_record(&env, addr).tier
     }
 
-    /// Returns a paginated list of addresses approved by a given verifier.
+    /// Paged query of subjects approved by a given verifier.
     /// `start` is a zero-based offset; `limit` is capped at 50.
-    /// Returns an empty vec when `start` is beyond the end of the list.
-    pub fn get_subjects_by_verifier(env: Env, verifier: Address, start: u32, limit: u32) -> Vec<Address> {
+    pub fn get_subjects_by_verifier(
+        env: Env,
+        verifier: Address,
+        start: u32,
+        limit: u32,
+    ) -> Vec<Address> {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let cap: u32 = 50;
         let effective_limit = if limit > cap { cap } else { limit };
         let key = DataKey::VerifierSubjects(verifier);
-        let subjects = env.storage()
+        let subjects = env
+            .storage()
             .persistent()
             .get::<DataKey, Vec<Address>>(&key)
             .unwrap_or_else(|| Vec::new(&env));
@@ -407,7 +579,127 @@ impl KycRegistry {
         result
     }
 
-    // ── Internals ────────────────────────────────────────────────────────────
+    // ── Lifecycle history queries ─────────────────────────────────────────────
+
+    /// Returns the number of lifecycle transitions recorded for a subject.
+    pub fn get_lifecycle_count(env: Env, subject: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::LifecycleCount(subject))
+            .unwrap_or(0)
+    }
+
+    /// Paged lifecycle history for a subject. `start` is a zero-based seq offset;
+    /// `limit` is capped at 50. Entries are ordered by ascending seq number.
+    pub fn get_lifecycle_history(
+        env: Env,
+        subject: Address,
+        start: u32,
+        limit: u32,
+    ) -> Vec<KycTransition> {
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::LifecycleCount(subject.clone()))
+            .unwrap_or(0);
+        let cap: u32 = 50;
+        let effective_limit = if limit > cap { cap } else { limit };
+        let end = (start + effective_limit).min(count);
+        let mut result: Vec<KycTransition> = Vec::new(&env);
+        for seq in start..end {
+            let key = DataKey::LifecycleEntry(HistoryKey {
+                subject: subject.clone(),
+                seq,
+            });
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, KycTransition>(&key)
+            {
+                result.push_back(entry);
+            }
+        }
+        result
+    }
+
+    // ── Expiring records ──────────────────────────────────────────────────────
+
+    pub fn get_expiring_soon(
+        env: Env,
+        within_seconds: u64,
+        start: u32,
+        limit: u32,
+    ) -> Vec<ExpiringRecord> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ExpiryIndexCount)
+            .unwrap_or(0);
+        let now = env.ledger().timestamp();
+        let capped = limit.min(50);
+        let mut out: Vec<ExpiringRecord> = Vec::new(&env);
+        let mut i = start;
+        while i < count && out.len() < capped {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, ExpiryEntry>(&DataKey::ExpiryIndex(i))
+            {
+                if entry.expiry > now && entry.expiry <= now + within_seconds {
+                    if let Some(record) = env.storage().persistent().get::<DataKey, KycRecord>(
+                        &DataKey::KycStatus(entry.addr.clone()),
+                    ) {
+                        if record.status == KycStatus::Approved {
+                            out.push_back(ExpiringRecord {
+                                addr: entry.addr,
+                                record,
+                            });
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    // ── Verifier log ─────────────────────────────────────────────────────────
+
+    pub fn verifier_log_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::VerifierLogCount)
+            .unwrap_or(0)
+    }
+
+    /// Paged verifier log. `start` is a zero-based offset; `limit` is capped at 50.
+    pub fn get_verifier_log(env: Env, start: u32, limit: u32) -> Vec<VerifierLogEntry> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VerifierLogCount)
+            .unwrap_or(0);
+        let capped = limit.min(50);
+        let end = (start + capped).min(count);
+        let mut out = Vec::new(&env);
+        for i in start..end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, VerifierLogEntry>(&DataKey::VerifierLog(i))
+            {
+                out.push_back(entry);
+            }
+        }
+        out
+    }
+
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, env!("CARGO_PKG_VERSION"))
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn validate_jurisdiction(env: &Env, jurisdiction: &String) {
         if jurisdiction.len() != 2 {
@@ -415,7 +707,11 @@ impl KycRegistry {
         }
         let mut bytes = [0u8; 2];
         jurisdiction.copy_into_slice(&mut bytes);
-        if bytes[0] < b'A' || bytes[0] > b'Z' || bytes[1] < b'A' || bytes[1] > b'Z' {
+        if bytes[0] < b'A'
+            || bytes[0] > b'Z'
+            || bytes[1] < b'A'
+            || bytes[1] > b'Z'
+        {
             panic_with_error!(env, KycError::InvalidJurisdiction);
         }
     }
@@ -461,6 +757,15 @@ impl KycRegistry {
             })
     }
 
+    /// Internal fetch that panics when no record exists.
+    fn fetch_record(env: &Env, addr: Address) -> KycRecord {
+        env.storage()
+            .persistent()
+            .get(&DataKey::KycStatus(addr))
+            .expect("no KYC record")
+    }
+
+    /// Append a human-readable action to the global verifier log.
     fn append_log(env: &Env, verifier: &Address, subject: &Address, action: &str) {
         let count: u32 = env
             .storage()
@@ -481,117 +786,91 @@ impl KycRegistry {
             .set(&DataKey::VerifierLogCount, &(count + 1));
     }
 
+    /// Append a structured lifecycle transition entry for a subject.
+    ///
+    /// Each call increments the per-subject sequence counter atomically and
+    /// stores the entry under `DataKey::LifecycleEntry` so that history is
+    /// deterministically replayable from seq 0.
+    fn record_transition(
+        env: &Env,
+        subject: &Address,
+        kind: KycTransitionKind,
+        verifier: &Address,
+        tier: u32,
+        expiry: u64,
+        jurisdiction: String,
+    ) {
+        let count_key = DataKey::LifecycleCount(subject.clone());
+        let seq: u32 = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&count_key)
+            .unwrap_or(0);
+
+        let transition = KycTransition {
+            seq,
+            model_version: LIFECYCLE_MODEL_VERSION,
+            kind,
+            verifier: verifier.clone(),
+            timestamp: env.ledger().timestamp(),
+            tier,
+            expiry,
+            jurisdiction,
+        };
+
+        let entry_key = DataKey::LifecycleEntry(HistoryKey {
+            subject: subject.clone(),
+            seq,
+        });
+        env.storage().persistent().set(&entry_key, &transition);
+        env.storage()
+            .persistent()
+            .extend_ttl(&entry_key, THRESHOLD, BUMP);
+
+        env.storage().persistent().set(&count_key, &(seq + 1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&count_key, THRESHOLD, BUMP);
+    }
+
+    /// Persist a KYC record and maintain the expiry index and
+    /// verifier-to-subjects index as side effects.
     fn write_record(env: &Env, addr: Address, record: KycRecord) {
         if record.status == KycStatus::Approved && record.expiry != 0 {
-            let idx: u32 = env.storage().instance().get(&DataKey::ExpiryIndexCount).unwrap_or(0);
-            let entry = ExpiryEntry { expiry: record.expiry, addr: addr.clone() };
+            let idx: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ExpiryIndexCount)
+                .unwrap_or(0);
+            let entry = ExpiryEntry {
+                expiry: record.expiry,
+                addr: addr.clone(),
+            };
             let ik = DataKey::ExpiryIndex(idx);
             env.storage().persistent().set(&ik, &entry);
             env.storage().persistent().extend_ttl(&ik, THRESHOLD, BUMP);
-            env.storage().instance().set(&DataKey::ExpiryIndexCount, &(idx + 1));
+            env.storage()
+                .instance()
+                .set(&DataKey::ExpiryIndexCount, &(idx + 1));
         }
-        let key = DataKey::KycStatus(addr);
+
+        let key = DataKey::KycStatus(addr.clone());
         env.storage().persistent().set(&key, &record);
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
-        
-        // Update the verifier-to-subjects index
+
+        // Keep the verifier-to-subjects reverse index up to date.
         let verifier_key = DataKey::VerifierSubjects(record.verifier.clone());
-        let mut subjects = env.storage()
+        let mut subjects = env
+            .storage()
             .persistent()
             .get::<DataKey, Vec<Address>>(&verifier_key)
             .unwrap_or_else(|| Vec::new(env));
-        
         if !subjects.contains(&addr) {
             subjects.push_back(addr);
             env.storage().persistent().set(&verifier_key, &subjects);
-            env.storage().persistent().extend_ttl(&verifier_key, THRESHOLD, BUMP);
-        }
-    }
-
-    /// Bulk-revoke all subjects approved by a specific verifier. Admin-only.
-    /// Capped at 50 subjects per call; call again if more subjects remain.
-    /// Emits a `revoked` event per subject and a `bulk_rvkd` event with the count.
-    pub fn revoke_all_by_verifier(env: Env, verifier: Address) {
-        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
-        let key = DataKey::VerifierSubjects(verifier.clone());
-        let subjects: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(&env));
-        let cap: u32 = 50;
-        let count = subjects.len().min(cap);
-        let mut revoked: u32 = 0;
-        for i in 0..count {
-            let subject = subjects.get(i).unwrap();
-            let sk = DataKey::KycStatus(subject.clone());
-            if let Some(mut record) = env.storage().persistent().get::<DataKey, KycRecord>(&sk) {
-                if record.status == KycStatus::Approved {
-                    record.status = KycStatus::Revoked;
-                    env.storage().persistent().set(&sk, &record);
-                    env.storage().persistent().extend_ttl(&sk, THRESHOLD, BUMP);
-                    env.events().publish((symbol_short!("revoked"), subject), verifier.clone());
-                    revoked += 1;
-                }
-            }
-        }
-        env.events().publish((symbol_short!("bulk_rvkd"),), (verifier, revoked));
-    }
-
-    pub fn get_expiring_soon(env: Env, within_seconds: u64, start: u32, limit: u32) -> Vec<ExpiringRecord> {
-        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let count: u32 = env.storage().instance().get(&DataKey::ExpiryIndexCount).unwrap_or(0);
-        let now = env.ledger().timestamp();
-        let capped = limit.min(50);
-        let mut out: Vec<ExpiringRecord> = Vec::new(&env);
-        let mut i = start;
-        while i < count && out.len() < capped {
-            if let Some(entry) = env.storage().persistent().get::<DataKey, ExpiryEntry>(&DataKey::ExpiryIndex(i)) {
-                if entry.expiry > now && entry.expiry <= now + within_seconds {
-                    if let Some(record) = env.storage().persistent().get::<DataKey, KycRecord>(&DataKey::KycStatus(entry.addr.clone())) {
-                        if record.status == KycStatus::Approved {
-                            out.push_back(ExpiringRecord { addr: entry.addr, record });
-                        }
-                    }
-                }
-            }
-            i += 1;
-        }
-        out
-    }
-
-    // ── Verifier log ─────────────────────────────────────────────────────────
-
-    pub fn verifier_log_count(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::VerifierLogCount)
-            .unwrap_or(0)
-    }
-
-    pub fn get_verifier_log(env: Env, start: u32, limit: u32) -> Vec<VerifierLogEntry> {
-        let count: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::VerifierLogCount)
-            .unwrap_or(0);
-        let capped = limit.min(50);
-        let end = (start + capped).min(count);
-        let mut out = Vec::new(&env);
-        for i in start..end {
-            if let Some(entry) = env
-                .storage()
+            env.storage()
                 .persistent()
-                .get::<DataKey, VerifierLogEntry>(&DataKey::VerifierLog(i))
-            {
-                out.push_back(entry);
-            }
+                .extend_ttl(&verifier_key, THRESHOLD, BUMP);
         }
-        out
-    }
-
-    pub fn version(env: Env) -> String {
-        String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 }

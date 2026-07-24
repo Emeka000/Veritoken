@@ -1,11 +1,12 @@
 #![cfg(test)]
 
-use crate::{KycError, KycRegistry, KycRegistryClient};
+use crate::{KycError, KycRegistry, KycRegistryClient, KycStatus, KycTransitionKind};
 use soroban_sdk::{
     testutils::{storage::Instance, Address as _, Ledger},
-    Address, Env, Error, String,
+    Address, Env, Error, String, Vec,
 };
 
+// ── Setup helper ──────────────────────────────────────────────────────────────
 
 fn setup() -> (Env, KycRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -17,6 +18,12 @@ fn setup() -> (Env, KycRegistryClient<'static>, Address) {
     (env, client, admin)
 }
 
+fn js(env: &Env, code: &str) -> String {
+    String::from_str(env, code)
+}
+
+// ── Original happy-path tests (preserved) ────────────────────────────────────
+
 #[test]
 fn test_add_verifier_and_approve() {
     let (env, client, admin) = setup();
@@ -26,10 +33,9 @@ fn test_add_verifier_and_approve() {
     client.add_verifier(&admin, &verifier);
     assert!(!client.is_approved(&subject));
 
-    client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "US"));
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
     assert!(client.is_approved(&subject));
     assert_eq!(client.get_tier(&subject), 1);
-
 }
 
 #[test]
@@ -44,8 +50,7 @@ fn test_unauthorized_verifier_cannot_approve() {
     let (env, client, _admin) = setup();
     let rogue = Address::generate(&env);
     let subject = Address::generate(&env);
-    // rogue was never added as a verifier — must return an error
-    let res = client.try_approve(&rogue, &subject, &0, &0, &String::from_str(&env, "US"));
+    let res = client.try_approve(&rogue, &subject, &0, &0, &js(&env, "US"));
     assert!(res.is_err());
 }
 
@@ -57,16 +62,9 @@ fn test_expiry_makes_approval_inactive() {
     client.add_verifier(&admin, &verifier);
 
     env.ledger().set_timestamp(1_000);
-    client.approve(
-        &verifier,
-        &subject,
-        &0,
-        &2_000, // expires at ts 2000
-        &String::from_str(&env, "US"),
-    );
+    client.approve(&verifier, &subject, &0, &2_000, &js(&env, "US"));
     assert!(client.is_approved(&subject));
 
-    // Advance past expiry
     env.ledger().set_timestamp(3_000);
     assert!(!client.is_approved(&subject));
 }
@@ -77,24 +75,23 @@ fn test_revoke_and_reject() {
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
-    client.approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
     assert!(client.is_approved(&subject));
 
     client.revoke(&verifier, &subject);
     assert!(!client.is_approved(&subject));
 
-    // Re-approve then reject
-    client.approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
     assert!(client.is_approved(&subject));
     client.reject(&verifier, &subject);
     assert!(!client.is_approved(&subject));
 
     let record = client.get_record(&subject);
-    assert!(matches!(record.status, crate::KycStatus::Rejected));
+    assert!(matches!(record.status, KycStatus::Rejected));
     assert_eq!(record.verifier, verifier);
     assert_eq!(record.tier, 0);
     assert_eq!(record.expiry, 0);
-    assert_eq!(record.jurisdiction, String::from_str(&env, "US"));
+    assert_eq!(record.jurisdiction, js(&env, "US"));
 }
 
 #[test]
@@ -108,11 +105,11 @@ fn test_reject_without_existing_record_creates_terminal_record() {
 
     assert!(!client.is_approved(&subject));
     let record = client.get_record(&subject);
-    assert!(matches!(record.status, crate::KycStatus::Rejected));
+    assert!(matches!(record.status, KycStatus::Rejected));
     assert_eq!(record.verifier, verifier);
     assert_eq!(record.tier, 0);
     assert_eq!(record.expiry, 0);
-    assert_eq!(record.jurisdiction, String::from_str(&env, ""));
+    assert_eq!(record.jurisdiction, js(&env, ""));
 }
 
 #[test]
@@ -126,11 +123,11 @@ fn test_revoke_without_existing_record_creates_terminal_record() {
 
     assert!(!client.is_approved(&subject));
     let record = client.get_record(&subject);
-    assert!(matches!(record.status, crate::KycStatus::Revoked));
+    assert!(matches!(record.status, KycStatus::Revoked));
     assert_eq!(record.verifier, verifier);
     assert_eq!(record.tier, 0);
     assert_eq!(record.expiry, 0);
-    assert_eq!(record.jurisdiction, String::from_str(&env, ""));
+    assert_eq!(record.jurisdiction, js(&env, ""));
 }
 
 #[test]
@@ -141,7 +138,7 @@ fn test_remove_verifier() {
     client.remove_verifier(&admin, &verifier);
 
     let subject = Address::generate(&env);
-    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "US"));
+    let res = client.try_approve(&verifier, &subject, &0, &0, &js(&env, "US"));
     assert!(res.is_err());
 }
 
@@ -149,33 +146,24 @@ fn test_remove_verifier() {
 fn test_instance_ttl_bump() {
     let (env, client, admin) = setup();
     let contract_id = client.address.clone();
-
-    // const DAY_IN_LEDGERS: u32 = 17280; const BUMP: u32 = 30 * DAY_IN_LEDGERS;
     let bump = 30 * 17280;
-
     let verifier = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
 
-    let initial_ttl = env.as_contract(&contract_id, || {
-        env.storage().instance().get_ttl()
-    });
+    let initial_ttl = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert_eq!(initial_ttl, bump);
 
     env.ledger().with_mut(|l| {
         l.sequence_number += 30_000;
     });
 
-    let reduced_ttl = env.as_contract(&contract_id, || {
-        env.storage().instance().get_ttl()
-    });
+    let reduced_ttl = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert_eq!(reduced_ttl, initial_ttl - 30_000);
 
     let subject = Address::generate(&env);
     client.is_approved(&subject);
 
-    let bumped_ttl = env.as_contract(&contract_id, || {
-        env.storage().instance().get_ttl()
-    });
+    let bumped_ttl = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert_eq!(bumped_ttl, bump);
 }
 
@@ -187,7 +175,6 @@ fn test_two_step_admin_transfer() {
     client.propose_admin(&admin, &new_admin);
     client.accept_admin();
 
-    // new_admin is now in the AdminList — add_verifier should succeed
     let verifier = Address::generate(&env);
     client.add_verifier(&new_admin, &verifier);
 }
@@ -208,16 +195,13 @@ fn test_add_and_remove_admin() {
     let admins = client.get_admins();
     assert_eq!(admins.len(), 2);
 
-    // second_admin can now add a verifier
     let verifier = Address::generate(&env);
     client.add_verifier(&second_admin, &verifier);
 
-    // remove second_admin
     client.remove_admin(&admin, &second_admin);
     let admins = client.get_admins();
     assert_eq!(admins.len(), 1);
 
-    // second_admin can no longer add verifiers
     let verifier2 = Address::generate(&env);
     let res = client.try_add_verifier(&second_admin, &verifier2);
     assert_eq!(res, Err(Ok(Error::from(KycError::NotAdmin))));
@@ -228,11 +212,7 @@ fn test_remove_last_admin_panics() {
     let (env, client, admin) = setup();
     let second = Address::generate(&env);
     client.add_admin(&admin, &second);
-
-    // Remove admin, leaving second
     client.remove_admin(&admin, &admin);
-
-    // Removing second (the last one) must fail
     let res = client.try_remove_admin(&second, &second);
     assert_eq!(res, Err(Ok(Error::from(KycError::EmptyAdminList))));
 }
@@ -252,7 +232,7 @@ fn test_approve_rejects_jurisdiction_too_long() {
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
-    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "USA"));
+    let res = client.try_approve(&verifier, &subject, &0, &0, &js(&env, "USA"));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
@@ -262,7 +242,7 @@ fn test_approve_rejects_jurisdiction_lowercase() {
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
-    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "us"));
+    let res = client.try_approve(&verifier, &subject, &0, &0, &js(&env, "us"));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
@@ -272,7 +252,7 @@ fn test_approve_rejects_jurisdiction_with_digit() {
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
-    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, "U1"));
+    let res = client.try_approve(&verifier, &subject, &0, &0, &js(&env, "U1"));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
@@ -282,7 +262,7 @@ fn test_approve_rejects_empty_jurisdiction() {
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
-    let res = client.try_approve(&verifier, &subject, &0, &0, &String::from_str(&env, ""));
+    let res = client.try_approve(&verifier, &subject, &0, &0, &js(&env, ""));
     assert_eq!(res, Err(Ok(Error::from(KycError::InvalidJurisdiction))));
 }
 
@@ -292,7 +272,7 @@ fn test_approve_accepts_valid_iso_code() {
     let verifier = Address::generate(&env);
     let subject = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
-    client.approve(&verifier, &subject, &1, &0, &String::from_str(&env, "DE"));
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "DE"));
     assert!(client.is_approved(&subject));
 }
 
@@ -301,4 +281,770 @@ fn test_version_returns_nonempty() {
     let (_, client, _) = setup();
     let v = client.version();
     assert!(v.len() > 0);
+}
+
+// ── Lifecycle history: ordering and content ───────────────────────────────────
+
+#[test]
+fn test_lifecycle_count_starts_at_zero() {
+    let (env, client, _admin) = setup();
+    let subject = Address::generate(&env);
+    assert_eq!(client.get_lifecycle_count(&subject), 0);
+    assert_eq!(client.get_lifecycle_history(&subject, &0, &10).len(), 0);
+}
+
+#[test]
+fn test_approve_creates_lifecycle_entry() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+
+    assert_eq!(client.get_lifecycle_count(&subject), 1);
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+    assert_eq!(hist.len(), 1);
+    let entry = hist.get(0).unwrap();
+    assert_eq!(entry.seq, 0);
+    assert_eq!(entry.kind, KycTransitionKind::Approve);
+    assert_eq!(entry.tier, 1);
+    assert_eq!(entry.expiry, 0);
+    assert_eq!(entry.jurisdiction, js(&env, "US"));
+    assert_eq!(entry.verifier, verifier);
+}
+
+#[test]
+fn test_lifecycle_model_version_is_one() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    let hist = client.get_lifecycle_history(&subject, &0, &1);
+    assert_eq!(hist.get(0).unwrap().model_version, 1);
+}
+
+#[test]
+fn test_lifecycle_seq_increments_across_transitions() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+    client.reject(&verifier, &subject);
+
+    assert_eq!(client.get_lifecycle_count(&subject), 4);
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+    assert_eq!(hist.get(0).unwrap().seq, 0);
+    assert_eq!(hist.get(1).unwrap().seq, 1);
+    assert_eq!(hist.get(2).unwrap().seq, 2);
+    assert_eq!(hist.get(3).unwrap().seq, 3);
+}
+
+#[test]
+fn test_lifecycle_kinds_are_correct_in_order() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.reject(&verifier, &subject);
+
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+    assert_eq!(hist.get(0).unwrap().kind, KycTransitionKind::Approve);
+    assert_eq!(hist.get(1).unwrap().kind, KycTransitionKind::Revoke);
+    assert_eq!(hist.get(2).unwrap().kind, KycTransitionKind::Approve);
+    assert_eq!(hist.get(3).unwrap().kind, KycTransitionKind::Reject);
+}
+
+#[test]
+fn test_tier_update_creates_lifecycle_entry() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &1, &5000, &js(&env, "GB"));
+    client.update_tier(&verifier, &subject, &2);
+
+    assert_eq!(client.get_lifecycle_count(&subject), 2);
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+    let tier_entry = hist.get(1).unwrap();
+    assert_eq!(tier_entry.kind, KycTransitionKind::TierUpdate);
+    assert_eq!(tier_entry.tier, 2);
+    // expiry is preserved from the record at the time of the tier update
+    assert_eq!(tier_entry.expiry, 5000);
+    assert_eq!(tier_entry.jurisdiction, js(&env, "GB"));
+}
+
+// ── Lifecycle history: state reconstruction ───────────────────────────────────
+
+#[test]
+fn test_last_lifecycle_entry_matches_current_record() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &2, &9000, &js(&env, "FR"));
+    client.update_tier(&verifier, &subject, &3);
+    client.revoke(&verifier, &subject);
+
+    let count = client.get_lifecycle_count(&subject);
+    assert_eq!(count, 3);
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+
+    // seq 0: Approve with tier=2, expiry=9000
+    assert_eq!(hist.get(0).unwrap().kind, KycTransitionKind::Approve);
+    assert_eq!(hist.get(0).unwrap().tier, 2);
+    assert_eq!(hist.get(0).unwrap().expiry, 9000);
+
+    // seq 1: TierUpdate preserves expiry=9000, advances tier to 3
+    assert_eq!(hist.get(1).unwrap().kind, KycTransitionKind::TierUpdate);
+    assert_eq!(hist.get(1).unwrap().tier, 3);
+    assert_eq!(hist.get(1).unwrap().expiry, 9000);
+
+    // seq 2: Revoke — tier and expiry are snapshots of the moment of revocation
+    let last = hist.get(2).unwrap();
+    assert_eq!(last.kind, KycTransitionKind::Revoke);
+    assert_eq!(last.tier, 3);
+
+    // The reconstructed state from the last history entry matches the live record.
+    let record = client.get_record(&subject);
+    assert!(matches!(record.status, KycStatus::Revoked));
+    assert_eq!(record.tier, last.tier);
+    assert_eq!(record.jurisdiction, last.jurisdiction);
+}
+
+#[test]
+fn test_reject_without_prior_record_lifecycle_entry_is_empty_jurisdiction() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.reject(&verifier, &subject);
+
+    let hist = client.get_lifecycle_history(&subject, &0, &1);
+    assert_eq!(hist.get(0).unwrap().kind, KycTransitionKind::Reject);
+    assert_eq!(hist.get(0).unwrap().tier, 0);
+    assert_eq!(hist.get(0).unwrap().expiry, 0);
+    assert_eq!(hist.get(0).unwrap().jurisdiction, js(&env, ""));
+}
+
+// ── Lifecycle history: pagination ─────────────────────────────────────────────
+
+#[test]
+fn test_lifecycle_history_pagination() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    // Create 5 transitions: approve, revoke, approve, revoke, approve
+    for _ in 0..2 {
+        client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+        client.revoke(&verifier, &subject);
+    }
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+
+    assert_eq!(client.get_lifecycle_count(&subject), 5);
+
+    // Page 1: [0, 1, 2]
+    let page1 = client.get_lifecycle_history(&subject, &0, &3);
+    assert_eq!(page1.len(), 3);
+    assert_eq!(page1.get(0).unwrap().seq, 0);
+    assert_eq!(page1.get(2).unwrap().seq, 2);
+
+    // Page 2: [3, 4]
+    let page2 = client.get_lifecycle_history(&subject, &3, &3);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().seq, 3);
+    assert_eq!(page2.get(1).unwrap().seq, 4);
+
+    // Start beyond end returns empty
+    let empty = client.get_lifecycle_history(&subject, &10, &5);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_lifecycle_history_limit_cap_at_50() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    // Create 10 transitions
+    for i in 0..5u32 {
+        client.approve(&verifier, &subject, &i, &0, &js(&env, "US"));
+        client.revoke(&verifier, &subject);
+    }
+
+    // Requesting more than 50 is capped but doesn't panic
+    let hist = client.get_lifecycle_history(&subject, &0, &999);
+    assert_eq!(hist.len(), 10); // only 10 exist
+}
+
+// ── Duplicate / idempotent transitions ────────────────────────────────────────
+
+#[test]
+fn test_double_approve_records_both_transitions() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+    client.approve(&verifier, &subject, &2, &0, &js(&env, "DE"));
+
+    // Both transitions are stored; the record reflects the latest
+    assert_eq!(client.get_lifecycle_count(&subject), 2);
+    let record = client.get_record(&subject);
+    assert_eq!(record.tier, 2);
+    assert_eq!(record.jurisdiction, js(&env, "DE"));
+}
+
+#[test]
+fn test_double_revoke_records_both_transitions() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    client.revoke(&verifier, &subject); // second revoke on already-revoked subject
+
+    assert_eq!(client.get_lifecycle_count(&subject), 3);
+    let record = client.get_record(&subject);
+    assert!(matches!(record.status, KycStatus::Revoked));
+}
+
+#[test]
+fn test_double_reject_records_both_transitions() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.reject(&verifier, &subject);
+    client.reject(&verifier, &subject);
+
+    assert_eq!(client.get_lifecycle_count(&subject), 2);
+    let record = client.get_record(&subject);
+    assert!(matches!(record.status, KycStatus::Rejected));
+}
+
+// ── Expiry edge cases ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_approved_at_boundary_expiry_is_active() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    env.ledger().set_timestamp(1_000);
+    // expiry == current timestamp: the check is `expiry < now`, so expiry == now is still active
+    client.approve(&verifier, &subject, &0, &1_000, &js(&env, "US"));
+    // is_approved checks: expiry != 0 && expiry < now → 1000 < 1000 is false → still approved
+    assert!(client.is_approved(&subject));
+}
+
+#[test]
+fn test_approved_one_second_past_expiry_is_inactive() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    env.ledger().set_timestamp(1_000);
+    client.approve(&verifier, &subject, &0, &1_000, &js(&env, "US"));
+
+    env.ledger().set_timestamp(1_001);
+    assert!(!client.is_approved(&subject));
+}
+
+#[test]
+fn test_no_expiry_never_expires() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    env.ledger().set_timestamp(1);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+
+    // Advance time dramatically
+    env.ledger().set_timestamp(u64::MAX / 2);
+    assert!(client.is_approved(&subject));
+}
+
+#[test]
+fn test_revoked_after_expiry_is_still_inactive() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    env.ledger().set_timestamp(1_000);
+    client.approve(&verifier, &subject, &0, &2_000, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+
+    // Both the revoked status AND expiry independently make is_approved false
+    env.ledger().set_timestamp(3_000);
+    assert!(!client.is_approved(&subject));
+}
+
+#[test]
+fn test_get_expiring_soon_returns_only_approved_within_window() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    env.ledger().set_timestamp(1_000);
+    // s1 expires in 100 seconds (within a 200-second window)
+    client.approve(&verifier, &s1, &0, &1_100, &js(&env, "US"));
+    // s2 expires in 500 seconds (outside a 200-second window)
+    client.approve(&verifier, &s2, &0, &1_500, &js(&env, "US"));
+    // s3 is already revoked
+    client.approve(&verifier, &s3, &0, &1_050, &js(&env, "US"));
+    client.revoke(&verifier, &s3);
+
+    let expiring = client.get_expiring_soon(&200, &0, &50);
+    assert_eq!(expiring.len(), 1);
+    assert_eq!(expiring.get(0).unwrap().addr, s1);
+}
+
+#[test]
+fn test_expiry_lifecycle_entry_captures_expiry_value() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    env.ledger().set_timestamp(500);
+    client.approve(&verifier, &subject, &1, &9999, &js(&env, "US"));
+
+    let hist = client.get_lifecycle_history(&subject, &0, &1);
+    assert_eq!(hist.get(0).unwrap().expiry, 9999);
+}
+
+// ── Jurisdiction validation ───────────────────────────────────────────────────
+
+#[test]
+fn test_various_valid_jurisdictions() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    for code in ["US", "DE", "GB", "JP", "AU", "ZZ"].iter() {
+        let subject = Address::generate(&env);
+        client.approve(&verifier, &subject, &0, &0, &js(&env, code));
+        assert!(client.is_approved(&subject));
+    }
+}
+
+#[test]
+fn test_jurisdiction_change_via_re_approve_is_recorded() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "DE"));
+
+    let record = client.get_record(&subject);
+    assert_eq!(record.jurisdiction, js(&env, "DE"));
+
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+    assert_eq!(hist.get(0).unwrap().jurisdiction, js(&env, "US"));
+    assert_eq!(hist.get(2).unwrap().jurisdiction, js(&env, "DE"));
+}
+
+#[test]
+fn test_batch_approve_rejects_invalid_jurisdiction() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let subject = Address::generate(&env);
+    let mut subjects = Vec::new(&env);
+    subjects.push_back((subject, 0u32, 0u64, js(&env, "xx"))); // lowercase → invalid
+
+    let res = client.try_approve_batch(&verifier, &subjects);
+    assert!(res.is_err());
+}
+
+// ── Batch operations and lifecycle ────────────────────────────────────────────
+
+#[test]
+fn test_approve_batch_records_lifecycle_for_each_subject() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let mut subjects = Vec::new(&env);
+    subjects.push_back((s1.clone(), 1u32, 0u64, js(&env, "US")));
+    subjects.push_back((s2.clone(), 2u32, 0u64, js(&env, "DE")));
+    client.approve_batch(&verifier, &subjects);
+
+    assert_eq!(client.get_lifecycle_count(&s1), 1);
+    assert_eq!(client.get_lifecycle_count(&s2), 1);
+
+    let h1 = client.get_lifecycle_history(&s1, &0, &1);
+    let h2 = client.get_lifecycle_history(&s2, &0, &1);
+
+    assert_eq!(h1.get(0).unwrap().kind, KycTransitionKind::Approve);
+    assert_eq!(h1.get(0).unwrap().tier, 1);
+    assert_eq!(h2.get(0).unwrap().tier, 2);
+    assert_eq!(h2.get(0).unwrap().jurisdiction, js(&env, "DE"));
+}
+
+#[test]
+fn test_revoke_batch_records_lifecycle_for_each_subject() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    client.approve(&verifier, &s1, &0, &0, &js(&env, "US"));
+    client.approve(&verifier, &s2, &0, &0, &js(&env, "US"));
+
+    let mut subjects = Vec::new(&env);
+    subjects.push_back(s1.clone());
+    subjects.push_back(s2.clone());
+    client.revoke_batch(&verifier, &subjects);
+
+    assert_eq!(client.get_lifecycle_count(&s1), 2);
+    assert_eq!(client.get_lifecycle_count(&s2), 2);
+
+    let h1 = client.get_lifecycle_history(&s1, &1, &1);
+    assert_eq!(h1.get(0).unwrap().kind, KycTransitionKind::Revoke);
+}
+
+// ── Admin and verifier privilege regressions ──────────────────────────────────
+
+#[test]
+fn test_non_admin_cannot_revoke_all_by_verifier() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let rogue = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let res = client.try_revoke_all_by_verifier(&rogue, &verifier);
+    assert_eq!(res, Err(Ok(Error::from(KycError::NotAdmin))));
+}
+
+#[test]
+fn test_revoke_all_by_verifier_revokes_approved_subjects() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    client.approve(&verifier, &s1, &0, &0, &js(&env, "US"));
+    client.approve(&verifier, &s2, &0, &0, &js(&env, "US"));
+    client.approve(&verifier, &s3, &0, &0, &js(&env, "US"));
+    // Revoke s3 first so it should not double-count
+    client.revoke(&verifier, &s3);
+
+    client.revoke_all_by_verifier(&admin, &verifier);
+
+    assert!(!client.is_approved(&s1));
+    assert!(!client.is_approved(&s2));
+    assert!(!client.is_approved(&s3)); // was already revoked
+}
+
+#[test]
+fn test_revoke_all_by_verifier_records_lifecycle() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let subject = Address::generate(&env);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+    client.revoke_all_by_verifier(&admin, &verifier);
+
+    let count = client.get_lifecycle_count(&subject);
+    assert_eq!(count, 2); // Approve + Revoke
+    let hist = client.get_lifecycle_history(&subject, &1, &1);
+    assert_eq!(hist.get(0).unwrap().kind, KycTransitionKind::Revoke);
+}
+
+#[test]
+fn test_verifier_cannot_approve_after_removal() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.remove_verifier(&admin, &verifier);
+
+    let subject = Address::generate(&env);
+    let res = client.try_approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    assert_eq!(res, Err(Ok(Error::from(KycError::NotVerifier))));
+}
+
+#[test]
+fn test_removed_verifier_cannot_revoke() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.remove_verifier(&admin, &verifier);
+
+    let res = client.try_revoke(&verifier, &subject);
+    assert_eq!(res, Err(Ok(Error::from(KycError::NotVerifier))));
+}
+
+#[test]
+fn test_update_tier_requires_approved_status() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+
+    // Should panic because subject is Revoked, not Approved
+    let res = client.try_update_tier(&verifier, &subject, &2);
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_non_verifier_cannot_update_tier() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let rogue = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+
+    let res = client.try_update_tier(&rogue, &subject, &2);
+    assert_eq!(res, Err(Ok(Error::from(KycError::NotVerifier))));
+}
+
+// ── Verifier subject index ────────────────────────────────────────────────────
+
+#[test]
+fn test_get_subjects_by_verifier() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    client.approve(&verifier, &s1, &0, &0, &js(&env, "US"));
+    client.approve(&verifier, &s2, &0, &0, &js(&env, "US"));
+
+    let subjects = client.get_subjects_by_verifier(&verifier, &0, &50);
+    assert_eq!(subjects.len(), 2);
+}
+
+#[test]
+fn test_get_subjects_by_verifier_pagination() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    client.approve(&verifier, &s1, &0, &0, &js(&env, "US"));
+    client.approve(&verifier, &s2, &0, &0, &js(&env, "US"));
+    client.approve(&verifier, &s3, &0, &0, &js(&env, "US"));
+
+    let page1 = client.get_subjects_by_verifier(&verifier, &0, &2);
+    assert_eq!(page1.len(), 2);
+
+    let page2 = client.get_subjects_by_verifier(&verifier, &2, &2);
+    assert_eq!(page2.len(), 1);
+
+    let empty = client.get_subjects_by_verifier(&verifier, &10, &2);
+    assert_eq!(empty.len(), 0);
+}
+
+// ── Verifier log ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_verifier_log_entries_recorded() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.reject(&verifier, &subject);
+
+    assert_eq!(client.verifier_log_count(), 4);
+
+    let log = client.get_verifier_log(&0, &10);
+    assert_eq!(log.len(), 4);
+    assert_eq!(log.get(0).unwrap().action, js(&env, "approve"));
+    assert_eq!(log.get(1).unwrap().action, js(&env, "revoke"));
+    assert_eq!(log.get(2).unwrap().action, js(&env, "approve"));
+    assert_eq!(log.get(3).unwrap().action, js(&env, "reject"));
+}
+
+#[test]
+fn test_verifier_log_pagination() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    for _ in 0..5u32 {
+        let s = Address::generate(&env);
+        client.approve(&verifier, &s, &0, &0, &js(&env, "US"));
+    }
+    assert_eq!(client.verifier_log_count(), 5);
+
+    let page = client.get_verifier_log(&2, &2);
+    assert_eq!(page.len(), 2);
+}
+
+// ── Property / consistency tests ──────────────────────────────────────────────
+
+/// The lifecycle count must equal the number of transitions actually stored,
+/// regardless of which sequence of operations produced them.
+#[test]
+fn test_lifecycle_count_consistent_with_history_length() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let ops: &[fn(&KycRegistryClient, &Address, &Address, &Env)] = &[
+        |c, v, s, e| c.approve(v, s, &0, &0, &String::from_str(e, "US")),
+        |c, v, s, _| c.revoke(v, s),
+        |c, v, s, e| c.approve(v, s, &1, &0, &String::from_str(e, "DE")),
+        |c, v, s, _| c.reject(v, s),
+        |c, v, s, e| c.approve(v, s, &2, &0, &String::from_str(e, "GB")),
+        |c, v, s, _| c.revoke(v, s),
+    ];
+
+    for (i, op) in ops.iter().enumerate() {
+        op(&client, &verifier, &subject, &env);
+        let count = client.get_lifecycle_count(&subject);
+        assert_eq!(count, (i + 1) as u32, "count mismatch after op {i}");
+        let hist = client.get_lifecycle_history(&subject, &0, &50);
+        assert_eq!(
+            hist.len(),
+            count,
+            "history length mismatch after op {i}"
+        );
+    }
+}
+
+/// Every history entry must have a seq that matches its 0-based position.
+#[test]
+fn test_seq_numbers_are_gapless() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    for i in 0..4u32 {
+        if i % 2 == 0 {
+            client.approve(&verifier, &subject, &i, &0, &js(&env, "US"));
+        } else {
+            client.revoke(&verifier, &subject);
+        }
+    }
+
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+    for i in 0..hist.len() {
+        assert_eq!(hist.get(i).unwrap().seq, i, "gap at position {i}");
+    }
+}
+
+/// After any approve the subject must pass is_approved (if not expired).
+#[test]
+fn test_any_approve_makes_subject_approved() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    // reject first, then approve → must be approved
+    client.reject(&verifier, &subject);
+    assert!(!client.is_approved(&subject));
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    assert!(client.is_approved(&subject));
+
+    // revoke → not approved
+    client.revoke(&verifier, &subject);
+    assert!(!client.is_approved(&subject));
+
+    // re-approve → approved again
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+    assert!(client.is_approved(&subject));
+}
+
+/// The current record's fields must always match the most recent lifecycle entry.
+#[test]
+fn test_record_always_matches_latest_lifecycle_entry() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    let steps: &[(u32, u64, &str)] = &[
+        (0, 0, "US"),
+        (1, 1000, "DE"),
+        (2, 2000, "GB"),
+    ];
+
+    for (tier, expiry, jcode) in steps.iter() {
+        client.approve(&verifier, &subject, tier, expiry, &js(&env, jcode));
+        let count = client.get_lifecycle_count(&subject);
+        let hist = client.get_lifecycle_history(&subject, &(count - 1), &1);
+        let last = hist.get(0).unwrap();
+        let record = client.get_record(&subject);
+        assert_eq!(record.tier, last.tier);
+        assert_eq!(record.expiry, last.expiry);
+        assert_eq!(record.jurisdiction, last.jurisdiction);
+    }
+}
+
+// ── Multi-verifier isolation ──────────────────────────────────────────────────
+
+#[test]
+fn test_two_verifiers_have_independent_lifecycle_histories() {
+    let (env, client, admin) = setup();
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    client.add_verifier(&admin, &v1);
+    client.add_verifier(&admin, &v2);
+
+    let subject = Address::generate(&env);
+    client.approve(&v1, &subject, &1, &0, &js(&env, "US"));
+    client.revoke(&v1, &subject);
+    client.approve(&v2, &subject, &2, &0, &js(&env, "DE"));
+
+    // All three transitions belong to the same subject history
+    assert_eq!(client.get_lifecycle_count(&subject), 3);
+    let hist = client.get_lifecycle_history(&subject, &0, &10);
+    assert_eq!(hist.get(0).unwrap().verifier, v1);
+    assert_eq!(hist.get(1).unwrap().verifier, v1);
+    assert_eq!(hist.get(2).unwrap().verifier, v2);
 }
