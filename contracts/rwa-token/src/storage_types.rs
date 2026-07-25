@@ -21,6 +21,9 @@ pub enum DataKey {
     Allowance(AllowanceKey),
     ComplianceMeta(Symbol),
     Frozen(Address),
+    // ── Multi-admin recovery (#343) ──────────────────────────────────────────
+    RecoveryConfig,
+    ActiveRecovery,
 }
 
 #[contracttype]

@@ -831,3 +831,134 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 10_000);
 }
+
+// ── Multi-admin recovery (#343) ───────────────────────────────────────────────
+
+#[test]
+fn test_configure_recovery_stores_config() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let m2 = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, m1.clone(), m2.clone()];
+    h.token.configure_recovery(&members, &2);
+
+    let cfg = h.token.recovery_config().expect("config should be set");
+    assert_eq!(cfg.threshold, 2);
+    assert_eq!(cfg.members.len(), 2);
+}
+
+#[test]
+fn test_configure_recovery_invalid_threshold_rejected() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, m1.clone()];
+    // threshold 0 is invalid
+    assert!(h.token.try_configure_recovery(&members, &0).is_err());
+    // threshold > len is invalid
+    assert!(h.token.try_configure_recovery(&members, &2).is_err());
+}
+
+#[test]
+fn test_single_member_threshold_one_executes_immediately() {
+    let h = setup();
+    let recovery_member = Address::generate(&h.env);
+    let new_admin = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, recovery_member.clone()];
+    h.token.configure_recovery(&members, &1);
+
+    h.token.propose_recovery(&recovery_member, &new_admin);
+
+    // No active proposal — it executed immediately.
+    assert!(h.token.recovery_status().is_none());
+    // Verify new_admin is now the admin by checking they can mint.
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+    h.token.mint(&user, &1);
+    assert_eq!(h.token.balance(&user), 1);
+}
+
+#[test]
+fn test_two_of_three_recovery_flow() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let m2 = Address::generate(&h.env);
+    let m3 = Address::generate(&h.env);
+    let new_admin = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, m1.clone(), m2.clone(), m3.clone()];
+    h.token.configure_recovery(&members, &2);
+
+    h.token.propose_recovery(&m1, &new_admin);
+
+    // After proposal, active recovery exists with 1 approval.
+    let status = h.token.recovery_status().expect("proposal should be active");
+    assert_eq!(status.approvals, 1);
+    assert_eq!(status.proposed_admin, new_admin);
+
+    // Second approval reaches threshold — proposal executes and is cleared.
+    h.token.approve_recovery(&m2);
+    assert!(h.token.recovery_status().is_none());
+}
+
+#[test]
+fn test_non_member_cannot_propose_recovery() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let attacker = Address::generate(&h.env);
+    let new_admin = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, m1.clone()];
+    h.token.configure_recovery(&members, &1);
+
+    assert!(h.token.try_propose_recovery(&attacker, &new_admin).is_err());
+}
+
+#[test]
+fn test_duplicate_approval_rejected() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let m2 = Address::generate(&h.env);
+    let new_admin = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, m1.clone(), m2.clone()];
+    h.token.configure_recovery(&members, &2);
+
+    h.token.propose_recovery(&m1, &new_admin);
+    // m1 trying to approve again should fail.
+    assert!(h.token.try_approve_recovery(&m1).is_err());
+}
+
+#[test]
+fn test_double_proposal_rejected() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let m2 = Address::generate(&h.env);
+    let new_admin = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, m1.clone(), m2.clone()];
+    h.token.configure_recovery(&members, &2);
+
+    h.token.propose_recovery(&m1, &new_admin);
+    // A second proposal while one is already active must fail.
+    assert!(h.token.try_propose_recovery(&m2, &new_admin).is_err());
+}
+
+#[test]
+fn test_admin_can_cancel_active_recovery() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let m2 = Address::generate(&h.env);
+    let new_admin = Address::generate(&h.env);
+    let members = soroban_sdk::vec![&h.env, m1.clone(), m2.clone()];
+    h.token.configure_recovery(&members, &2);
+
+    h.token.propose_recovery(&m1, &new_admin);
+    assert!(h.token.recovery_status().is_some());
+
+    h.token.cancel_recovery();
+    assert!(h.token.recovery_status().is_none());
+}
+
+#[test]
+fn test_propose_without_config_rejected() {
+    let h = setup();
+    let m1 = Address::generate(&h.env);
+    let new_admin = Address::generate(&h.env);
+    assert!(h.token.try_propose_recovery(&m1, &new_admin).is_err());
+}

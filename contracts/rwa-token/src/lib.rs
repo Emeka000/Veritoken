@@ -37,9 +37,38 @@ pub enum RwaError {
     NegativeAmount = 8,
     /// Batch recipient list exceeds the maximum of 10 entries.
     BatchTooLarge = 9,
+    /// Recovery config has not been set by the admin.
+    RecoveryNotConfigured = 10,
+    /// Caller is not in the recovery members list.
+    NotRecoveryMember = 11,
+    /// A recovery proposal is already in progress.
+    RecoveryAlreadyActive = 12,
+    /// This address has already approved the active recovery proposal.
+    AlreadyApproved = 13,
+    /// No active recovery proposal exists.
+    NoActiveRecovery = 14,
+    /// Threshold must be ≥ 1 and ≤ len(members).
+    InvalidRecoveryConfig = 15,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
+
+/// Snapshot of an in-progress recovery proposal.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryProposal {
+    pub proposed_admin: Address,
+    pub approvals: u32,
+    pub approved_by: Vec<Address>,
+}
+
+/// Stored recovery configuration: member list and required approval threshold.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryConfig {
+    pub members: Vec<Address>,
+    pub threshold: u32,
+}
 
 pub const META_LEGAL_ENTITY: &str = "legal_ent";
 pub const META_GOVERNING_LAW: &str = "gov_law";
@@ -451,6 +480,131 @@ impl RwaToken {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
+    // ── Multi-admin Emergency Recovery (#343) ─────────────────────────────────
+
+    /// Admin-only: configure the recovery member list and approval threshold.
+    ///
+    /// `members` lists the addresses authorised to propose and approve a
+    /// recovery. `threshold` is the number of approvals required before the
+    /// new admin is accepted. Must satisfy `1 ≤ threshold ≤ members.len()`.
+    pub fn configure_recovery(env: Env, members: Vec<Address>, threshold: u32) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        if members.is_empty() || threshold == 0 || threshold > members.len() {
+            panic_with_error!(env, RwaError::InvalidRecoveryConfig);
+        }
+        let cfg = RecoveryConfig { members, threshold };
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::RecoveryConfig, &cfg);
+        env.events()
+            .publish((symbol_short!("rcv_cfg"),), threshold);
+    }
+
+    /// Recovery-member-only: propose a new admin.
+    ///
+    /// The proposer's approval is counted automatically, so a threshold-1
+    /// recovery only requires one additional approval.
+    pub fn propose_recovery(env: Env, proposer: Address, new_admin: Address) {
+        proposer.require_auth();
+        if env
+            .storage()
+            .instance()
+            .has(&storage_types::DataKey::ActiveRecovery)
+        {
+            panic_with_error!(env, RwaError::RecoveryAlreadyActive);
+        }
+        let cfg = Self::read_recovery_config(&env);
+        Self::assert_recovery_member(&env, &proposer, &cfg);
+
+        let mut approved_by: Vec<Address> = Vec::new(&env);
+        approved_by.push_back(proposer.clone());
+        let proposal = RecoveryProposal {
+            proposed_admin: new_admin.clone(),
+            approvals: 1,
+            approved_by,
+        };
+
+        if cfg.threshold == 1 {
+            Self::finalize_recovery(&env, new_admin);
+        } else {
+            env.storage()
+                .instance()
+                .set(&storage_types::DataKey::ActiveRecovery, &proposal);
+            env.events()
+                .publish((symbol_short!("rcv_prp"),), (proposer, new_admin));
+        }
+    }
+
+    /// Recovery-member-only: approve the active recovery proposal.
+    ///
+    /// If this approval meets the configured threshold the proposal is
+    /// executed immediately and the active recovery is cleared.
+    pub fn approve_recovery(env: Env, approver: Address) {
+        approver.require_auth();
+        let cfg = Self::read_recovery_config(&env);
+        Self::assert_recovery_member(&env, &approver, &cfg);
+
+        let mut proposal: RecoveryProposal = env
+            .storage()
+            .instance()
+            .get(&storage_types::DataKey::ActiveRecovery)
+            .unwrap_or_else(|| panic_with_error!(env, RwaError::NoActiveRecovery));
+
+        if proposal.approved_by.contains(&approver) {
+            panic_with_error!(env, RwaError::AlreadyApproved);
+        }
+
+        proposal.approved_by.push_back(approver.clone());
+        proposal.approvals += 1;
+
+        env.events()
+            .publish((symbol_short!("rcv_apr"),), (approver, proposal.approvals));
+
+        if proposal.approvals >= cfg.threshold {
+            let new_admin = proposal.proposed_admin.clone();
+            env.storage()
+                .instance()
+                .remove(&storage_types::DataKey::ActiveRecovery);
+            Self::finalize_recovery(&env, new_admin);
+        } else {
+            env.storage()
+                .instance()
+                .set(&storage_types::DataKey::ActiveRecovery, &proposal);
+        }
+    }
+
+    /// Admin-only: cancel the active recovery proposal.
+    pub fn cancel_recovery(env: Env) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        if !env
+            .storage()
+            .instance()
+            .has(&storage_types::DataKey::ActiveRecovery)
+        {
+            panic_with_error!(env, RwaError::NoActiveRecovery);
+        }
+        env.storage()
+            .instance()
+            .remove(&storage_types::DataKey::ActiveRecovery);
+        env.events().publish((symbol_short!("rcv_cnl"),), ());
+    }
+
+    /// Returns the active recovery proposal, if any.
+    pub fn recovery_status(env: Env) -> Option<RecoveryProposal> {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::ActiveRecovery)
+    }
+
+    /// Returns the current recovery configuration, if set.
+    pub fn recovery_config(env: Env) -> Option<RecoveryConfig> {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::RecoveryConfig)
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// Validates the sending side of a transfer: frozen check + KYC.
@@ -485,5 +639,25 @@ impl RwaToken {
         if from != to && to_balance_before == 0 {
             compliance::register_holder(env, to);
         }
+    }
+
+    fn read_recovery_config(env: &Env) -> RecoveryConfig {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::RecoveryConfig)
+            .unwrap_or_else(|| panic_with_error!(env, RwaError::RecoveryNotConfigured))
+    }
+
+    fn assert_recovery_member(env: &Env, addr: &Address, cfg: &RecoveryConfig) {
+        if !cfg.members.contains(addr) {
+            panic_with_error!(env, RwaError::NotRecoveryMember);
+        }
+    }
+
+    fn finalize_recovery(env: &Env, new_admin: Address) {
+        let old_admin = admin::read_admin(env);
+        admin::write_admin(env, &new_admin);
+        env.events()
+            .publish((symbol_short!("rcv_exe"),), (old_admin, new_admin));
     }
 }
