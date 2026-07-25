@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, RwaError, META_ISIN, META_LEGAL_ENTITY};
+use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, vec, Address, Env, String, TryFromVal, symbol_short};
 
 #[allow(dead_code)]
 struct Harness {
@@ -830,4 +830,66 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     }
     assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 10_000);
+}
+
+// ── Structured event indexing (#344) ─────────────────────────────────────────
+
+#[test]
+fn test_transfer_event_uses_structured_topic() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &500);
+
+    h.token.transfer(&alice, &bob, &200);
+
+    let all_events = h.env.events().all();
+    let last = all_events.last().expect("events must exist");
+    let first_topic = last.1.get(0).expect("topic[0] must exist");
+    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &first_topic).expect("topic must be Symbol");
+    assert_eq!(sym, symbol_short!("transfer"));
+}
+
+#[test]
+fn test_mint_event_uses_structured_topic() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    let all_events = h.env.events().all();
+    let last = all_events.last().expect("events must exist");
+    let t = last.1.get(0).expect("topic[0] must exist");
+    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &t).expect("topic must be Symbol");
+    assert_eq!(sym, symbol_short!("mint"));
+}
+
+#[test]
+fn test_freeze_event_uses_freeze_not_frozen() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.token.freeze(&alice);
+
+    let all_events = h.env.events().all();
+    let last = all_events.last().expect("events must exist");
+    let t = last.1.get(0).expect("topic[0] must exist");
+    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &t).expect("topic must be Symbol");
+    assert_eq!(sym, symbol_short!("freeze"));
+}
+
+#[test]
+fn test_burn_event_uses_structured_topic() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+    h.token.burn(&alice, &300);
+
+    let all_events = h.env.events().all();
+    let last = all_events.last().expect("events must exist");
+    let t = last.1.get(0).expect("topic[0] must exist");
+    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &t).expect("topic must be Symbol");
+    assert_eq!(sym, symbol_short!("burn"));
 }

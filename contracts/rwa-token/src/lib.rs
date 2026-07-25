@@ -10,6 +10,7 @@ mod admin;
 mod allowance;
 mod balance;
 mod compliance;
+mod events;
 mod kyc;
 mod metadata;
 mod storage_types;
@@ -131,27 +132,24 @@ impl RwaToken {
 
     #[deprecated(since = "0.2.0", note = "Use propose_admin and accept_admin instead")]
     pub fn set_admin(env: Env, new_admin: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+        let old_admin = admin::read_admin(&env);
+        old_admin.require_auth();
         admin::write_admin(&env, &new_admin);
-        env.events()
-            .publish((symbol_short!("admin"),), (admin, new_admin));
+        events::emit_admin_set(&env, old_admin, new_admin);
     }
 
     pub fn update_kyc_registry(env: Env, new_registry: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         kyc::write_kyc_registry(&env, &new_registry);
-        env.events()
-            .publish((symbol_short!("upd_kyc"),), new_registry);
+        events::emit_kyc_updated(&env, new_registry);
     }
 
     pub fn update_compliance_engine(env: Env, new_engine: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         compliance::write_compliance_engine(&env, &new_engine);
-        env.events()
-            .publish((symbol_short!("upd_ce"),), new_engine);
+        events::emit_ce_updated(&env, new_engine);
     }
 
     // ── Freeze / Unfreeze ─────────────────────────────────────────────────────
@@ -160,14 +158,14 @@ impl RwaToken {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         compliance::set_frozen(&env, &addr, true);
-        env.events().publish((symbol_short!("frozen"),), addr);
+        events::emit_freeze(&env, addr);
     }
 
     pub fn unfreeze(env: Env, addr: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         compliance::set_frozen(&env, &addr, false);
-        env.events().publish((symbol_short!("unfrozen"),), addr);
+        events::emit_unfreeze(&env, addr);
     }
 
     pub fn is_frozen(env: Env, addr: Address) -> bool {
@@ -189,10 +187,7 @@ impl RwaToken {
     ) {
         from.require_auth();
         allowance::write_allowance(&env, from.clone(), spender.clone(), amount, expiration_ledger);
-        env.events().publish(
-            (symbol_short!("approve"), from, spender),
-            (amount, expiration_ledger),
-        );
+        events::emit_approve(&env, from, spender, amount, expiration_ledger);
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
@@ -210,8 +205,7 @@ impl RwaToken {
         if from != to && from_bal == amount {
             compliance::unregister_holder(&env, &from);
         }
-        env.events()
-            .publish((symbol_short!("transfer"), from, to), amount);
+        events::emit_transfer(&env, from, to, amount);
     }
 
     /// Delegated single transfer: identical invariants to `transfer`, plus allowance deduction.
@@ -225,8 +219,7 @@ impl RwaToken {
         if from != to && from_bal == amount {
             compliance::unregister_holder(&env, &from);
         }
-        env.events()
-            .publish((symbol_short!("transfer"), from, to), amount);
+        events::emit_transfer(&env, from, to, amount);
     }
 
     pub fn burn(env: Env, from: Address, amount: i128) {
@@ -245,7 +238,7 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply - amount);
-        env.events().publish((symbol_short!("burn"), from), amount);
+        events::emit_burn(&env, from, amount);
     }
 
     pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
@@ -265,7 +258,7 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply - amount);
-        env.events().publish((symbol_short!("burn"), from), amount);
+        events::emit_burn(&env, from, amount);
     }
 
     pub fn decimals(env: Env) -> u32 {
@@ -303,7 +296,7 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply + amount);
-        env.events().publish((symbol_short!("mint"), to), amount);
+        events::emit_mint(&env, to, amount);
     }
 
     // ── Batch Transfer ────────────────────────────────────────────────────────
@@ -349,10 +342,7 @@ impl RwaToken {
         for i in 0..len {
             let entry = recipients.get(i).expect("recipient index out of bounds");
             Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
-            env.events().publish(
-                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
-                entry.amount,
-            );
+            events::emit_transfer(&env, from.clone(), entry.to.clone(), entry.amount);
         }
 
         // Deregister sender if their balance was fully drained.
@@ -399,10 +389,7 @@ impl RwaToken {
         for i in 0..len {
             let entry = recipients.get(i).expect("recipient index out of bounds");
             Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
-            env.events().publish(
-                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
-                entry.amount,
-            );
+            events::emit_transfer(&env, from.clone(), entry.to.clone(), entry.amount);
         }
 
         if balance::read_balance(&env, from.clone()) == 0 {
