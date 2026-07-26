@@ -90,7 +90,12 @@ export default function StatusCard() {
               KYC Status
             </div>
             {status.record ? (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+              <div
+                role="status"
+                aria-live="polite"
+                aria-label={`KYC status: ${status.record.status}`}
+                style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}
+              >
                 <span style={{
                   ...kycBadgeStyle(status.record.status as string),
                   padding: "0.2rem 0.65rem",

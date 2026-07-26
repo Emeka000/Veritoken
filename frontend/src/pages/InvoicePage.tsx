@@ -39,6 +39,7 @@ export default function InvoicePage() {
   const [meta, setMeta] = useState<InvoiceMeta | null>(null);
   const [isSettled, setIsSettled] = useState<boolean | null>(null);
   const [totalSupply, setTotalSupply] = useState<bigint | null>(null);
+  const [lifecyclePaused, setLifecyclePaused] = useState<boolean | null>(null);
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaError, setMetaError] = useState<string | null>(null);
 
@@ -49,6 +50,7 @@ export default function InvoicePage() {
 
   // ── Settle ───────────────────────────────────────────────────────────────
   const [settleLoading, setSettleLoading] = useState(false);
+  const [pauseLifecycleLoading, setPauseLifecycleLoading] = useState(false);
 
   // ── Redeem form ──────────────────────────────────────────────────────────
   const [redeemAmount, setRedeemAmount] = useState("");
@@ -73,18 +75,18 @@ export default function InvoicePage() {
     setMetaLoading(true);
     setMetaError(null);
     try {
-      const [fetchedMeta, settled, supply] = await Promise.all([
+      const [fetchedMeta, settled, supply, paused] = await Promise.all([
         contracts.invoice.getMeta(),
         contracts.invoice.isSettled(),
         contracts.invoice.totalSupply(),
+        contracts.invoice.lifecyclePaused(),
       ]);
       setMeta(fetchedMeta);
       setIsSettled(settled);
       setTotalSupply(supply);
+      setLifecyclePaused(paused);
     } catch (err) {
-      setMetaError(
-        err instanceof Error ? err.message : "Failed to load invoice metadata.",
-      );
+      setMetaError(err instanceof Error ? err.message : "Failed to load invoice metadata.");
     } finally {
       setMetaLoading(false);
     }
@@ -170,6 +172,26 @@ export default function InvoicePage() {
   const hasRedeemAmountError =
     redeemAmount.length > 0 && !redeemAmountValidation.isValid;
 
+  const handleToggleLifecyclePause = async () => {
+    if (!connected || !address) return;
+    setPauseLifecycleLoading(true);
+    try {
+      if (lifecyclePaused) {
+        await contracts.invoice.unpauseLifecycle(address, signTx);
+        addToast("Invoice lifecycle resumed. Settlement and redemption are now open.", "success");
+        setLifecyclePaused(false);
+      } else {
+        await contracts.invoice.pauseLifecycle(address, signTx);
+        addToast("Invoice lifecycle paused. Settlement and redemption are blocked.", "info");
+        setLifecyclePaused(true);
+      }
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setPauseLifecycleLoading(false);
+    }
+  };
+
   return (
     <div className="form-narrow">
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -194,28 +216,37 @@ export default function InvoicePage() {
           <p style={{ color: "#ef4444", fontSize: "0.875rem" }}>{metaError}</p>
         ) : meta ? (
           <>
-            {/* Settlement status badge */}
-            <div style={{ marginBottom: "1rem" }}>
+            {/* Status badges */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "1rem" }}>
               <span
+                role="status"
+                aria-live="polite"
                 style={{
-                  display: "inline-block",
-                  padding: "0.2rem 0.7rem",
-                  borderRadius: 99,
-                  fontSize: "0.78rem",
-                  fontWeight: 700,
-                  background: isSettled
-                    ? "var(--accent-soft)"
-                    : "var(--surface-2)",
+                  display: "inline-block", padding: "0.2rem 0.7rem", borderRadius: 99,
+                  fontSize: "0.78rem", fontWeight: 700,
+                  background: isSettled ? "var(--accent-soft)" : "var(--surface-2)",
                   color: isSettled ? "var(--accent-2)" : "var(--muted)",
                   border: "1px solid var(--border)",
                 }}
               >
-                {isSettled === null
-                  ? "Checking…"
-                  : isSettled
-                    ? "✓ Settled — Redemption Open"
-                    : "Pending Settlement"}
+                {isSettled === null ? "Checking…" : isSettled ? "✓ Settled — Redemption Open" : "Pending Settlement"}
               </span>
+              {lifecyclePaused !== null && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  aria-label={lifecyclePaused ? "Lifecycle paused" : "Lifecycle active"}
+                  style={{
+                    display: "inline-block", padding: "0.2rem 0.7rem", borderRadius: 99,
+                    fontSize: "0.78rem", fontWeight: 700,
+                    background: lifecyclePaused ? "rgba(239,68,68,0.12)" : "var(--success-soft)",
+                    color: lifecyclePaused ? "#ef4444" : "var(--success)",
+                    border: `1px solid ${lifecyclePaused ? "rgba(239,68,68,0.3)" : "rgba(52,211,153,0.3)"}`,
+                  }}
+                >
+                  {lifecyclePaused ? "⏸ Lifecycle Paused" : "▶ Lifecycle Active"}
+                </span>
+              )}
             </div>
 
             <dl style={styles.dl}>
@@ -273,20 +304,35 @@ export default function InvoicePage() {
             {/* Admin: settle button, visible only when not yet settled */}
             {connected && isSettled === false && (
               <div style={{ marginTop: "1.25rem" }}>
-                <button
-                  className="btn-block"
-                  onClick={handleSettle}
-                  disabled={settleLoading}
-                >
+                <button className="btn-block" onClick={handleSettle} disabled={settleLoading}>
                   {settleLoading && <Spinner />}
                   {settleLoading ? "Settling…" : "Settle Invoice"}
                 </button>
-                <p
-                  className="muted"
-                  style={{ fontSize: "0.75rem", marginTop: "0.4rem" }}
+                <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.4rem" }}>
+                  Admin only. Marks this invoice as settled and opens token redemption for all holders.
+                </p>
+              </div>
+            )}
+
+            {/* Admin: lifecycle pause controls */}
+            {connected && (
+              <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: "1px solid var(--border)" }}>
+                <p style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.6rem" }}>
+                  Lifecycle Controls
+                  <span className="muted" style={{ fontWeight: 400, marginLeft: "0.4rem" }}>— admin only</span>
+                </p>
+                <button
+                  className={lifecyclePaused ? "btn-success btn-block" : "btn-block"}
+                  style={lifecyclePaused ? undefined : { background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)" }}
+                  onClick={handleToggleLifecyclePause}
+                  disabled={pauseLifecycleLoading || lifecyclePaused === null}
+                  aria-pressed={lifecyclePaused === true}
                 >
-                  Admin only. Marks this invoice as settled and opens token
-                  redemption for all holders.
+                  {pauseLifecycleLoading && <Spinner />}
+                  {pauseLifecycleLoading ? "Updating…" : lifecyclePaused ? "Resume Settlement & Redemption" : "Pause Settlement & Redemption"}
+                </button>
+                <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.4rem" }}>
+                  Pausing blocks <code>settle()</code> and <code>redeem()</code>. Transfers in Issued state continue normally.
                 </p>
               </div>
             )}
@@ -354,19 +400,13 @@ export default function InvoicePage() {
         <WalletGuard>
           <Card>
             {isSettled === false && (
-              <p
-                style={{
-                  color: "#f59e0b",
-                  fontSize: "0.85rem",
-                  marginBottom: "1rem",
-                  padding: "0.6rem 0.75rem",
-                  background: "var(--surface-2)",
-                  borderRadius: 8,
-                  border: "1px solid var(--border)",
-                }}
-              >
-                ⚠ Redemption is only available after the invoice is settled by
-                the admin.
+              <p style={{ color: "#f59e0b", fontSize: "0.85rem", marginBottom: "1rem", padding: "0.6rem 0.75rem", background: "var(--surface-2)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                ⚠ Redemption is only available after the invoice is settled by the admin.
+              </p>
+            )}
+            {lifecyclePaused && (
+              <p role="alert" style={{ color: "#ef4444", fontSize: "0.85rem", marginBottom: "1rem", padding: "0.6rem 0.75rem", background: "rgba(239,68,68,0.08)", borderRadius: 8, border: "1px solid rgba(239,68,68,0.25)" }}>
+                ⏸ Redemption is currently paused by the admin. Please check back later.
               </p>
             )}
             <form onSubmit={handleRedeem}>
@@ -382,7 +422,7 @@ export default function InvoicePage() {
                 type="submit"
                 className="btn-block"
                 style={{ marginTop: "0.75rem" }}
-                disabled={redeemLoading || hasRedeemAmountError || !isSettled}
+                disabled={redeemLoading || hasRedeemAmountError || !isSettled || !!lifecyclePaused}
               >
                 {redeemLoading && <Spinner />}
                 {redeemLoading ? "Redeeming…" : "Redeem Tokens"}

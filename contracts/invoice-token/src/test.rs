@@ -975,3 +975,103 @@ fn test_update_meta_webhook_validated_on_update() {
     m.notification_webhook = String::from_str(&h.env, "ftp://bad-scheme.example.com");
     assert!(h.token.try_update_meta(&inv_id(&h.env), &m).is_err());
 }
+
+// ── Lifecycle pause tests ─────────────────────────────────────────────────────
+
+#[test]
+fn test_lifecycle_paused_is_false_by_default() {
+    let h = setup();
+    assert!(!h.token.lifecycle_paused());
+}
+
+#[test]
+fn test_pause_lifecycle_blocks_settle() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&inv_id(&h.env), &holder, &1_000);
+
+    h.token.pause_lifecycle();
+    assert!(h.token.lifecycle_paused());
+
+    // settle() must be rejected while paused
+    assert!(h.token.try_settle(&inv_id(&h.env)).is_err());
+}
+
+#[test]
+fn test_pause_lifecycle_blocks_partial_settle() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&inv_id(&h.env), &holder, &1_000);
+
+    h.token.pause_lifecycle();
+    assert!(h.token.try_partial_settle(&inv_id(&h.env), &500_000_000_000).is_err());
+}
+
+#[test]
+fn test_pause_lifecycle_blocks_redeem() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&inv_id(&h.env), &holder, &1_000);
+    // Settle without pausing
+    h.token.settle(&inv_id(&h.env));
+
+    // Now pause the lifecycle
+    h.token.pause_lifecycle();
+    assert!(h.token.lifecycle_paused());
+
+    // redeem() must be rejected while paused
+    assert!(h.token.try_redeem(&inv_id(&h.env), &holder, &500).is_err());
+}
+
+#[test]
+fn test_pause_lifecycle_does_not_block_transfer() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.issue(&inv_id(&h.env), &alice, &1_000);
+
+    h.token.pause_lifecycle();
+
+    // Ordinary transfer in Issued state must still succeed
+    h.token.transfer(&inv_id(&h.env), &alice, &bob, &300);
+    assert_eq!(h.token.balance(&bob, &inv_id(&h.env)), 300);
+}
+
+#[test]
+fn test_unpause_lifecycle_resumes_settle() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&inv_id(&h.env), &holder, &1_000);
+
+    h.token.pause_lifecycle();
+    assert!(h.token.try_settle(&inv_id(&h.env)).is_err());
+
+    h.token.unpause_lifecycle();
+    assert!(!h.token.lifecycle_paused());
+
+    // Now settle must succeed
+    h.token.settle(&inv_id(&h.env));
+    assert!(h.token.is_settled(&inv_id(&h.env)));
+}
+
+#[test]
+fn test_unpause_lifecycle_resumes_redeem() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+    h.token.issue(&inv_id(&h.env), &holder, &1_000);
+    h.token.settle(&inv_id(&h.env));
+
+    h.token.pause_lifecycle();
+    assert!(h.token.try_redeem(&inv_id(&h.env), &holder, &500).is_err());
+
+    h.token.unpause_lifecycle();
+    h.token.redeem(&inv_id(&h.env), &holder, &500);
+    assert_eq!(h.token.balance(&holder, &inv_id(&h.env)), 500);
+}

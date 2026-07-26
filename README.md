@@ -166,6 +166,8 @@ Veritoken/
 
 To report a vulnerability, please follow the [Security Policy](SECURITY.md). Do not open a public issue for security findings.
 
+For operational incidents — emergency pause, admin key rotation, compromised verifier, contract upgrade — follow the [Incident Response Runbook](docs/incident-response.md).
+
 ---
 
 ## Changelog
