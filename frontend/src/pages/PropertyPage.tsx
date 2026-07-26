@@ -60,9 +60,18 @@ export default function PropertyPage() {
   // ── Claim dividend ───────────────────────────────────────────────────────
   const [claimLoading, setClaimLoading] = useState(false);
 
+  // ── Confirm dialog ────────────────────────────────────────────────────────
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  } | null>(null);
+
   // ── Events ───────────────────────────────────────────────────────────────
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [_holderCount, setHolderCount] = useState<number | null>(null);
+  const [_holderSlotsRemaining, setHolderSlotsRemaining] = useState<number | null>(null);
 
   // Validations
   const mintSharesValidation = useAmountValidation(mintShares);

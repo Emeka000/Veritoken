@@ -95,7 +95,7 @@ export class InvoiceTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "issue",
@@ -109,7 +109,7 @@ export class InvoiceTokenClient {
   /** Mark the invoice as settled and open redemption. Admin-only on-chain. */
   async settle(adminAddress: string, signTx: SignTx): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "settle",
@@ -127,7 +127,7 @@ export class InvoiceTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, fromAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "redeem",
@@ -146,7 +146,7 @@ export class InvoiceTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, fromAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "transfer",
@@ -166,7 +166,7 @@ export class InvoiceTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, spenderAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "transfer_from",
@@ -189,7 +189,7 @@ export class InvoiceTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, fromAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "approve",

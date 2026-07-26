@@ -1059,6 +1059,7 @@ mod compliance_engine {
         pub require_same_jurisdiction: bool,
         pub paused: bool,
         pub allowlist_mode: bool,
+        pub max_holding_period: u64,
     }
 }
 

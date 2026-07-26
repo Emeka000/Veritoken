@@ -44,6 +44,7 @@ fn setup() -> Harness {
             kyc_id.clone(),
             compliance_id.clone(),
             Option::<ComplianceMetadata>::None,
+            0i128, // max_supply: 0 = unlimited
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);
@@ -158,6 +159,7 @@ fn test_transfer_blocked_by_max_amount() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     assert!(h.token.try_transfer(&alice, &bob, &51).is_err());
@@ -182,6 +184,7 @@ fn test_max_holder_cap_blocks_new_holder_and_maintains_count() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     h.token.mint(&alice, &1_000);
@@ -217,6 +220,7 @@ fn test_max_holders_blocks_new_holders_via_token() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     // First two distinct holders fill the cap.
@@ -367,6 +371,7 @@ fn test_constructor_sets_compliance_metadata() {
                 isin: None,
                 prospectus_hash: None,
             }),
+            0i128, // max_supply: 0 = unlimited
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);
@@ -416,6 +421,7 @@ fn test_invalid_asset_type() {
             kyc_id,
             compliance_id,
             Option::<ComplianceMetadata>::None,
+            0i128,
         ),
     );
 }
@@ -658,6 +664,7 @@ fn test_batch_transfer_max_amount_rule_per_entry() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     // Single entry of 51 exceeds per-transfer cap
@@ -830,4 +837,112 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     }
     assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 10_000);
+}
+
+// ── max_supply ────────────────────────────────────────────────────────────────
+
+/// Helper: build a token with a specific max_supply cap.
+fn setup_with_max_supply(max_supply: i128) -> Harness {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    let verifier = Address::generate(&env);
+    kyc.add_verifier(&admin, &verifier);
+
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin, &kyc_id, &0u64);
+
+    let token_id = env.register(
+        RwaToken,
+        (
+            admin.clone(),
+            7u32,
+            String::from_str(&env, "Capped RWA"),
+            String::from_str(&env, "CRWA"),
+            String::from_str(&env, "property"),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            Option::<ComplianceMetadata>::None,
+            max_supply,
+        ),
+    );
+    let token = RwaTokenClient::new(&env, &token_id);
+
+    Harness { env, token, kyc, compliance, verifier, admin }
+}
+
+#[test]
+fn test_max_supply_query_returns_configured_value() {
+    let h = setup_with_max_supply(5_000);
+    assert_eq!(h.token.max_supply(), 5_000);
+}
+
+#[test]
+fn test_max_supply_zero_means_unlimited() {
+    let h = setup_with_max_supply(0);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    // Can mint far beyond any reasonable cap when max_supply is 0.
+    h.token.mint(&user, &1_000_000_000);
+    assert_eq!(h.token.total_supply(), 1_000_000_000);
+    assert_eq!(h.token.max_supply(), 0);
+}
+
+#[test]
+fn test_mint_within_cap_succeeds() {
+    let h = setup_with_max_supply(1_000);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    h.token.mint(&user, &600);
+    h.token.mint(&user, &400);
+    assert_eq!(h.token.total_supply(), 1_000);
+}
+
+#[test]
+fn test_mint_exactly_at_cap_succeeds() {
+    let h = setup_with_max_supply(500);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    h.token.mint(&user, &500);
+    assert_eq!(h.token.total_supply(), 500);
+}
+
+#[test]
+fn test_mint_beyond_cap_panics() {
+    let h = setup_with_max_supply(500);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    h.token.mint(&user, &400);
+    // The next mint of 101 would push supply to 501 > 500.
+    assert!(h.token.try_mint(&user, &101).is_err());
+    // Supply is unchanged.
+    assert_eq!(h.token.total_supply(), 400);
+}
+
+#[test]
+fn test_mint_after_burn_respects_cap() {
+    // Burn reduces current supply; subsequent mints should be allowed up to cap.
+    let h = setup_with_max_supply(1_000);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    h.token.mint(&user, &1_000);
+    assert_eq!(h.token.total_supply(), 1_000);
+
+    h.token.burn(&user, &200);
+    assert_eq!(h.token.total_supply(), 800);
+
+    // 200 tokens of headroom: minting 200 should succeed, 201 should fail.
+    h.token.mint(&user, &200);
+    assert_eq!(h.token.total_supply(), 1_000);
+    assert!(h.token.try_mint(&user, &1).is_err());
 }

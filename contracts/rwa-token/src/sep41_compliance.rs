@@ -45,6 +45,7 @@ fn setup_sep41() -> Sep41Harness {
             kyc_id.clone(),
             compliance_id.clone(),
             Option::<ComplianceMetadata>::None,
+            0i128, // max_supply: 0 = unlimited
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);

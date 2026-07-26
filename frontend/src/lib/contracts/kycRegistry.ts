@@ -90,7 +90,7 @@ export class KycRegistryClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, verifier);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "approve",
@@ -110,7 +110,7 @@ export class KycRegistryClient {
   /** Mark `subject`'s KYC record as Rejected. */
   async reject(verifier: string, subject: string, signTx: SignTx): Promise<void> {
     const seq = await fetchSequence(this.server, verifier);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "reject",
@@ -124,7 +124,7 @@ export class KycRegistryClient {
   /** Mark `subject`'s KYC record as Revoked. */
   async revoke(verifier: string, subject: string, signTx: SignTx): Promise<void> {
     const seq = await fetchSequence(this.server, verifier);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "revoke",
@@ -146,7 +146,7 @@ export class KycRegistryClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, verifier);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "update_tier",
@@ -164,7 +164,7 @@ export class KycRegistryClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "add_verifier",
@@ -182,7 +182,7 @@ export class KycRegistryClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "remove_verifier",
@@ -200,7 +200,7 @@ export class KycRegistryClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, callerAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "add_admin",
@@ -218,7 +218,7 @@ export class KycRegistryClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, callerAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "remove_admin",

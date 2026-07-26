@@ -8,6 +8,7 @@
  */
 
 import type { rpc } from "@stellar/stellar-sdk";
+import { scValToNative } from "@stellar/stellar-sdk";
 import type { ProjectMeta, RetirementReceipt } from "../../types";
 import {
   readCall,
@@ -113,6 +114,18 @@ export class CarbonTokenClient {
     );
   }
 
+  /**
+   * Returns `(registry_url, registry_project_id)` for external verification.
+   */
+  async getRegistryLink(): Promise<[string, string]> {
+    return readCall<[string, string]>(
+      this.server,
+      this.contractId,
+      "get_registry_link",
+      []
+    );
+  }
+
   // ── Write methods ─────────────────────────────────────────────────────────
 
   /** Mint `amount` carbon credits to `to`. Admin-only on-chain. */
@@ -123,7 +136,7 @@ export class CarbonTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "mint",
@@ -142,7 +155,7 @@ export class CarbonTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, fromAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "transfer",
@@ -156,7 +169,7 @@ export class CarbonTokenClient {
   /**
    * Permanently retire `amount` credits on behalf of `retiree`.
    * Creates an on-chain retirement receipt and emits a `retired` event.
-   * Requires `retiree`'s auth.
+   * Requires `retiree`'s auth. Returns the created RetirementReceipt.
    */
   async retire(
     retireeAddress: string,
@@ -164,9 +177,9 @@ export class CarbonTokenClient {
     beneficiary: string,
     reason: string,
     signTx: SignTx
-  ): Promise<void> {
+  ): Promise<RetirementReceipt> {
     const seq = await fetchSequence(this.server, retireeAddress);
-    return writeCall(
+    const txResult = await writeCall(
       this.server,
       this.contractId,
       "retire",
@@ -180,5 +193,20 @@ export class CarbonTokenClient {
       seq,
       signTx
     );
+    // Try to decode the return value from the transaction result metadata.
+    try {
+      const retval = (txResult as any)
+        ?.resultMetaXdr?.v3?.()?.sorobanMeta?.()?.returnValue?.();
+      if (retval) return scValToNative(retval) as RetirementReceipt;
+    } catch { /* fall through to stub */ }
+    // Fallback stub — used when result metadata isn't available (e.g. simulation).
+    return {
+      retiree: retireeAddress,
+      amount: Number(amount),
+      beneficiary,
+      retirement_reason: reason,
+      timestamp: Math.floor(Date.now() / 1000),
+      beneficiary_address: null,
+    } as unknown as RetirementReceipt;
   }
 }

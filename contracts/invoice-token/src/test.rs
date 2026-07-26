@@ -269,6 +269,7 @@ fn test_transfer_blocked_by_holding_period() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     h.token.issue(&inv_id(&h.env), &alice, &1_000);

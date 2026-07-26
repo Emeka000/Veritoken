@@ -7,7 +7,7 @@ import { AddressInput } from "../components/AddressInput";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
-import { contracts } from "../lib/contracts";
+import { contracts } from "../lib/contracts/index";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {

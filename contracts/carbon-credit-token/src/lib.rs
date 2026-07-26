@@ -27,6 +27,10 @@ pub enum CarbonError {
     CompliancePaused = 4,
     Blocklisted = 5,
     TransferBlocked = 6,
+    /// Batch retirement list exceeds the maximum of 10 entries.
+    BatchTooLarge = 7,
+    /// Individual retirement amount is zero or negative.
+    InvalidAmount = 8,
 }
 
 #[contracttype]
@@ -365,6 +369,113 @@ impl CarbonCreditToken {
         receipt
     }
 
+    // ── Batch Retirement ─────────────────────────────────────────────────────
+
+    /// Retire credits for multiple beneficiaries in a single transaction.
+    ///
+    /// **Advanced feature — bulk offset programs.**
+    ///
+    /// Each entry in `retirements` is a `(amount, beneficiary, reason)` tuple.
+    /// - Capped at 10 retirements per call (`CarbonError::BatchTooLarge` otherwise).
+    /// - The **total** deducted from `retiree`'s balance in one atomic operation.
+    /// - Individual receipts are created and stored for each entry.
+    /// - Returns the vector of created receipts in entry order.
+    ///
+    /// Use-case: corporate carbon-offset programs retiring credits for hundreds
+    /// of employees or projects simultaneously (e.g. annual net-zero reporting).
+    pub fn batch_retire(
+        env: Env,
+        retiree: Address,
+        retirements: Vec<(i128, String, String)>,
+    ) -> Vec<RetirementReceipt> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        retiree.require_auth();
+
+        let len = retirements.len();
+        if len > 10 {
+            panic_with_error!(env, CarbonError::BatchTooLarge);
+        }
+
+        Self::require_kyc(&env, &retiree);
+        Self::check_compliance(&env, &retiree, &retiree, 1); // pause / blocklist check
+
+        // ── Validation pass: compute total and verify each amount is positive ──
+        let mut total: i128 = 0;
+        for i in 0..len {
+            let entry = retirements.get(i).expect("index in bounds");
+            let (amount, _, _) = entry;
+            if amount <= 0 {
+                panic_with_error!(env, CarbonError::InvalidAmount);
+            }
+            total = total.checked_add(amount).expect("overflow");
+        }
+
+        // Single balance check for the whole batch.
+        let bal = Self::read_balance(&env, retiree.clone());
+        if bal < total {
+            panic_with_error!(env, CarbonError::InsufficientBalance);
+        }
+
+        // ── Execution pass ────────────────────────────────────────────────────
+        // Deduct the full total once.
+        Self::write_balance(&env, retiree.clone(), bal - total);
+
+        let supply: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalSupply, &(supply - total));
+
+        let retired: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalRetired)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRetired, &(retired + total));
+
+        // Create one receipt per entry.
+        let mut index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0);
+
+        let now = env.ledger().timestamp();
+        let mut receipts: Vec<RetirementReceipt> = Vec::new(&env);
+
+        for i in 0..len {
+            let entry = retirements.get(i).expect("index in bounds");
+            let (amount, beneficiary, reason) = entry;
+            let receipt = RetirementReceipt {
+                retiree: retiree.clone(),
+                amount,
+                timestamp: now,
+                beneficiary,
+                retirement_reason: reason,
+                beneficiary_address: None,
+            };
+            let key = DataKey::Receipt(index);
+            env.storage().persistent().set(&key, &receipt);
+            env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+            receipts.push_back(receipt);
+            index += 1;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RetirementCount, &index);
+
+        env.events()
+            .publish((symbol_short!("bt_retire"), retiree), total);
+
+        receipts
+    }
+
     // ── Read API ─────────────────────────────────────────────────────────────
 
     pub fn retirement_count(env: Env) -> u32 {
@@ -602,6 +713,8 @@ mod compliance_engine {
         pub max_holders: u32,
         pub require_same_jurisdiction: bool,
         pub paused: bool,
+        pub allowlist_mode: bool,
+        pub max_holding_period: u64,
     }
 }
 

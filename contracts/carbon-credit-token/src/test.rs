@@ -560,3 +560,241 @@ fn test_get_receipts_insertion_order() {
     assert_eq!(receipts.get(1).unwrap().amount, 20);
     assert_eq!(receipts.get(2).unwrap().amount, 30);
 }
+
+// ── batch_retire ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_batch_retire_creates_correct_receipts() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &300);
+
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (100i128, String::from_str(&h.env, "Acme Corp"), String::from_str(&h.env, "Q1 offset")),
+        (80i128,  String::from_str(&h.env, "Beta LLC"),  String::from_str(&h.env, "Q2 offset")),
+        (60i128,  String::from_str(&h.env, "Gamma Inc"), String::from_str(&h.env, "Q3 offset")),
+    ];
+
+    let receipts = h.token.batch_retire(&alice, &retirements);
+
+    // Three receipts returned in order.
+    assert_eq!(receipts.len(), 3);
+    assert_eq!(receipts.get(0).unwrap().amount, 100);
+    assert_eq!(receipts.get(1).unwrap().amount, 80);
+    assert_eq!(receipts.get(2).unwrap().amount, 60);
+
+    // All receipts point to the correct retiree.
+    for i in 0..3 {
+        assert_eq!(receipts.get(i).unwrap().retiree, alice);
+    }
+
+    // Beneficiary and reason are stored correctly.
+    assert_eq!(receipts.get(0).unwrap().beneficiary, String::from_str(&h.env, "Acme Corp"));
+    assert_eq!(receipts.get(1).unwrap().retirement_reason, String::from_str(&h.env, "Q2 offset"));
+}
+
+#[test]
+fn test_batch_retire_deducts_total_once() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &500);
+
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (150i128, String::from_str(&h.env, "A"), String::from_str(&h.env, "r1")),
+        (100i128, String::from_str(&h.env, "B"), String::from_str(&h.env, "r2")),
+    ];
+
+    h.token.batch_retire(&alice, &retirements);
+
+    // 500 - (150 + 100) = 250 remaining.
+    assert_eq!(h.token.balance(&alice), 250);
+    assert_eq!(h.token.total_supply(), 250);
+    assert_eq!(h.token.total_retired(), 250);
+}
+
+#[test]
+fn test_batch_retire_increments_retirement_count() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &500);
+
+    assert_eq!(h.token.retirement_count(), 0);
+
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (10i128, String::from_str(&h.env, "A"), String::from_str(&h.env, "r")),
+        (20i128, String::from_str(&h.env, "B"), String::from_str(&h.env, "r")),
+        (30i128, String::from_str(&h.env, "C"), String::from_str(&h.env, "r")),
+    ];
+
+    h.token.batch_retire(&alice, &retirements);
+
+    // Three new receipts were stored.
+    assert_eq!(h.token.retirement_count(), 3);
+}
+
+#[test]
+fn test_batch_retire_receipts_accessible_via_get_receipt() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &200);
+
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (70i128, String::from_str(&h.env, "Eco Fund"), String::from_str(&h.env, "annual")),
+        (50i128, String::from_str(&h.env, "Offset DAO"), String::from_str(&h.env, "q4")),
+    ];
+
+    h.token.batch_retire(&alice, &retirements);
+
+    let r0 = h.token.get_receipt(&0);
+    assert_eq!(r0.amount, 70);
+    assert_eq!(r0.beneficiary, String::from_str(&h.env, "Eco Fund"));
+
+    let r1 = h.token.get_receipt(&1);
+    assert_eq!(r1.amount, 50);
+    assert_eq!(r1.beneficiary, String::from_str(&h.env, "Offset DAO"));
+}
+
+#[test]
+fn test_batch_retire_size_limit_panics() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &10_000);
+
+    // Build 11 entries — one over the cap.
+    let mut retirements: soroban_sdk::Vec<(i128, String, String)> =
+        soroban_sdk::Vec::new(&h.env);
+    for _ in 0..11 {
+        retirements.push_back((
+            1i128,
+            String::from_str(&h.env, "ben"),
+            String::from_str(&h.env, "reason"),
+        ));
+    }
+
+    assert!(h.token.try_batch_retire(&alice, &retirements).is_err());
+
+    // No state changes on failure.
+    assert_eq!(h.token.balance(&alice), 10_000);
+    assert_eq!(h.token.retirement_count(), 0);
+}
+
+#[test]
+fn test_batch_retire_insufficient_balance_rejected() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &50);
+
+    // Total = 30 + 30 = 60 > 50.
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (30i128, String::from_str(&h.env, "A"), String::from_str(&h.env, "r")),
+        (30i128, String::from_str(&h.env, "B"), String::from_str(&h.env, "r")),
+    ];
+
+    assert!(h.token.try_batch_retire(&alice, &retirements).is_err());
+
+    // Balance unchanged, no receipts stored.
+    assert_eq!(h.token.balance(&alice), 50);
+    assert_eq!(h.token.retirement_count(), 0);
+}
+
+#[test]
+fn test_batch_retire_blocked_when_paused() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &200);
+    h.compliance.pause();
+
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (50i128, String::from_str(&h.env, "A"), String::from_str(&h.env, "r")),
+    ];
+
+    assert!(h.token.try_batch_retire(&alice, &retirements).is_err());
+    assert_eq!(h.token.balance(&alice), 200);
+    assert_eq!(h.token.retirement_count(), 0);
+}
+
+#[test]
+fn test_batch_retire_zero_amount_entry_rejected() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &200);
+
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (50i128, String::from_str(&h.env, "A"), String::from_str(&h.env, "r")),
+        (0i128,  String::from_str(&h.env, "B"), String::from_str(&h.env, "r")), // invalid
+    ];
+
+    assert!(h.token.try_batch_retire(&alice, &retirements).is_err());
+    assert_eq!(h.token.balance(&alice), 200);
+    assert_eq!(h.token.retirement_count(), 0);
+}
+
+#[test]
+fn test_batch_retire_indices_follow_existing_receipts() {
+    // A prior single retire leaves receipt at index 0; batch should start at 1.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &500);
+
+    // Single retire → index 0.
+    h.token.retire(
+        &alice,
+        &10,
+        &String::from_str(&h.env, "prior"),
+        &String::from_str(&h.env, "pre-batch"),
+    );
+    assert_eq!(h.token.retirement_count(), 1);
+
+    // Batch of 2 → indices 1 and 2.
+    let retirements = soroban_sdk::vec![
+        &h.env,
+        (20i128, String::from_str(&h.env, "X"), String::from_str(&h.env, "batch-1")),
+        (30i128, String::from_str(&h.env, "Y"), String::from_str(&h.env, "batch-2")),
+    ];
+    h.token.batch_retire(&alice, &retirements);
+
+    assert_eq!(h.token.retirement_count(), 3);
+    assert_eq!(h.token.get_receipt(&1).amount, 20);
+    assert_eq!(h.token.get_receipt(&2).amount, 30);
+}
+
+#[test]
+fn test_batch_retire_ten_entries_at_cap_succeeds() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    let mut retirements: soroban_sdk::Vec<(i128, String, String)> =
+        soroban_sdk::Vec::new(&h.env);
+    for i in 0..10u32 {
+        retirements.push_back((
+            10i128,
+            String::from_str(&h.env, "ben"),
+            String::from_str(&h.env, "reason"),
+        ));
+        let _ = i;
+    }
+
+    let receipts = h.token.batch_retire(&alice, &retirements);
+    assert_eq!(receipts.len(), 10);
+    assert_eq!(h.token.retirement_count(), 10);
+    assert_eq!(h.token.balance(&alice), 900);
+    assert_eq!(h.token.total_retired(), 100);
+}

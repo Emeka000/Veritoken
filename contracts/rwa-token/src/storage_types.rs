@@ -13,6 +13,7 @@ pub enum DataKey {
     Admin,
     PendingAdmin,
     TotalSupply,
+    MaxSupply,
     Metadata,
     AssetType,
     KycRegistry,

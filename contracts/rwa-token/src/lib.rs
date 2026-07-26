@@ -37,6 +37,8 @@ pub enum RwaError {
     NegativeAmount = 8,
     /// Batch recipient list exceeds the maximum of 10 entries.
     BatchTooLarge = 9,
+    /// Mint would exceed the configured max supply cap.
+    ExceedsMaxSupply = 10,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -83,6 +85,7 @@ impl RwaToken {
         kyc_registry: Address,
         compliance_engine: Address,
         compliance_metadata: Option<ComplianceMetadata>,
+        max_supply: i128,
     ) {
         if asset_type != String::from_str(&env, "invoice")
             && asset_type != String::from_str(&env, "property")
@@ -90,12 +93,16 @@ impl RwaToken {
         {
             panic!("invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'");
         }
+        if max_supply < 0 {
+            panic!("max_supply must be non-negative; use 0 for unlimited");
+        }
         admin::write_admin(&env, &admin);
         metadata::write_metadata(&env, decimal, name, symbol);
         metadata::write_asset_type(&env, asset_type);
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+        balance::write_max_supply(&env, max_supply);
         if let Some(meta) = compliance_metadata {
             if let Some(v) = meta.legal_entity {
                 compliance::write_metadata(&env, Symbol::new(&env, META_LEGAL_ENTITY), v);
@@ -284,6 +291,12 @@ impl RwaToken {
         balance::read_total_supply(&env)
     }
 
+    /// Returns the configured maximum supply cap.
+    /// `0` means unlimited — no cap is enforced.
+    pub fn max_supply(env: Env) -> i128 {
+        balance::read_max_supply(&env)
+    }
+
     // ── Minting ───────────────────────────────────────────────────────────────
 
     pub fn mint(env: Env, to: Address, amount: i128) {
@@ -291,6 +304,14 @@ impl RwaToken {
         admin.require_auth();
         if amount <= 0 {
             panic_with_error!(env, RwaError::NegativeAmount);
+        }
+        // Enforce max supply cap (0 = unlimited).
+        let max_supply = balance::read_max_supply(&env);
+        if max_supply > 0 {
+            let current_supply = balance::read_total_supply(&env);
+            if current_supply + amount > max_supply {
+                panic_with_error!(env, RwaError::ExceedsMaxSupply);
+            }
         }
         kyc::require_kyc(&env, &to);
         let previous_balance = balance::read_balance(&env, to.clone());

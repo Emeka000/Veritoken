@@ -105,7 +105,7 @@ export default function InvoicePage() {
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
-  const handleIssue = (e: React.FormEvent) => {
+  const handleIssue = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!connected || !address) return;
     if (!issueAmountValidation.isValid) {
