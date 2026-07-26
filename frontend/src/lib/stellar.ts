@@ -1,5 +1,6 @@
-import { Networks, TransactionBuilder, rpc } from "@stellar/stellar-sdk";
+import { Networks, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
 import { useNetworkStore, getNetworkRpcUrl } from "./networkStore";
+import type { ContractEvent } from "../types";
 
 export const getNetwork = () => useNetworkStore.getState().network;
 
@@ -110,6 +111,23 @@ const ERROR_TABLES: Record<ContractType, Record<number, string>> = {
   carbon: CARBON_ERRORS,
 };
 
+const DEFAULT_EVENT_LOOKBACK_LEDGERS = 10_000;
+
+export interface FetchContractEventsOptions {
+  limit?: number;
+  /** Ledger to begin scanning from. Defaults to a recent bounded lookback. */
+  startLedger?: number;
+  /** Soroban RPC paging cursor returned as `pagingToken` on previous events. */
+  cursor?: string;
+  eventType?: rpc.Api.EventType;
+  /** Optional Soroban RPC topic filters, encoded as RPC topic strings. */
+  topicFilters?: string[][];
+  successfulOnly?: boolean;
+  lookbackLedgers?: number;
+}
+
+type NativeValue = string | number | boolean | null | NativeValue[] | { [key: string]: NativeValue };
+
 /**
  * Decodes a numeric Soroban contract error code into a human-readable message.
  * The contractType identifies which contract's error table to look up.
@@ -176,15 +194,181 @@ export async function simulateAndSend(
   return getResult as rpc.Api.GetSuccessfulTransactionResponse;
 }
 
+function toSerializable(value: unknown): NativeValue {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "bigint") return value.toString();
+  if (["string", "number", "boolean"].includes(typeof value)) return value as NativeValue;
+  if (Array.isArray(value)) return value.map(toSerializable);
+  if (value instanceof Uint8Array) {
+    return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, val]) => [
+        key,
+        toSerializable(val),
+      ]),
+    );
+  }
+  return String(value);
+}
+
+function decodeEventValue(value: unknown): NativeValue {
+  try {
+    return toSerializable(scValToNative(value as never));
+  } catch {
+    return toSerializable(value);
+  }
+}
+
+function firstString(values: NativeValue[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value)) {
+      const found = firstString(value);
+      if (found) return found;
+    }
+    if (value && typeof value === "object") {
+      const found = firstString(Object.values(value));
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function firstCounterparty(value: NativeValue): string | undefined {
+  if (typeof value === "string" && /^G[A-Z2-7]{55}$/.test(value)) return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = firstCounterparty(item);
+      if (found) return found;
+    }
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, NativeValue>;
+    const preferredKeys = ["counterparty", "to", "from", "issuer", "debtor", "verifier", "retiree", "beneficiary"];
+    for (const key of preferredKeys) {
+      const found = firstCounterparty(record[key]);
+      if (found) return found;
+    }
+    for (const item of Object.values(record)) {
+      const found = firstCounterparty(item);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function firstAmount(value: NativeValue): string | undefined {
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string" && /^\d+(\.\d+)?$/.test(value)) return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = firstAmount(item);
+      if (found) return found;
+    }
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, NativeValue>;
+    const preferredKeys = ["amount", "shares", "face_value", "faceValue", "value"];
+    for (const key of preferredKeys) {
+      const found = firstAmount(record[key]);
+      if (found) return found;
+    }
+    for (const item of Object.values(record)) {
+      const found = firstAmount(item);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function contractIdToString(contractId: unknown): string | undefined {
+  if (!contractId) return undefined;
+  if (typeof contractId === "string") return contractId;
+  if (typeof contractId === "object" && "contractId" in contractId) {
+    try {
+      return (contractId as { contractId: () => string }).contractId();
+    } catch {
+      // fall through to toString
+    }
+  }
+  return String(contractId);
+}
+
+export function normalizeContractEvent(event: rpc.Api.EventResponse): ContractEvent {
+  const topics = event.topic.map(decodeEventValue);
+  const value = decodeEventValue(event.value);
+  const type = firstString(topics) ?? event.type;
+  const args = Array.isArray(value) ? value : [value];
+
+  return {
+    id: event.id,
+    type,
+    amount: firstAmount(value) ?? "—",
+    counterparty: firstCounterparty(value) ?? firstString(args) ?? "—",
+    timestamp: event.ledgerClosedAt,
+    contractId: contractIdToString(event.contractId),
+    ledger: event.ledger,
+    txHash: event.txHash,
+    pagingToken: event.pagingToken,
+    topics: topics.map((topic) =>
+      typeof topic === "string" ? topic : JSON.stringify(topic),
+    ),
+    args,
+    value,
+    inSuccessfulContractCall: event.inSuccessfulContractCall,
+  };
+}
+
 /**
- * Fetch contract events for a given contract ID.
- * Returns a stub implementation for now.
+ * Fetch recent Soroban contract events for a contract ID and normalize them for UI use.
+ *
+ * Existing pages can call `fetchContractEvents(contractId, 10)`. More specific
+ * callers can pass a query object with ledger/cursor/topic filters for paginated
+ * event-index views.
  */
 export async function fetchContractEvents(
-  _contractId: string,
-  _limit: number = 10,
-): Promise<any[]> {
-  // Stub implementation - returns empty array
-  // In a real implementation, this would query the blockchain for contract events
-  return [];
+  contractId: string,
+  limitOrOptions: number | FetchContractEventsOptions = 10,
+): Promise<ContractEvent[]> {
+  if (!contractId) return [];
+
+  const options =
+    typeof limitOrOptions === "number"
+      ? { limit: limitOrOptions }
+      : limitOrOptions;
+  const eventLimit = Math.max(1, Math.min(options.limit ?? 10, 100));
+  const successfulOnly = options.successfulOnly ?? true;
+  const request: rpc.Server.GetEventsRequest = {
+    limit: eventLimit,
+    filters: [
+      {
+        type: options.eventType ?? "contract",
+        contractIds: [contractId],
+        ...(options.topicFilters ? { topics: options.topicFilters } : {}),
+      },
+    ],
+  };
+
+  if (options.cursor) {
+    request.cursor = options.cursor;
+  } else {
+    const activeServer = getServer();
+    const latestLedger = await activeServer.getLatestLedger();
+    request.startLedger =
+      options.startLedger ??
+      Math.max(
+        0,
+        latestLedger.sequence -
+          (options.lookbackLedgers ?? DEFAULT_EVENT_LOOKBACK_LEDGERS),
+      );
+  }
+
+  const response = await getServer().getEvents(request);
+  const events = successfulOnly
+    ? response.events.filter((event) => event.inSuccessfulContractCall)
+    : response.events;
+
+  return events.slice(0, eventLimit).map(normalizeContractEvent);
 }
