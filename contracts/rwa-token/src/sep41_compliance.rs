@@ -70,6 +70,18 @@ impl Sep41Harness {
             &String::from_str(&self.env, "US"),
         );
     }
+
+    fn mint(&self, to: &Address, amount: i128) {
+        self.token.mint(&self.admin, to, &amount);
+    }
+
+    fn freeze(&self, addr: &Address) {
+        self.token.freeze(&self.admin, addr);
+    }
+
+    fn unfreeze(&self, addr: &Address) {
+        self.token.unfreeze(&self.admin, addr);
+    }
 }
 
 // ── name ──────────────────────────────────────────────────────────────
@@ -113,10 +125,10 @@ fn sep41_total_supply_after_mint() {
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
 
-    h.token.mint(&alice, &500);
+    h.mint(&alice, 500);
     assert_eq!(h.token.total_supply(), 1_500);
 }
 
@@ -128,7 +140,7 @@ fn sep41_total_supply_after_transfer() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
 
     h.token.transfer(&alice, &bob, &600);
@@ -141,7 +153,7 @@ fn sep41_total_supply_after_burn() {
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
 
     h.token.burn(&alice, &300);
@@ -163,7 +175,7 @@ fn sep41_balance_after_mint() {
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     assert_eq!(h.token.balance(&alice), 1_000);
 }
 
@@ -175,7 +187,7 @@ fn sep41_balance_after_transfer() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     h.token.transfer(&alice, &bob, &400);
 
     assert_eq!(h.token.balance(&alice), 600);
@@ -192,7 +204,7 @@ fn sep41_transfer_happy_path() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     h.token.transfer(&alice, &bob, &350);
 
     assert_eq!(h.token.balance(&alice), 650);
@@ -207,7 +219,7 @@ fn sep41_transfer_insufficient_balance() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &500);
+    h.mint(&alice, 500);
     let res = h.token.try_transfer(&alice, &bob, &600);
     assert!(res.is_err());
 }
@@ -220,7 +232,7 @@ fn sep41_transfer_zero_amount() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let res = h.token.try_transfer(&alice, &bob, &0);
     assert!(res.is_err());
 }
@@ -231,7 +243,7 @@ fn sep41_transfer_requires_kyc_sender() {
     let alice = Address::generate(&h.env);
     let bob = Address::generate(&h.env);
     h.approve_kyc(&alice);
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
 
     let res = h.token.try_transfer(&alice, &bob, &100);
     assert!(res.is_err());
@@ -243,7 +255,7 @@ fn sep41_transfer_requires_kyc_receiver() {
     let alice = Address::generate(&h.env);
     let bob = Address::generate(&h.env);
     h.approve_kyc(&alice);
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
 
     let res = h.token.try_transfer(&alice, &bob, &100);
     assert!(res.is_err());
@@ -260,7 +272,7 @@ fn sep41_transfer_from_with_valid_allowance() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let expiration = h.env.ledger().sequence() + 1_000;
     h.token.approve(&alice, &spender, &400, &expiration);
     h.token.transfer_from(&spender, &alice, &bob, &250);
@@ -278,7 +290,7 @@ fn sep41_transfer_from_with_expired_allowance() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let expiration = h.env.ledger().sequence() + 10;
     h.token.approve(&alice, &spender, &400, &expiration);
 
@@ -298,7 +310,7 @@ fn sep41_transfer_from_insufficient_allowance() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let expiration = h.env.ledger().sequence() + 1_000;
     h.token.approve(&alice, &spender, &200, &expiration);
 
@@ -391,7 +403,7 @@ fn sep41_burn() {
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
 
     h.token.burn(&alice, &250);
@@ -405,7 +417,7 @@ fn sep41_burn_insufficient_balance() {
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
 
-    h.token.mint(&alice, &500);
+    h.mint(&alice, 500);
     let res = h.token.try_burn(&alice, &600);
     assert!(res.is_err());
 }
@@ -419,7 +431,7 @@ fn sep41_burn_from_with_allowance() {
     let spender = Address::generate(&h.env);
     h.approve_kyc(&alice);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let expiration = h.env.ledger().sequence() + 1_000;
     h.token.approve(&alice, &spender, &400, &expiration);
     h.token.burn_from(&spender, &alice, &150);
@@ -436,7 +448,7 @@ fn sep41_burn_from_insufficient_allowance() {
     let spender = Address::generate(&h.env);
     h.approve_kyc(&alice);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let expiration = h.env.ledger().sequence() + 1_000;
     h.token.approve(&alice, &spender, &100, &expiration);
 
@@ -456,7 +468,7 @@ fn sep41_batch_total_supply_unchanged_after_failure() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     assert_eq!(h.token.total_supply(), 1_000);
 
     let recipients = vec![
@@ -480,7 +492,7 @@ fn sep41_batch_balances_unchanged_after_failure() {
     h.approve_kyc(&bob);
     h.approve_kyc(&carol);
 
-    h.token.mint(&alice, &300); // not enough for 200 + 200 = 400
+    h.mint(&alice, 300); // not enough for 200 + 200 = 400
     assert_eq!(h.token.balance(&alice), 300);
 
     let recipients = vec![
@@ -508,7 +520,7 @@ fn sep41_batch_balances_correct_after_success() {
     h.approve_kyc(&carol);
     h.approve_kyc(&dave);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
 
     let recipients = vec![
         &h.env,
@@ -535,7 +547,7 @@ fn sep41_batch_from_total_supply_unchanged_after_failure() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let expiration = h.env.ledger().sequence() + 1_000;
     h.token.approve(&alice, &spender, &50, &expiration); // only 50 approved
 
@@ -562,7 +574,7 @@ fn sep41_batch_from_balances_correct_after_success() {
     h.approve_kyc(&bob);
     h.approve_kyc(&carol);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
     let expiration = h.env.ledger().sequence() + 1_000;
     h.token.approve(&alice, &spender, &700, &expiration);
 
@@ -593,7 +605,7 @@ fn sep41_batch_failure_in_middle_of_list_leaves_no_partial_state() {
     h.approve_kyc(&bob);
     h.approve_kyc(&carol);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
 
     let recipients = vec![
         &h.env,
@@ -617,12 +629,10 @@ fn sep41_single_and_batch_transfer_enforce_same_freeze_check() {
     let bob = Address::generate(&h.env);
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
-    h.token.mint(&alice, &500);
+    h.mint(&alice, 500);
 
     // Freeze alice
-    let admin = h.admin.clone();
-    let _ = admin;
-    h.token.freeze(&alice);
+    h.freeze(&alice);
 
     assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
 
@@ -633,7 +643,7 @@ fn sep41_single_and_batch_transfer_enforce_same_freeze_check() {
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
     // After unfreezing, both paths work
-    h.token.unfreeze(&alice);
+    h.unfreeze(&alice);
     h.token.transfer(&alice, &bob, &100);
     assert_eq!(h.token.balance(&bob), 100);
 }

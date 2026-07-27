@@ -41,18 +41,36 @@ pub fn read_metadata(env: &Env, key: Symbol) -> String {
 }
 
 /// Cross-contract call to the compliance engine to validate a transfer.
+///
+/// Error propagation (#348):
+/// - Engine call failure (contract unavailable, host trap) → `ComplianceEngineUnavailable`.
+/// - Engine returns `false` (rule violation) → `TransferBlocked`.
+///
+/// Called in the validation phase before any state mutation, so no partial
+/// state can be written when this function panics.
 pub fn check_transfer(env: &Env, from: &Address, to: &Address, amount: i128) {
     let engine = read_compliance_engine(env);
     let client = ComplianceEngineClient::new(env, &engine);
-    if !client.can_transfer(from, to, &amount) {
-        soroban_sdk::panic_with_error!(env, RwaError::TransferBlocked);
+    match client.try_can_transfer(from, to, &amount) {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => soroban_sdk::panic_with_error!(env, RwaError::TransferBlocked),
+        Ok(Err(_)) | Err(_) => {
+            soroban_sdk::panic_with_error!(env, RwaError::ComplianceEngineUnavailable)
+        }
     }
 }
 
+/// Cross-contract call to register a new holder in the compliance engine.
+///
+/// Failure panics with `ComplianceEngineUnavailable` so the outer transfer
+/// is rolled back atomically — no partial state is persisted.
 pub fn register_holder(env: &Env, addr: &Address) {
     let engine = read_compliance_engine(env);
     let client = ComplianceEngineClient::new(env, &engine);
-    client.register_holder(addr);
+    match client.try_register_holder(addr) {
+        Ok(_) => {}
+        Err(_) => soroban_sdk::panic_with_error!(env, RwaError::ComplianceEngineUnavailable),
+    }
 }
 
 pub fn is_frozen(env: &Env, addr: &Address) -> bool {
@@ -68,10 +86,17 @@ pub fn set_frozen(env: &Env, addr: &Address, frozen: bool) {
         .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
 }
 
+/// Cross-contract call to remove a holder from the compliance engine.
+///
+/// Failure panics with `ComplianceEngineUnavailable` so the outer transfer
+/// is rolled back atomically — no partial state is persisted.
 pub fn unregister_holder(env: &Env, addr: &Address) {
     let engine = read_compliance_engine(env);
     let client = ComplianceEngineClient::new(env, &engine);
-    client.unregister_holder(addr);
+    match client.try_unregister_holder(addr) {
+        Ok(_) => {}
+        Err(_) => soroban_sdk::panic_with_error!(env, RwaError::ComplianceEngineUnavailable),
+    }
 }
 
 mod compliance_interface {

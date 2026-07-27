@@ -5,20 +5,23 @@
 /// Every event is published as `env.events().publish(topics, data)`.
 /// Topics are `(Symbol, ...)` tuples; data carries the payload.
 ///
-/// | Function              | Topics                          | Data                         |
-/// |---------------------- |---------------------------------|------------------------------|
-/// | emit_transfer         | ("transfer", from, to)          | (amount: i128, ts: u64)      |
-/// | emit_mint             | ("mint", to)                    | (amount: i128, ts: u64)      |
-/// | emit_burn             | ("burn", from)                  | (amount: i128, ts: u64)      |
-/// | emit_approve          | ("approve", from, spender)      | (amount: i128, exp: u32)     |
-/// | emit_freeze           | ("freeze", addr)                | ()                           |
-/// | emit_unfreeze         | ("unfreeze", addr)              | ()                           |
-/// | emit_admin_proposed   | ("adm_prp",)                    | new_admin: Address           |
-/// | emit_admin_set        | ("adm_set",)                    | (old: Address, new: Address) |
-/// | emit_kyc_updated      | ("kyc_upd",)                    | new_registry: Address        |
-/// | emit_ce_updated       | ("ce_upd",)                     | new_engine: Address          |
+/// | Function              | Topics                          | Data                              |
+/// |-----------------------|---------------------------------|-----------------------------------|
+/// | emit_transfer         | ("transfer", from, to)          | (amount: i128, ts: u64)           |
+/// | emit_mint             | ("mint", to)                    | (amount: i128, ts: u64)           |
+/// | emit_burn             | ("burn", from)                  | (amount: i128, ts: u64)           |
+/// | emit_approve          | ("approve", from, spender)      | (amount: i128, exp: u32)          |
+/// | emit_freeze           | ("freeze", addr)                | ()                                |
+/// | emit_unfreeze         | ("unfreeze", addr)              | ()                                |
+/// | emit_admin_proposed   | ("adm_prp",)                    | (new_admin: Address, nonce: u64)  |
+/// | emit_admin_set        | ("adm_set",)                    | (old: Address, new: Address)      |
+/// | emit_kyc_updated      | ("kyc_upd",)                    | (new_registry: Address, nonce: u64) |
+/// | emit_ce_updated       | ("ce_upd",)                     | (new_engine: Address, nonce: u64) |
+/// | emit_role_assigned    | ("role_set",)                   | (role: Symbol, holder: Address, nonce: u64) |
+/// | emit_role_revoked     | ("role_rev",)                   | (role: Symbol, nonce: u64)        |
 ///
 /// All timestamps (`ts`) are Soroban ledger timestamps (Unix epoch, seconds).
+/// All `nonce` values are the admin nonce consumed by that operation (#349).
 ///
 /// ## Indexing with Stellar RPC
 ///
@@ -31,7 +34,7 @@
 ///
 /// Iterate returned events; each entry's `value.xdr` decodes to the data tuple.
 
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
 pub fn emit_transfer(env: &Env, from: Address, to: Address, amount: i128) {
     env.events().publish(
@@ -69,8 +72,9 @@ pub fn emit_unfreeze(env: &Env, addr: Address) {
     env.events().publish((symbol_short!("unfreeze"), addr), ());
 }
 
-pub fn emit_admin_proposed(env: &Env, new_admin: Address) {
-    env.events().publish((symbol_short!("adm_prp"),), new_admin);
+pub fn emit_admin_proposed(env: &Env, new_admin: Address, nonce: u64) {
+    env.events()
+        .publish((symbol_short!("adm_prp"),), (new_admin, nonce));
 }
 
 pub fn emit_admin_set(env: &Env, old_admin: Address, new_admin: Address) {
@@ -78,12 +82,22 @@ pub fn emit_admin_set(env: &Env, old_admin: Address, new_admin: Address) {
         .publish((symbol_short!("adm_set"),), (old_admin, new_admin));
 }
 
-pub fn emit_kyc_updated(env: &Env, new_registry: Address) {
+pub fn emit_kyc_updated(env: &Env, new_registry: Address, nonce: u64) {
     env.events()
-        .publish((symbol_short!("kyc_upd"),), new_registry);
+        .publish((symbol_short!("kyc_upd"),), (new_registry, nonce));
 }
 
-pub fn emit_ce_updated(env: &Env, new_engine: Address) {
+pub fn emit_ce_updated(env: &Env, new_engine: Address, nonce: u64) {
     env.events()
-        .publish((symbol_short!("ce_upd"),), new_engine);
+        .publish((symbol_short!("ce_upd"),), (new_engine, nonce));
+}
+
+pub fn emit_role_assigned(env: &Env, role: Symbol, holder: Address, nonce: u64) {
+    env.events()
+        .publish((symbol_short!("role_set"),), (role, holder, nonce));
+}
+
+pub fn emit_role_revoked(env: &Env, role: Symbol, nonce: u64) {
+    env.events()
+        .publish((symbol_short!("role_rev"),), (role, nonce));
 }

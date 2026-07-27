@@ -29,8 +29,12 @@ pub fn write_kyc_registry(env: &Env, registry: &Address) {
 pub fn require_kyc(env: &Env, addr: &Address) {
     let registry = read_kyc_registry(env);
     let client = KycRegistryClient::new(env, &registry);
-    if !client.is_approved(addr) {
-        soroban_sdk::panic_with_error!(env, RwaError::KycNotApproved);
+    match client.try_is_approved(addr) {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => soroban_sdk::panic_with_error!(env, RwaError::KycNotApproved),
+        Ok(Err(_)) | Err(_) => {
+            soroban_sdk::panic_with_error!(env, RwaError::KycRegistryUnavailable)
+        }
     }
 }
 
