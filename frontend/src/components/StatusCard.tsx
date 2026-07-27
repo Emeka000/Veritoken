@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useWallet } from "../lib/wallet";
 import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS } from "../lib/stellar";
-import { Card } from "./ui";
+import { Card, Skeleton } from "./ui";
 import type { KycRecord } from "../types";
 
 const THIRTY_DAYS_S = 30 * 24 * 60 * 60;
@@ -77,7 +77,20 @@ export default function StatusCard() {
   return (
     <Card title="My Status" style={{ marginBottom: "1.5rem" }}>
       {loading && (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>Loading…</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <div>
+            <div style={{ marginBottom: "0.5rem" }}><Skeleton height="0.8rem" width="30%" /></div>
+            <Skeleton height="1rem" width="80%" />
+          </div>
+          <div>
+            <div style={{ marginBottom: "0.5rem" }}><Skeleton height="0.8rem" width="30%" /></div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.75rem" }}>
+              <Skeleton height="3rem" width="100%" />
+              <Skeleton height="3rem" width="100%" />
+              <Skeleton height="3rem" width="100%" />
+            </div>
+          </div>
+        </div>
       )}
       {error && !loading && (
         <p style={{ fontSize: "0.875rem", color: "var(--error, #f87171)" }}>{error}</p>
