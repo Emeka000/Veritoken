@@ -16,6 +16,9 @@ mod metadata;
 mod storage_types;
 mod versioning;
 
+// Re-export public KYC sync types so the generated client surfaces them.
+pub use kyc::{KycSyncStatus, KycStatusMirror};
+
 #[cfg(test)]
 mod test;
 
@@ -51,6 +54,8 @@ pub enum RwaError {
     NoActiveRecovery = 14,
     /// Threshold must be ≥ 1 and ≤ len(members).
     InvalidRecoveryConfig = 15,
+    /// Mint would exceed the configured max supply cap.
+    ExceedsMaxSupply = 16,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -165,6 +170,7 @@ impl RwaToken {
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+        balance::write_max_supply(&env, max_supply);
         versioning::write_initial_version(&env);
         if let Some(meta) = compliance_metadata {
             if let Some(v) = meta.legal_entity {
@@ -533,7 +539,128 @@ impl RwaToken {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
-    // ── Versioning & Migration (#342) ─────────────────────────────────────────
+    // ── Metadata export ───────────────────────────────────────────────────────
+
+    /// Admin-only: store an optional URI pointing to an off-chain metadata
+    /// document (e.g. `ipfs://Qm...` or `https://api.example.com/tokens/1`).
+    /// Pass an empty string to clear the value.
+    pub fn set_external_uri(env: Env, uri: String) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        if uri.len() > 0 {
+            env.storage()
+                .instance()
+                .set(&storage_types::DataKey::ExternalUri, &uri);
+        } else {
+            env.storage()
+                .instance()
+                .remove(&storage_types::DataKey::ExternalUri);
+        }
+        env.events()
+            .publish((symbol_short!("ext_uri"),), uri);
+    }
+
+    /// Returns the optional external URI set by the admin (empty string if unset).
+    pub fn get_external_uri(env: Env) -> String {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::ExternalUri)
+            .unwrap_or_else(|| String::from_str(&env, ""))
+    }
+
+    // ── KYC synchronization layer ─────────────────────────────────────────────
+
+    /// Read-only: returns the live KYC status for `addr` as seen from this
+    /// token contract.
+    ///
+    /// This is the primary synchronization read for frontends and external tools.
+    /// It fetches the current record from the linked KYC registry (a cross-contract
+    /// call) and evaluates whether the address is truly active right now —
+    /// accounting for both status (Approved/Revoked/Rejected) and expiry.
+    ///
+    /// ## Behavior
+    /// - `is_active = true`  only when `status == Approved` AND (expiry == 0 OR expiry >= now)
+    /// - `is_active = false` when status is Revoked/Rejected/Pending, or when expired
+    ///
+    /// ## Frontend usage
+    /// Poll this before showing transfer UI or after receiving a `kyc_stale` event:
+    /// ```ts
+    /// const status = await contracts.rwa.checkKycStatus(walletAddress);
+    /// if (!status.is_active) showKycWarning(status);
+    /// ```
+    pub fn check_kyc_status(env: Env, addr: Address) -> kyc::KycSyncStatus {
+        kyc::fetch_kyc_sync_status(&env, &addr)
+    }
+
+    /// Permissionless: verify `addr`'s live KYC state and emit a `kyc_stale`
+    /// event when the approval is no longer active (expired or revoked).
+    ///
+    /// Anyone may call this.  It is the on-chain signal that frontends and
+    /// automation scripts subscribe to for cache invalidation.
+    ///
+    /// ## Events emitted
+    /// - `("kyc_stale", addr)` with data `(is_active: bool, expiry: u64)`
+    ///   — always emitted, giving listeners both the current state and expiry.
+    ///
+    /// ## Automation pattern
+    /// Schedule periodic `sync_kyc_status` calls (e.g. via a keeper bot) for
+    /// all addresses that hold tokens.  Frontends subscribe to `kyc_stale` events
+    /// on the token contract and re-check wallet KYC status when they appear.
+    pub fn sync_kyc_status(env: Env, addr: Address) -> bool {
+        let snap = kyc::fetch_kyc_sync_status(&env, &addr);
+        // Always emit so listeners can refresh state; the bool payload
+        // tells them whether they need to act.
+        env.events().publish(
+            (symbol_short!("kyc_stale"), addr),
+            (snap.is_active, snap.expiry),
+        );
+        snap.is_active
+    }
+
+    /// Returns a canonical metadata export snapshot for external integrations.
+    ///
+    /// This is the primary integration point for blockchain explorers,
+    /// dashboards, and metadata APIs. The returned struct contains:
+    /// - Core token fields (name, symbol, decimals, asset type, supply)
+    /// - Linked contract addresses (KYC registry, compliance engine)
+    /// - All compliance metadata fields (legal entity, governing law, ISIN, prospectus hash)
+    /// - An optional external URI for extended off-chain metadata
+    ///
+    /// ## Explorer integration
+    ///
+    /// Call this method read-only via simulateTransaction:
+    ///   stellar contract invoke --network testnet --id <CONTRACT_ID> -- get_token_export
+    ///
+    /// ## JSON-LD metadata
+    ///
+    /// The returned struct serialises directly to XDR and can be decoded
+    /// by any Stellar SDK. The SDK getTokenExport() helper re-encodes
+    /// it as a JSON object ready for indexers.
+    pub fn get_token_export(env: Env) -> storage_types::TokenExportMetadata {
+        let read_compliance = |key: &str| {
+            let v = compliance::read_metadata(&env, Symbol::new(&env, key));
+            if v.len() > 0 { Some(v) } else { None }
+        };
+        storage_types::TokenExportMetadata {
+            name: metadata::read_name(&env),
+            symbol: metadata::read_symbol(&env),
+            decimals: metadata::read_decimal(&env),
+            asset_type: metadata::read_asset_type(&env),
+            total_supply: balance::read_total_supply(&env),
+            max_supply: balance::read_max_supply(&env),
+            contract_version: String::from_str(&env, env!("CARGO_PKG_VERSION")),
+            kyc_registry: kyc::read_kyc_registry(&env),
+            compliance_engine: compliance::read_compliance_engine(&env),
+            legal_entity: read_compliance(META_LEGAL_ENTITY),
+            governing_law: read_compliance(META_GOVERNING_LAW),
+            isin: read_compliance(META_ISIN),
+            prospectus_hash: read_compliance(META_PROSPECTUS_HASH),
+            external_uri: env
+                .storage()
+                .instance()
+                .get(&storage_types::DataKey::ExternalUri),
+        }
+    }
 
     /// Returns the on-chain stored version string, total migration count, and
     /// the ledger timestamp of the last migration (0 if none have run).

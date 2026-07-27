@@ -910,3 +910,350 @@ fn test_migrate_last_ts_reflects_ledger_timestamp() {
     let (_ver, _count, last_ts) = h.token.contract_version_info();
     assert_eq!(last_ts, 1_700_000_000);
 }
+
+// ── Metadata export (get_token_export / set_external_uri) ────────────────────
+
+#[test]
+fn test_get_token_export_basic_fields() {
+    let h = setup();
+    let export = h.token.get_token_export();
+
+    assert_eq!(export.name, String::from_str(&h.env, "Veritoken RWA"));
+    assert_eq!(export.symbol, String::from_str(&h.env, "VTRWA"));
+    assert_eq!(export.decimals, 7u32);
+    assert_eq!(export.asset_type, String::from_str(&h.env, "property"));
+    assert_eq!(export.total_supply, 0i128);
+    assert_eq!(export.max_supply, 0i128);
+    assert!(export.contract_version.len() > 0);
+}
+
+#[test]
+fn test_get_token_export_linked_addresses() {
+    let h = setup();
+    let export = h.token.get_token_export();
+
+    assert_eq!(export.kyc_registry, h.token.kyc_registry());
+    assert_eq!(export.compliance_engine, h.token.compliance_engine());
+}
+
+#[test]
+fn test_get_token_export_compliance_fields_empty_by_default() {
+    let h = setup();
+    let export = h.token.get_token_export();
+
+    assert!(export.legal_entity.is_none());
+    assert!(export.governing_law.is_none());
+    assert!(export.isin.is_none());
+    assert!(export.prospectus_hash.is_none());
+    assert!(export.external_uri.is_none());
+}
+
+#[test]
+fn test_get_token_export_reflects_set_compliance_metadata() {
+    let h = setup();
+    let key_entity = soroban_sdk::Symbol::new(&h.env, META_LEGAL_ENTITY);
+    let key_isin   = soroban_sdk::Symbol::new(&h.env, META_ISIN);
+    h.token.set_compliance_metadata(&key_entity, &String::from_str(&h.env, "Acme Corp"));
+    h.token.set_compliance_metadata(&key_isin,   &String::from_str(&h.env, "US0231351067"));
+
+    let export = h.token.get_token_export();
+    assert_eq!(export.legal_entity, Some(String::from_str(&h.env, "Acme Corp")));
+    assert_eq!(export.isin, Some(String::from_str(&h.env, "US0231351067")));
+    assert!(export.governing_law.is_none());
+    assert!(export.prospectus_hash.is_none());
+}
+
+#[test]
+fn test_get_token_export_reflects_total_supply_after_mint() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+    h.token.mint(&user, &5_000);
+
+    let export = h.token.get_token_export();
+    assert_eq!(export.total_supply, 5_000i128);
+}
+
+#[test]
+fn test_set_and_get_external_uri() {
+    let h = setup();
+    assert_eq!(h.token.get_external_uri(), String::from_str(&h.env, ""));
+
+    let uri = String::from_str(&h.env, "ipfs://QmTestHash");
+    h.token.set_external_uri(&uri);
+
+    assert_eq!(h.token.get_external_uri(), uri);
+    let export = h.token.get_token_export();
+    assert_eq!(export.external_uri, Some(uri));
+}
+
+#[test]
+fn test_set_external_uri_empty_string_clears_value() {
+    let h = setup();
+    h.token.set_external_uri(&String::from_str(&h.env, "https://example.com/meta"));
+    h.token.set_external_uri(&String::from_str(&h.env, ""));
+
+    assert_eq!(h.token.get_external_uri(), String::from_str(&h.env, ""));
+    let export = h.token.get_token_export();
+    assert!(export.external_uri.is_none());
+}
+
+#[test]
+fn test_get_token_export_max_supply_set_at_constructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(kyc_registry::KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+
+    let compliance_id = env.register(compliance_engine::ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin, &kyc_id, &0u64);
+
+    let token_id = env.register(
+        RwaToken,
+        (
+            admin.clone(),
+            7u32,
+            String::from_str(&env, "Cap Token"),
+            String::from_str(&env, "CAP"),
+            String::from_str(&env, "invoice"),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            Option::<ComplianceMetadata>::None,
+            1_000_000i128, // max_supply = 1 million
+        ),
+    );
+    let token = RwaTokenClient::new(&env, &token_id);
+    let export = token.get_token_export();
+    assert_eq!(export.max_supply, 1_000_000i128);
+}
+
+// ── KYC synchronization layer tests ──────────────────────────────────────────
+
+#[test]
+fn test_check_kyc_status_active_for_approved_holder() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    let snap = h.token.check_kyc_status(&user);
+    assert!(snap.is_active);
+    assert_eq!(snap.tier, 1u32);
+    assert_eq!(snap.jurisdiction, String::from_str(&h.env, "US"));
+    assert_eq!(snap.expiry, 0u64); // no expiry set
+}
+
+#[test]
+fn test_check_kyc_status_inactive_for_revoked() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+    h.kyc.revoke(&h.verifier, &user);
+
+    let snap = h.token.check_kyc_status(&user);
+    assert!(!snap.is_active);
+}
+
+#[test]
+fn test_check_kyc_status_inactive_for_expired_approval() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+
+    // Approve with expiry in the past
+    h.env.ledger().set_timestamp(1_000);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &500, // expiry = 500 < current 1000
+        &String::from_str(&h.env, "US"),
+    );
+
+    let snap = h.token.check_kyc_status(&user);
+    assert!(!snap.is_active);
+    assert_eq!(snap.expiry, 500u64);
+}
+
+#[test]
+fn test_check_kyc_status_active_at_expiry_boundary() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+
+    h.env.ledger().set_timestamp(1_000);
+    // expiry == now → still active (expiry >= now)
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &1_000,
+        &String::from_str(&h.env, "US"),
+    );
+
+    let snap = h.token.check_kyc_status(&user);
+    assert!(snap.is_active);
+}
+
+#[test]
+fn test_check_kyc_status_inactive_one_second_past_expiry() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+
+    h.env.ledger().set_timestamp(999);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &1_000,
+        &String::from_str(&h.env, "US"),
+    );
+
+    h.env.ledger().set_timestamp(1_001);
+    let snap = h.token.check_kyc_status(&user);
+    assert!(!snap.is_active);
+}
+
+#[test]
+fn test_check_kyc_status_checked_at_reflects_current_timestamp() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    h.env.ledger().set_timestamp(9_999_000);
+    let snap = h.token.check_kyc_status(&user);
+    assert_eq!(snap.checked_at, 9_999_000u64);
+}
+
+#[test]
+fn test_sync_kyc_status_returns_true_for_active() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    let is_active = h.token.sync_kyc_status(&user);
+    assert!(is_active);
+}
+
+#[test]
+fn test_sync_kyc_status_returns_false_after_revocation() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+    h.kyc.revoke(&h.verifier, &user);
+
+    let is_active = h.token.sync_kyc_status(&user);
+    assert!(!is_active);
+}
+
+#[test]
+fn test_sync_kyc_status_returns_false_for_expired_approval() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+
+    h.env.ledger().set_timestamp(500);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &600, // expires at 600
+        &String::from_str(&h.env, "US"),
+    );
+
+    h.env.ledger().set_timestamp(700); // past expiry
+    let is_active = h.token.sync_kyc_status(&user);
+    assert!(!is_active);
+}
+
+#[test]
+fn test_transfer_blocked_after_revocation() {
+    // Verifies that revocation is immediately effective on the next transfer attempt.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &1_000);
+
+    // Transfer works before revocation
+    h.token.transfer(&alice, &bob, &100);
+    assert_eq!(h.token.balance(&bob), 100);
+
+    // Revoke alice's KYC
+    h.kyc.revoke(&h.verifier, &alice);
+
+    // Next transfer must fail — KYC check catches the revocation
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
+}
+
+#[test]
+fn test_transfer_blocked_after_expiry() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+
+    h.env.ledger().set_timestamp(1_000);
+    h.kyc.approve(
+        &h.verifier,
+        &alice,
+        &1,
+        &2_000, // expires at t=2000
+        &String::from_str(&h.env, "US"),
+    );
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &1_000);
+
+    // Transfer works before expiry
+    h.token.transfer(&alice, &bob, &100);
+
+    // Jump past alice's expiry
+    h.env.ledger().set_timestamp(2_001);
+
+    // Transfer now blocked — alice's KYC has expired
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
+}
+
+#[test]
+fn test_mint_blocked_after_recipient_kyc_expires() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+
+    h.env.ledger().set_timestamp(1_000);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &1_500, // expires at t=1500
+        &String::from_str(&h.env, "US"),
+    );
+
+    h.token.mint(&user, &500); // works before expiry
+
+    h.env.ledger().set_timestamp(1_600); // past expiry
+
+    assert!(h.token.try_mint(&user, &500).is_err());
+}
+
+#[test]
+fn test_check_kyc_status_tier_reflects_update() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1, // tier 1
+        &0,
+        &String::from_str(&h.env, "US"),
+    );
+    let snap1 = h.token.check_kyc_status(&user);
+    assert_eq!(snap1.tier, 1u32);
+
+    // Upgrade tier to 2
+    h.kyc.update_tier(&h.verifier, &user, &2);
+    let snap2 = h.token.check_kyc_status(&user);
+    assert_eq!(snap2.tier, 2u32);
+    assert!(snap2.is_active);
+}
