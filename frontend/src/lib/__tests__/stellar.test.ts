@@ -5,8 +5,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockSimulate = vi.hoisted(() => vi.fn());
 const mockSend = vi.hoisted(() => vi.fn());
 const mockGet = vi.hoisted(() => vi.fn());
+const mockGetLatestLedger = vi.hoisted(() => vi.fn());
+const mockGetEvents = vi.hoisted(() => vi.fn());
 const mockAssemble = vi.hoisted(() => vi.fn());
 const mockIsSimError = vi.hoisted(() => vi.fn());
+const mockScValToNative = vi.hoisted(() => vi.fn((value) => value));
 
 vi.mock("@stellar/stellar-sdk", () => ({
   Networks: {
@@ -16,11 +19,14 @@ vi.mock("@stellar/stellar-sdk", () => ({
   TransactionBuilder: {
     fromXDR: vi.fn(() => ({ toXDR: () => "mock-xdr" })),
   },
+  scValToNative: mockScValToNative,
   rpc: {
     Server: vi.fn(() => ({
       simulateTransaction: mockSimulate,
       sendTransaction: mockSend,
       getTransaction: mockGet,
+      getLatestLedger: mockGetLatestLedger,
+      getEvents: mockGetEvents,
     })),
     Api: {
       isSimulationError: mockIsSimError,
@@ -37,12 +43,19 @@ vi.mock("../networkStore", () => ({
   getNetworkRpcUrl: () => "https://soroban-testnet.stellar.org",
 }));
 
-import { simulateAndSend, decodeContractError, validateStellarAddress } from "../stellar";
+import {
+  simulateAndSend,
+  decodeContractError,
+  validateStellarAddress,
+  fetchContractEvents,
+  normalizeContractEvent,
+} from "../stellar";
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockIsSimError.mockReturnValue(false);
   mockAssemble.mockReturnValue({ build: () => ({ toXDR: () => "assembled-xdr" }) });
+  mockScValToNative.mockImplementation((value) => value);
 });
 
 describe("decodeContractError", () => {
@@ -64,7 +77,7 @@ describe("decodeContractError", () => {
 
 describe("validateStellarAddress", () => {
   it("accepts a valid 56-char G address", () => {
-    expect(validateStellarAddress("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN")).toBe(true);
+    expect(validateStellarAddress("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA")).toBe(true);
   });
 
   it("rejects an empty string", () => {
@@ -115,5 +128,70 @@ describe("simulateAndSend", () => {
     await expect(simulateAndSend("fake-xdr", mockSignTx)).rejects.toThrow(
       /not successful/i,
     );
+  });
+});
+
+describe("contract event fetching", () => {
+  const baseEvent = {
+    id: "0001",
+    type: "contract" as const,
+    ledger: 123456,
+    ledgerClosedAt: "2026-07-22T17:00:00Z",
+    pagingToken: "cursor-1",
+    inSuccessfulContractCall: true,
+    txHash: "abc",
+    contractId: { contractId: () => "CCONTRACT" },
+    topic: ["transfer"],
+    value: { amount: 42n, to: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA" },
+  };
+
+  it("normalizes decoded RPC events into UI-safe contract events", () => {
+    const event = normalizeContractEvent(baseEvent as never);
+
+    expect(event).toMatchObject({
+      id: "0001",
+      type: "transfer",
+      amount: "42",
+      counterparty: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
+      contractId: "CCONTRACT",
+      ledger: 123456,
+      txHash: "abc",
+      timestamp: "2026-07-22T17:00:00Z",
+      topics: ["transfer"],
+    });
+    expect(event.value).toEqual({ amount: "42", to: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA" });
+  });
+
+  it("queries Soroban RPC events for the requested contract", async () => {
+    mockGetLatestLedger.mockResolvedValue({ sequence: 125000 });
+    mockGetEvents.mockResolvedValue({ latestLedger: 125000, events: [baseEvent as never] });
+
+    const events = await fetchContractEvents("CCONTRACT", { limit: 5, topicFilters: [["transfer"]] });
+
+    expect(mockGetEvents).toHaveBeenCalledWith({
+      startLedger: 115000,
+      limit: 5,
+      filters: [{ type: "contract", contractIds: ["CCONTRACT"], topics: [["transfer"]] }],
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("transfer");
+  });
+
+  it("uses a cursor for paginated event queries", async () => {
+    mockGetEvents.mockResolvedValue({ latestLedger: 125000, events: [baseEvent as never] });
+
+    await fetchContractEvents("CCONTRACT", { cursor: "cursor-1", limit: 10, successfulOnly: false });
+
+    expect(mockGetLatestLedger).not.toHaveBeenCalled();
+    expect(mockGetEvents).toHaveBeenCalledWith({
+      cursor: "cursor-1",
+      limit: 10,
+      filters: [{ type: "contract", contractIds: ["CCONTRACT"] }],
+    });
+  });
+
+  it("returns an empty list when no contract id is configured", async () => {
+    await expect(fetchContractEvents("", 5)).resolves.toEqual([]);
+    expect(mockGetEvents).not.toHaveBeenCalled();
   });
 });

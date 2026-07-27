@@ -55,10 +55,19 @@ export interface RetirementReceipt {
 }
 
 export interface ContractEvent {
+  id?: string;
   type: string;
   amount: string;
   counterparty: string;
   timestamp: string;
+  contractId?: string;
+  ledger?: number;
+  txHash?: string;
+  pagingToken?: string;
+  topics?: string[];
+  args?: unknown[];
+  value?: unknown;
+  inSuccessfulContractCall?: boolean;
 }
 
 export interface ComplianceRules {
@@ -68,13 +77,6 @@ export interface ComplianceRules {
   require_same_jurisdiction: boolean;
   paused: boolean;
   allowlist_mode: boolean;
-}
-
-export interface ContractEvent {
-  type: string;
-  amount: string;
-  counterparty: string;
-  timestamp: string;
 }
 
 export interface WalletState {
