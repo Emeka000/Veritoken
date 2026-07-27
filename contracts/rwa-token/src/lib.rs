@@ -104,6 +104,30 @@ pub struct RecipientEntry {
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
+//
+// # Transfer safety invariant (reentrancy guard)
+//
+// Every transfer entry point (`transfer`, `transfer_from`, `batch_transfer`,
+// `batch_transfer_from`) wraps its execution in `enter_transfer_guard` /
+// `exit_transfer_guard`. The guard stores a boolean flag in instance storage
+// (`DataKey::TransferLock`) and panics with `TransferReentrant` if a nested
+// entry is attempted while the flag is set.
+//
+// In Soroban's single-threaded WASM execution model, true reentrancy within
+// a single invocation is not possible. This guard exists to make the
+// check-effects-interactions ordering *explicit and enforceable* as an
+// on-chain invariant, so that future cross-contract extensions that might
+// invoke this contract during a transfer are caught at the border rather
+// than silently corrupting state.
+//
+// Sequence every transfer entry point must follow:
+//   1. `enter_transfer_guard` — fail fast if already locked.
+//   2. Auth check (require_auth).
+//   3. **Validation pass** — all checks (frozen, KYC, compliance, balances).
+//      No state is mutated during this phase.
+//   4. **Mutation pass** — balance updates, holder registration changes.
+//   5. Event emission.
+//   6. `exit_transfer_guard` — clear the lock.
 
 #[contract]
 pub struct RwaToken;
@@ -237,7 +261,11 @@ impl RwaToken {
 
     /// Single transfer: validates sender + recipient against all invariants, then
     /// applies balance changes and holder registration/deregistration atomically.
+    ///
+    /// Sequence: guard → auth → validate_sender → validate_recipient →
+    ///           apply_transfer_leg → unregister_holder (if drained) → emit → unlock.
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        Self::enter_transfer_guard(&env);
         from.require_auth();
         Self::validate_sender(&env, &from);
         Self::validate_recipient(&env, &from, &to, amount);
@@ -250,7 +278,11 @@ impl RwaToken {
     }
 
     /// Delegated single transfer: identical invariants to `transfer`, plus allowance deduction.
+    ///
+    /// Sequence: guard → auth → validate_sender → validate_recipient →
+    ///           spend_allowance → apply_transfer_leg → unregister → emit → unlock.
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
+        Self::enter_transfer_guard(&env);
         spender.require_auth();
         Self::validate_sender(&env, &from);
         Self::validate_recipient(&env, &from, &to, amount);
@@ -354,6 +386,7 @@ impl RwaToken {
     ///
     /// If any check fails, the entire batch is rejected with no state changes.
     pub fn batch_transfer(env: Env, from: Address, recipients: Vec<RecipientEntry>) {
+        Self::enter_transfer_guard(&env);
         let len = recipients.len();
         if len > 10 {
             panic_with_error!(env, RwaError::BatchTooLarge);
@@ -390,6 +423,7 @@ impl RwaToken {
         if balance::read_balance(&env, from.clone()) == 0 {
             compliance::unregister_holder(&env, &from);
         }
+        Self::exit_transfer_guard(&env);
     }
 
     /// Atomic delegated batch transfer: identical invariants to `batch_transfer`,
@@ -400,6 +434,7 @@ impl RwaToken {
         from: Address,
         recipients: Vec<RecipientEntry>,
     ) {
+        Self::enter_transfer_guard(&env);
         let len = recipients.len();
         if len > 10 {
             panic_with_error!(env, RwaError::BatchTooLarge);
@@ -436,6 +471,7 @@ impl RwaToken {
         if balance::read_balance(&env, from.clone()) == 0 {
             compliance::unregister_holder(&env, &from);
         }
+        Self::exit_transfer_guard(&env);
     }
 
     // ── RWA Compliance Metadata ───────────────────────────────────────────────
