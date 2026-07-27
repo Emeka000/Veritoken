@@ -933,323 +933,349 @@ fn test_migrate_last_ts_reflects_ledger_timestamp() {
     assert_eq!(last_ts, 1_700_000_000);
 }
 
-// ── Admin replay protection (#349) ───────────────────────────────────────────
+// ── Metadata export (get_token_export / set_external_uri) ────────────────────
 
 #[test]
-fn test_admin_nonce_starts_at_zero() {
+fn test_get_token_export_basic_fields() {
     let h = setup();
-    assert_eq!(h.token.admin_nonce(), 0);
+    let export = h.token.get_token_export();
+
+    assert_eq!(export.name, String::from_str(&h.env, "Veritoken RWA"));
+    assert_eq!(export.symbol, String::from_str(&h.env, "VTRWA"));
+    assert_eq!(export.decimals, 7u32);
+    assert_eq!(export.asset_type, String::from_str(&h.env, "property"));
+    assert_eq!(export.total_supply, 0i128);
+    assert_eq!(export.max_supply, 0i128);
+    assert!(export.contract_version.len() > 0);
 }
 
 #[test]
-fn test_nonce_increments_after_each_protected_operation() {
+fn test_get_token_export_linked_addresses() {
     let h = setup();
-    assert_eq!(h.token.admin_nonce(), 0);
+    let export = h.token.get_token_export();
 
-    h.token.migrate(&String::from_str(&h.env, "0.2.0"), &String::from_str(&h.env, "v1"), &0);
-    assert_eq!(h.token.admin_nonce(), 1);
-
-    h.token.migrate(&String::from_str(&h.env, "0.3.0"), &String::from_str(&h.env, "v2"), &1);
-    assert_eq!(h.token.admin_nonce(), 2);
+    assert_eq!(export.kyc_registry, h.token.kyc_registry());
+    assert_eq!(export.compliance_engine, h.token.compliance_engine());
 }
 
 #[test]
-fn test_wrong_nonce_is_rejected() {
+fn test_get_token_export_compliance_fields_empty_by_default() {
     let h = setup();
-    // Nonce 0 is correct; passing 1 must fail.
-    let result = h.token.try_migrate(
-        &String::from_str(&h.env, "0.2.0"),
-        &String::from_str(&h.env, "bad nonce"),
-        &1,
-    );
-    assert!(result.is_err());
-    // Nonce is still 0 — state unchanged.
-    assert_eq!(h.token.admin_nonce(), 0);
+    let export = h.token.get_token_export();
+
+    assert!(export.legal_entity.is_none());
+    assert!(export.governing_law.is_none());
+    assert!(export.isin.is_none());
+    assert!(export.prospectus_hash.is_none());
+    assert!(export.external_uri.is_none());
 }
 
 #[test]
-fn test_same_nonce_cannot_be_reused() {
+fn test_get_token_export_reflects_set_compliance_metadata() {
     let h = setup();
-    // First call with nonce 0 succeeds.
-    h.token.migrate(&String::from_str(&h.env, "0.2.0"), &String::from_str(&h.env, "ok"), &0);
-    assert_eq!(h.token.admin_nonce(), 1);
+    let key_entity = soroban_sdk::Symbol::new(&h.env, META_LEGAL_ENTITY);
+    let key_isin   = soroban_sdk::Symbol::new(&h.env, META_ISIN);
+    h.token.set_compliance_metadata(&key_entity, &String::from_str(&h.env, "Acme Corp"));
+    h.token.set_compliance_metadata(&key_isin,   &String::from_str(&h.env, "US0231351067"));
 
-    // Re-submitting nonce 0 must fail.
-    let result = h.token.try_migrate(
-        &String::from_str(&h.env, "0.2.0"),
-        &String::from_str(&h.env, "replay"),
-        &0,
-    );
-    assert!(result.is_err());
-    assert_eq!(h.token.admin_nonce(), 1); // still 1
+    let export = h.token.get_token_export();
+    assert_eq!(export.legal_entity, Some(String::from_str(&h.env, "Acme Corp")));
+    assert_eq!(export.isin, Some(String::from_str(&h.env, "US0231351067")));
+    assert!(export.governing_law.is_none());
+    assert!(export.prospectus_hash.is_none());
 }
 
 #[test]
-fn test_nonce_protected_propose_admin_increments_nonce() {
+fn test_get_token_export_reflects_total_supply_after_mint() {
     let h = setup();
-    let new_admin = Address::generate(&h.env);
-    assert_eq!(h.token.admin_nonce(), 0);
-    h.token.propose_admin(&h.admin, &new_admin, &0);
-    assert_eq!(h.token.admin_nonce(), 1);
-}
-
-#[test]
-fn test_propose_and_accept_admin_two_step() {
-    let h = setup();
-    let new_admin = Address::generate(&h.env);
-    h.token.propose_admin(&h.admin, &new_admin, &0);
-
-    // The pending admin must accept.
-    h.token.accept_admin();
-
-    // After acceptance, the new admin can call admin-only operations.
     let user = Address::generate(&h.env);
     h.approve_kyc(&user);
-    h.token.mint(&new_admin, &user, &500);
-    assert_eq!(h.token.balance(&user), 500);
+    h.token.mint(&user, &5_000);
+
+    let export = h.token.get_token_export();
+    assert_eq!(export.total_supply, 5_000i128);
 }
 
 #[test]
-fn test_update_kyc_registry_nonce_protected() {
+fn test_set_and_get_external_uri() {
     let h = setup();
-    let new_kyc = Address::generate(&h.env);
-    assert_eq!(h.token.admin_nonce(), 0);
-    h.token.update_kyc_registry(&h.admin, &new_kyc, &0);
-    assert_eq!(h.token.admin_nonce(), 1);
-    assert_eq!(h.token.kyc_registry(), new_kyc);
+    assert_eq!(h.token.get_external_uri(), String::from_str(&h.env, ""));
+
+    let uri = String::from_str(&h.env, "ipfs://QmTestHash");
+    h.token.set_external_uri(&uri);
+
+    assert_eq!(h.token.get_external_uri(), uri);
+    let export = h.token.get_token_export();
+    assert_eq!(export.external_uri, Some(uri));
 }
 
 #[test]
-fn test_update_compliance_engine_nonce_protected() {
+fn test_set_external_uri_empty_string_clears_value() {
     let h = setup();
-    let new_ce = Address::generate(&h.env);
-    assert_eq!(h.token.admin_nonce(), 0);
-    h.token.update_compliance_engine(&h.admin, &new_ce, &0);
-    assert_eq!(h.token.admin_nonce(), 1);
-    assert_eq!(h.token.compliance_engine(), new_ce);
+    h.token.set_external_uri(&String::from_str(&h.env, "https://example.com/meta"));
+    h.token.set_external_uri(&String::from_str(&h.env, ""));
+
+    assert_eq!(h.token.get_external_uri(), String::from_str(&h.env, ""));
+    let export = h.token.get_token_export();
+    assert!(export.external_uri.is_none());
 }
 
-// ── Granular permission model (#347) ──────────────────────────────────────────
+#[test]
+fn test_get_token_export_max_supply_set_at_constructor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(kyc_registry::KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+
+    let compliance_id = env.register(compliance_engine::ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin, &kyc_id, &0u64);
+
+    let token_id = env.register(
+        RwaToken,
+        (
+            admin.clone(),
+            7u32,
+            String::from_str(&env, "Cap Token"),
+            String::from_str(&env, "CAP"),
+            String::from_str(&env, "invoice"),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            Option::<ComplianceMetadata>::None,
+            1_000_000i128, // max_supply = 1 million
+        ),
+    );
+    let token = RwaTokenClient::new(&env, &token_id);
+    let export = token.get_token_export();
+    assert_eq!(export.max_supply, 1_000_000i128);
+}
+
+// ── KYC synchronization layer tests ──────────────────────────────────────────
 
 #[test]
-fn test_get_role_holder_returns_none_when_unset() {
+fn test_check_kyc_status_active_for_approved_holder() {
     let h = setup();
-    let role = soroban_sdk::Symbol::new(&h.env, "compliance");
-    assert!(h.token.get_role_holder(&role).is_none());
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+
+    let snap = h.token.check_kyc_status(&user);
+    assert!(snap.is_active);
+    assert_eq!(snap.tier, 1u32);
+    assert_eq!(snap.jurisdiction, String::from_str(&h.env, "US"));
+    assert_eq!(snap.expiry, 0u64); // no expiry set
 }
 
 #[test]
-fn test_assign_and_get_role_holder() {
+fn test_check_kyc_status_inactive_for_revoked() {
     let h = setup();
-    let officer = Address::generate(&h.env);
-    let role = soroban_sdk::Symbol::new(&h.env, "compliance");
-    h.token.assign_role(&role, &officer, &0);
-    assert_eq!(h.token.get_role_holder(&role), Some(officer));
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+    h.kyc.revoke(&h.verifier, &user);
+
+    let snap = h.token.check_kyc_status(&user);
+    assert!(!snap.is_active);
 }
 
 #[test]
-fn test_revoke_role_removes_holder() {
+fn test_check_kyc_status_inactive_for_expired_approval() {
     let h = setup();
-    let officer = Address::generate(&h.env);
-    let role = soroban_sdk::Symbol::new(&h.env, "compliance");
-    h.token.assign_role(&role, &officer, &0);
-    h.token.revoke_role(&role, &1);
-    assert!(h.token.get_role_holder(&role).is_none());
+    let user = Address::generate(&h.env);
+
+    // Approve with expiry in the past
+    h.env.ledger().set_timestamp(1_000);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &500, // expiry = 500 < current 1000
+        &String::from_str(&h.env, "US"),
+    );
+
+    let snap = h.token.check_kyc_status(&user);
+    assert!(!snap.is_active);
+    assert_eq!(snap.expiry, 500u64);
 }
 
 #[test]
-fn test_compliance_role_can_freeze_and_unfreeze() {
+fn test_check_kyc_status_active_at_expiry_boundary() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let officer = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.mint(&alice, 1_000);
+    let user = Address::generate(&h.env);
 
-    // Assign compliance role.
-    let role = soroban_sdk::Symbol::new(&h.env, "compliance");
-    h.token.assign_role(&role, &officer, &0);
+    h.env.ledger().set_timestamp(1_000);
+    // expiry == now → still active (expiry >= now)
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &1_000,
+        &String::from_str(&h.env, "US"),
+    );
 
-    // Compliance officer can freeze.
-    h.token.freeze(&officer, &alice);
-    assert!(h.token.is_frozen(&alice));
-
-    // Compliance officer can unfreeze.
-    h.token.unfreeze(&officer, &alice);
-    assert!(!h.token.is_frozen(&alice));
+    let snap = h.token.check_kyc_status(&user);
+    assert!(snap.is_active);
 }
 
 #[test]
-fn test_liquidity_role_can_mint() {
+fn test_check_kyc_status_inactive_one_second_past_expiry() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let minter = Address::generate(&h.env);
-    h.approve_kyc(&alice);
+    let user = Address::generate(&h.env);
 
-    // Assign liquidity role.
-    let role = soroban_sdk::Symbol::new(&h.env, "liquidity");
-    h.token.assign_role(&role, &minter, &0);
+    h.env.ledger().set_timestamp(999);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &1_000,
+        &String::from_str(&h.env, "US"),
+    );
 
-    // Liquidity role holder can mint.
-    h.token.mint(&minter, &alice, &500);
-    assert_eq!(h.token.balance(&alice), 500);
+    h.env.ledger().set_timestamp(1_001);
+    let snap = h.token.check_kyc_status(&user);
+    assert!(!snap.is_active);
 }
 
 #[test]
-fn test_unauthorized_caller_cannot_freeze() {
+fn test_check_kyc_status_checked_at_reflects_current_timestamp() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let attacker = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.mint(&alice, 1_000);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
 
-    // attacker has no role and is not admin — must fail.
-    let result = h.token.try_freeze(&attacker, &alice);
-    assert!(result.is_err());
-    assert!(!h.token.is_frozen(&alice));
+    h.env.ledger().set_timestamp(9_999_000);
+    let snap = h.token.check_kyc_status(&user);
+    assert_eq!(snap.checked_at, 9_999_000u64);
 }
 
 #[test]
-fn test_unauthorized_caller_cannot_mint() {
+fn test_sync_kyc_status_returns_true_for_active() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let attacker = Address::generate(&h.env);
-    h.approve_kyc(&alice);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
 
-    let result = h.token.try_mint(&attacker, &alice, &500);
-    assert!(result.is_err());
-    assert_eq!(h.token.balance(&alice), 0);
+    let is_active = h.token.sync_kyc_status(&user);
+    assert!(is_active);
 }
 
 #[test]
-fn test_revoked_role_loses_access() {
+fn test_sync_kyc_status_returns_false_after_revocation() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let officer = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.mint(&alice, 1_000);
+    let user = Address::generate(&h.env);
+    h.approve_kyc(&user);
+    h.kyc.revoke(&h.verifier, &user);
 
-    let role = soroban_sdk::Symbol::new(&h.env, "compliance");
-    h.token.assign_role(&role, &officer, &0);
-
-    // Officer can freeze before revocation.
-    h.token.freeze(&officer, &alice);
-    assert!(h.token.is_frozen(&alice));
-    h.token.unfreeze(&officer, &alice);
-
-    // Revoke the role.
-    h.token.revoke_role(&role, &1);
-
-    // Officer can no longer freeze after revocation.
-    let result = h.token.try_freeze(&officer, &alice);
-    assert!(result.is_err());
+    let is_active = h.token.sync_kyc_status(&user);
+    assert!(!is_active);
 }
 
 #[test]
-fn test_admin_retains_access_after_role_assigned_to_others() {
+fn test_sync_kyc_status_returns_false_for_expired_approval() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let officer = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.mint(&alice, 1_000);
+    let user = Address::generate(&h.env);
 
-    let role = soroban_sdk::Symbol::new(&h.env, "compliance");
-    h.token.assign_role(&role, &officer, &0);
+    h.env.ledger().set_timestamp(500);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &600, // expires at 600
+        &String::from_str(&h.env, "US"),
+    );
 
-    // Admin can still freeze even though officer also holds the role.
-    h.token.freeze(&h.admin, &alice);
-    assert!(h.token.is_frozen(&alice));
+    h.env.ledger().set_timestamp(700); // past expiry
+    let is_active = h.token.sync_kyc_status(&user);
+    assert!(!is_active);
 }
 
 #[test]
-fn test_governance_role_can_propose_admin() {
-    let h = setup();
-    let governor = Address::generate(&h.env);
-    let new_admin = Address::generate(&h.env);
-
-    let role = soroban_sdk::Symbol::new(&h.env, "governance");
-    h.token.assign_role(&role, &governor, &0);
-
-    // Governor can propose a new admin using nonce 1 (assign_role consumed 0).
-    h.token.propose_admin(&governor, &new_admin, &1);
-}
-
-#[test]
-fn test_registry_role_can_update_kyc_registry() {
-    let h = setup();
-    let registrar = Address::generate(&h.env);
-    let new_kyc = Address::generate(&h.env);
-
-    let role = soroban_sdk::Symbol::new(&h.env, "registry");
-    h.token.assign_role(&role, &registrar, &0);
-
-    h.token.update_kyc_registry(&registrar, &new_kyc, &1);
-    assert_eq!(h.token.kyc_registry(), new_kyc);
-}
-
-// ── Cross-contract failure handling (#348) ────────────────────────────────────
-
-#[test]
-fn test_kyc_denial_produces_error_before_state_mutation() {
-    let h = setup();
-    let alice = Address::generate(&h.env);
-    // alice has no KYC — the KYC check must reject before any balance change.
-    let result = h.token.try_mint(&h.admin, &alice, &1_000);
-    assert!(result.is_err());
-    assert_eq!(h.token.balance(&alice), 0);
-    assert_eq!(h.token.total_supply(), 0);
-}
-
-#[test]
-fn test_compliance_denial_produces_error_before_state_mutation() {
+fn test_transfer_blocked_after_revocation() {
+    // Verifies that revocation is immediately effective on the next transfer attempt.
     let h = setup();
     let alice = Address::generate(&h.env);
     let bob = Address::generate(&h.env);
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
-    h.mint(&alice, 1_000);
+    h.token.mint(&alice, &1_000);
 
-    // Pausing compliance must block the transfer before any balance write.
-    h.compliance.pause();
-    let result = h.token.try_transfer(&alice, &bob, &500);
-    assert!(result.is_err());
-    assert_eq!(h.token.balance(&alice), 1_000);
-    assert_eq!(h.token.balance(&bob), 0);
+    // Transfer works before revocation
+    h.token.transfer(&alice, &bob, &100);
+    assert_eq!(h.token.balance(&bob), 100);
+
+    // Revoke alice's KYC
+    h.kyc.revoke(&h.verifier, &alice);
+
+    // Next transfer must fail — KYC check catches the revocation
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
 }
 
 #[test]
-fn test_kyc_denied_on_sender_prevents_transfer() {
+fn test_transfer_blocked_after_expiry() {
     let h = setup();
     let alice = Address::generate(&h.env);
     let bob = Address::generate(&h.env);
-    // KYC only for bob — alice has no KYC so sender validation fails.
+
+    h.env.ledger().set_timestamp(1_000);
+    h.kyc.approve(
+        &h.verifier,
+        &alice,
+        &1,
+        &2_000, // expires at t=2000
+        &String::from_str(&h.env, "US"),
+    );
     h.approve_kyc(&bob);
-    // We can't mint to alice without KYC so give bob tokens and try reverse.
-    h.mint(&bob, 1_000);
-    let result = h.token.try_transfer(&alice, &bob, &1);
-    assert!(result.is_err());
+
+    h.token.mint(&alice, &1_000);
+
+    // Transfer works before expiry
+    h.token.transfer(&alice, &bob, &100);
+
+    // Jump past alice's expiry
+    h.env.ledger().set_timestamp(2_001);
+
+    // Transfer now blocked — alice's KYC has expired
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
 }
 
 #[test]
-fn test_compliance_denial_on_batch_leaves_all_balances_unchanged() {
+fn test_mint_blocked_after_recipient_kyc_expires() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    let carol = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.approve_kyc(&carol);
-    h.mint(&alice, 1_000);
-    h.compliance.pause();
+    let user = Address::generate(&h.env);
 
-    let recipients = vec![
-        &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 },
-    ];
-    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+    h.env.ledger().set_timestamp(1_000);
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1,
+        &1_500, // expires at t=1500
+        &String::from_str(&h.env, "US"),
+    );
 
-    // No partial state — all balances untouched.
-    assert_eq!(h.token.balance(&alice), 1_000);
-    assert_eq!(h.token.balance(&bob), 0);
-    assert_eq!(h.token.balance(&carol), 0);
+    h.token.mint(&user, &500); // works before expiry
+
+    h.env.ledger().set_timestamp(1_600); // past expiry
+
+    assert!(h.token.try_mint(&user, &500).is_err());
+}
+
+#[test]
+fn test_check_kyc_status_tier_reflects_update() {
+    let h = setup();
+    let user = Address::generate(&h.env);
+
+    h.kyc.approve(
+        &h.verifier,
+        &user,
+        &1, // tier 1
+        &0,
+        &String::from_str(&h.env, "US"),
+    );
+    let snap1 = h.token.check_kyc_status(&user);
+    assert_eq!(snap1.tier, 1u32);
+
+    // Upgrade tier to 2
+    h.kyc.update_tier(&h.verifier, &user, &2);
+    let snap2 = h.token.check_kyc_status(&user);
+    assert_eq!(snap2.tier, 2u32);
+    assert!(snap2.is_active);
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { Icon } from "../components/ui";
+import { Icon, Skeleton } from "../components/ui";
 import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS } from "../lib/stellar";
 import StatusCard from "../components/StatusCard";
@@ -145,7 +145,14 @@ export default function Dashboard() {
           </div>
 
           {tokenInfoLoading && (
-            <p className="muted" style={{ fontSize: "0.9rem" }}>Loading token info…</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+              <Skeleton height="1rem" width="40%" />
+              <Skeleton height="1rem" width="60%" />
+              <Skeleton height="1rem" width="50%" />
+              <Skeleton height="1rem" width="55%" />
+              <Skeleton height="1rem" width="45%" />
+              <Skeleton height="1rem" width="35%" />
+            </div>
           )}
 
           {tokenInfoError && !tokenInfoLoading && (
