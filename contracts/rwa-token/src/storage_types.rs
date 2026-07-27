@@ -32,6 +32,10 @@ pub enum DataKey {
     ActiveRecovery,
     // ── Reentrancy guard (#345) ──────────────────────────────────────────────
     TransferLock,
+    // ── Recovery config ──────────────────────────────────────────────────────
+    RecoveryConfig,
+    // ── Metadata export ───────────────────────────────────────────────────────
+    ExternalUri,
 }
 
 
@@ -59,4 +63,33 @@ pub struct TokenMetadata {
 
 pub fn has_admin(env: &Env) -> bool {
     env.storage().instance().has(&DataKey::Admin)
+}
+
+/// Canonical export snapshot returned by `get_token_export`.
+///
+/// All fields that may be unset are `Option<String>`.
+/// This struct is the single source of truth for external integrations
+/// (block explorers, dashboards, metadata APIs).
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenExportMetadata {
+    // ── Core token fields ─────────────────────────────────────────────────────
+    pub name: soroban_sdk::String,
+    pub symbol: soroban_sdk::String,
+    pub decimals: u32,
+    pub asset_type: soroban_sdk::String,
+    pub total_supply: i128,
+    pub max_supply: i128,
+    pub contract_version: soroban_sdk::String,
+    // ── Linked contract addresses ─────────────────────────────────────────────
+    pub kyc_registry: Address,
+    pub compliance_engine: Address,
+    // ── Compliance / legal metadata ───────────────────────────────────────────
+    pub legal_entity: Option<soroban_sdk::String>,
+    pub governing_law: Option<soroban_sdk::String>,
+    pub isin: Option<soroban_sdk::String>,
+    pub prospectus_hash: Option<soroban_sdk::String>,
+    /// Optional URI pointing to an off-chain extended metadata document
+    /// (e.g. an IPFS JSON-LD object or a REST endpoint).
+    pub external_uri: Option<soroban_sdk::String>,
 }
