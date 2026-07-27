@@ -63,6 +63,9 @@ pub enum DataKey {
     DividendPerShareCapital,
     ClaimedDividendRent(Address),
     ClaimedDividendCapital(Address),
+    MintedShares,
+    ForcedTransferCount,
+    ForcedTransferLog(u32),
 }
 
 #[contracttype]
@@ -86,6 +89,15 @@ pub struct AllowanceKey {
 pub struct AllowanceValue {
     pub amount: i128,
     pub expiration_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ForcedTransferEntry {
+    pub from: Address,
+    pub to: Address,
+    pub shares: i128,
+    pub timestamp: u64,
 }
 
 #[contracttype]

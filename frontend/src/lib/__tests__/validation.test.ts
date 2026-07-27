@@ -53,7 +53,7 @@ describe("useAmountValidation", () => {
 
 describe("validateStellarAddress", () => {
   it("returns true for a valid 56-char G address", () => {
-    expect(validateStellarAddress("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN")).toBe(true);
+    expect(validateStellarAddress("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA")).toBe(true);
   });
 
   it("returns false for empty string", () => {
@@ -82,7 +82,7 @@ describe("useAddressValidation", () => {
   });
 
   it("returns valid for a well-formed Stellar address", () => {
-    const result = useAddressValidation("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN");
+    const result = useAddressValidation("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA");
     expect(result.isValid).toBe(true);
   });
 

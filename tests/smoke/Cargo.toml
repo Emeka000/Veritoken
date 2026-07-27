@@ -1,0 +1,22 @@
+[package]
+name = "smoke-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "smoke_tests"
+path = "src/lib.rs"
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+kyc-registry = { path = "../../contracts/kyc-registry", features = ["testutils"] }
+compliance-engine = { path = "../../contracts/compliance-engine", features = ["testutils"] }
+rwa-token = { path = "../../contracts/rwa-token", features = ["testutils"] }
+property-token = { path = "../../contracts/property-token", features = ["testutils"] }
+invoice-token = { path = "../../contracts/invoice-token", features = ["testutils"] }
+carbon-credit-token = { path = "../../contracts/carbon-credit-token", features = ["testutils"] }
+
+[[test]]
+name = "smoke"
+path = "tests/smoke.rs"

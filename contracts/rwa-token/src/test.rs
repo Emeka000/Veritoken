@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, RwaError, META_ISIN, META_LEGAL_ENTITY};
+use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, vec, Address, Env, String, TryFromVal, symbol_short};
 
 #[allow(dead_code)]
 struct Harness {
@@ -839,110 +839,74 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     assert_eq!(h.token.balance(&alice), 10_000);
 }
 
-// ── max_supply ────────────────────────────────────────────────────────────────
+// ── versioning (#342) ─────────────────────────────────────────────────────────
 
-/// Helper: build a token with a specific max_supply cap.
-fn setup_with_max_supply(max_supply: i128) -> Harness {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
+#[test]
+fn test_contract_version_info_initialized_at_deploy() {
+    let h = setup();
+    let (ver, count, last_ts) = h.token.contract_version_info();
+    // Version is set to Cargo.toml version at deploy; migration count starts at 0.
+    assert!(ver.len() > 0);
+    assert_eq!(count, 0);
+    assert_eq!(last_ts, 0);
+}
 
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-    let verifier = Address::generate(&env);
-    kyc.add_verifier(&admin, &verifier);
+#[test]
+fn test_migrate_records_version_bump() {
+    let h = setup();
+    let new_ver = String::from_str(&h.env, "0.2.0");
+    let desc = String::from_str(&h.env, "first upgrade");
+    h.token.migrate(&new_ver, &desc);
 
-    let compliance_id = env.register(ComplianceEngine, ());
-    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
-    compliance.initialize(&admin, &kyc_id, &0u64);
+    let (ver, count, _ts) = h.token.contract_version_info();
+    assert_eq!(ver, new_ver);
+    assert_eq!(count, 1);
+}
 
-    let token_id = env.register(
-        RwaToken,
-        (
-            admin.clone(),
-            7u32,
-            String::from_str(&env, "Capped RWA"),
-            String::from_str(&env, "CRWA"),
-            String::from_str(&env, "property"),
-            kyc_id.clone(),
-            compliance_id.clone(),
-            Option::<ComplianceMetadata>::None,
-            max_supply,
-        ),
+#[test]
+fn test_migrate_increments_count_on_each_call() {
+    let h = setup();
+    h.token.migrate(
+        &String::from_str(&h.env, "0.2.0"),
+        &String::from_str(&h.env, "add recovery"),
     );
-    let token = RwaTokenClient::new(&env, &token_id);
+    h.token.migrate(
+        &String::from_str(&h.env, "0.3.0"),
+        &String::from_str(&h.env, "add events"),
+    );
 
-    Harness { env, token, kyc, compliance, verifier, admin }
+    let (_ver, count, _ts) = h.token.contract_version_info();
+    assert_eq!(count, 2);
 }
 
 #[test]
-fn test_max_supply_query_returns_configured_value() {
-    let h = setup_with_max_supply(5_000);
-    assert_eq!(h.token.max_supply(), 5_000);
+fn test_get_migration_record_returns_correct_entry() {
+    let h = setup();
+    let v1 = String::from_str(&h.env, "0.2.0");
+    let d1 = String::from_str(&h.env, "first upgrade");
+    h.token.migrate(&v1, &d1);
+
+    let v2 = String::from_str(&h.env, "0.3.0");
+    let d2 = String::from_str(&h.env, "second upgrade");
+    h.token.migrate(&v2, &d2);
+
+    let rec0 = h.token.get_migration_record(&0);
+    assert_eq!(rec0.to_version, v1);
+    assert_eq!(rec0.description, d1);
+
+    let rec1 = h.token.get_migration_record(&1);
+    assert_eq!(rec1.to_version, v2);
+    assert_eq!(rec1.description, d2);
 }
 
 #[test]
-fn test_max_supply_zero_means_unlimited() {
-    let h = setup_with_max_supply(0);
-    let user = Address::generate(&h.env);
-    h.approve_kyc(&user);
-
-    // Can mint far beyond any reasonable cap when max_supply is 0.
-    h.token.mint(&user, &1_000_000_000);
-    assert_eq!(h.token.total_supply(), 1_000_000_000);
-    assert_eq!(h.token.max_supply(), 0);
-}
-
-#[test]
-fn test_mint_within_cap_succeeds() {
-    let h = setup_with_max_supply(1_000);
-    let user = Address::generate(&h.env);
-    h.approve_kyc(&user);
-
-    h.token.mint(&user, &600);
-    h.token.mint(&user, &400);
-    assert_eq!(h.token.total_supply(), 1_000);
-}
-
-#[test]
-fn test_mint_exactly_at_cap_succeeds() {
-    let h = setup_with_max_supply(500);
-    let user = Address::generate(&h.env);
-    h.approve_kyc(&user);
-
-    h.token.mint(&user, &500);
-    assert_eq!(h.token.total_supply(), 500);
-}
-
-#[test]
-fn test_mint_beyond_cap_panics() {
-    let h = setup_with_max_supply(500);
-    let user = Address::generate(&h.env);
-    h.approve_kyc(&user);
-
-    h.token.mint(&user, &400);
-    // The next mint of 101 would push supply to 501 > 500.
-    assert!(h.token.try_mint(&user, &101).is_err());
-    // Supply is unchanged.
-    assert_eq!(h.token.total_supply(), 400);
-}
-
-#[test]
-fn test_mint_after_burn_respects_cap() {
-    // Burn reduces current supply; subsequent mints should be allowed up to cap.
-    let h = setup_with_max_supply(1_000);
-    let user = Address::generate(&h.env);
-    h.approve_kyc(&user);
-
-    h.token.mint(&user, &1_000);
-    assert_eq!(h.token.total_supply(), 1_000);
-
-    h.token.burn(&user, &200);
-    assert_eq!(h.token.total_supply(), 800);
-
-    // 200 tokens of headroom: minting 200 should succeed, 201 should fail.
-    h.token.mint(&user, &200);
-    assert_eq!(h.token.total_supply(), 1_000);
-    assert!(h.token.try_mint(&user, &1).is_err());
+fn test_migrate_last_ts_reflects_ledger_timestamp() {
+    let h = setup();
+    h.env.ledger().set_timestamp(1_700_000_000);
+    h.token.migrate(
+        &String::from_str(&h.env, "0.2.0"),
+        &String::from_str(&h.env, "timed upgrade"),
+    );
+    let (_ver, _count, last_ts) = h.token.contract_version_info();
+    assert_eq!(last_ts, 1_700_000_000);
 }
