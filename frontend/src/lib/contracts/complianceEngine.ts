@@ -91,6 +91,46 @@ export class ComplianceEngineClient {
     return readCall<number>(this.server, this.contractId, "holder_count", []);
   }
 
+  /**
+   * Returns pending rules and the Unix timestamp at which they can be
+   * activated, or null when no rules are currently pending.
+   */
+  async getPendingRules(): Promise<{ rules: ComplianceRules; activateAt: number } | null> {
+    try {
+      const rules = await readCall<ComplianceRules>(
+        this.server,
+        this.contractId,
+        "get_pending_rules",
+        []
+      );
+      const activateAt = await readCall<number>(
+        this.server,
+        this.contractId,
+        "get_pending_activate_at",
+        []
+      );
+      return { rules, activateAt };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Returns the configured rule-change delay in seconds (0 = immediate).
+   */
+  async getRuleChangeDelay(): Promise<number> {
+    try {
+      return await readCall<number>(
+        this.server,
+        this.contractId,
+        "get_rule_change_delay",
+        []
+      );
+    } catch {
+      return 0;
+    }
+  }
+
   /** Returns the number of addresses currently on the blocklist. */
   async blocklistCount(): Promise<number> {
     return readCall<number>(this.server, this.contractId, "blocklist_count", []);
@@ -118,6 +158,45 @@ export class ComplianceEngineClient {
       this.contractId,
       "set_rules",
       [encodeRules(rules)],
+      adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /**
+   * Propose a new rule set subject to the configured time-lock delay.
+   * Rules will not take effect until `activateRules` is called after
+   * the delay has elapsed.  Admin-only on-chain.
+   */
+  async proposeRules(
+    adminAddress: string,
+    rules: ComplianceRules,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    await writeCall(
+      this.server,
+      this.contractId,
+      "propose_rules",
+      [encodeRules(rules)],
+      adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /**
+   * Activate previously proposed rules once the time-lock delay has elapsed.
+   * Admin-only on-chain.
+   */
+  async activateRules(adminAddress: string, signTx: SignTx): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    await writeCall(
+      this.server,
+      this.contractId,
+      "activate_rules",
+      [],
       adminAddress,
       seq,
       signTx
@@ -267,6 +346,58 @@ export class ComplianceEngineClient {
       seq,
       signTx
     );
+  }
+
+  // ── Attestation (#370) ────────────────────────────────────────────────────
+
+  /**
+   * Record an off-chain attestation reference on-chain.
+   * Stores the attestation id, type, and reference URL linked to a subject.
+   * Admin-only on-chain.
+   */
+  async recordAttestation(
+    adminAddress: string,
+    record: import("../../types").AttestationRecord,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    await writeCall(
+      this.server,
+      this.contractId,
+      "record_attestation",
+      [
+        toAddress(record.subject),
+        nativeToScVal(record.id, { type: "string" }),
+        nativeToScVal(record.attestation_type, { type: "string" }),
+        nativeToScVal(record.reference_url, { type: "string" }),
+        nativeToScVal(record.issuer, { type: "string" }),
+        nativeToScVal(record.issued_at, { type: "u64" }),
+        nativeToScVal(record.notes ?? "", { type: "string" }),
+      ],
+      adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /**
+   * Retrieve attestations recorded for a given subject address.
+   * Returns an empty array when none exist or the contract function is
+   * not yet deployed.
+   */
+  async getAttestations(
+    subject: string
+  ): Promise<import("../../types").AttestationRecord[]> {
+    try {
+      return await readCall<import("../../types").AttestationRecord[]>(
+        this.server,
+        this.contractId,
+        "get_attestations",
+        [toAddress(subject)]
+      );
+    } catch {
+      return [];
+    }
   }
 }
 

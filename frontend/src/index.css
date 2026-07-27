@@ -386,3 +386,56 @@ select {
   white-space: nowrap;
   border: 0;
 }
+
+/* ── Responsive layout (#371) ────────────────────────────────────────────── */
+
+/* Desktop: show nav, hide hamburger */
+@media (min-width: 769px) {
+  .nav-desktop {
+    display: flex !important;
+  }
+
+  .hamburger {
+    display: none !important;
+  }
+}
+
+/* Mobile / tablet: hide desktop nav, show hamburger */
+@media (max-width: 768px) {
+  .nav-desktop {
+    display: none !important;
+  }
+
+  .hamburger {
+    display: flex !important;
+  }
+
+  /* Tighter container padding on small screens */
+  .container {
+    padding: 0 1rem;
+  }
+
+  /* Full-width narrow forms on mobile */
+  .form-narrow {
+    max-width: 100%;
+  }
+
+  /* Prevent tables from blowing out the layout */
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Cards should not overflow */
+  .card {
+    padding: 1.1rem;
+  }
+
+  /* Stack header wallet/network controls on very small screens */
+  @media (max-width: 480px) {
+    .container {
+      padding: 0 0.75rem;
+    }
+  }
+}
