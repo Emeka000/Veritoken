@@ -51,6 +51,8 @@ pub enum RwaError {
     NoActiveRecovery = 14,
     /// Threshold must be ≥ 1 and ≤ len(members).
     InvalidRecoveryConfig = 15,
+    /// Mint would push total supply beyond the configured max supply cap.
+    ExceedsMaxSupply = 16,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -165,6 +167,7 @@ impl RwaToken {
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+        balance::write_max_supply(&env, max_supply);
         versioning::write_initial_version(&env);
         if let Some(meta) = compliance_metadata {
             if let Some(v) = meta.legal_entity {
@@ -279,6 +282,7 @@ impl RwaToken {
             compliance::unregister_holder(&env, &from);
         }
         events::emit_transfer(&env, from, to, amount);
+        Self::exit_transfer_guard(&env);
     }
 
     /// Delegated single transfer: identical invariants to `transfer`, plus allowance deduction.
@@ -297,6 +301,7 @@ impl RwaToken {
             compliance::unregister_holder(&env, &from);
         }
         events::emit_transfer(&env, from, to, amount);
+        Self::exit_transfer_guard(&env);
     }
 
     pub fn burn(env: Env, from: Address, amount: i128) {
@@ -603,6 +608,28 @@ impl RwaToken {
         if from != to && to_balance_before == 0 {
             compliance::register_holder(env, to);
         }
+    }
+
+    /// Sets the reentrancy guard flag; panics if a transfer is already in progress.
+    fn enter_transfer_guard(env: &Env) {
+        if env
+            .storage()
+            .instance()
+            .get::<storage_types::DataKey, bool>(&storage_types::DataKey::TransferLock)
+            .unwrap_or(false)
+        {
+            panic!("transfer reentrancy detected");
+        }
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &true);
+    }
+
+    /// Clears the reentrancy guard flag set by [`enter_transfer_guard`].
+    fn exit_transfer_guard(env: &Env) {
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &false);
     }
 
     fn read_recovery_config(env: &Env) -> RecoveryConfig {

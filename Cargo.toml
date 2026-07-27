@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "contracts/token-helpers",
     "contracts/rwa-token",
     "contracts/kyc-registry",
     "contracts/compliance-engine",

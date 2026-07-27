@@ -30,6 +30,7 @@ pub enum DataKey {
     RecoveryMembers,
     RecoveryThreshold,
     ActiveRecovery,
+    RecoveryConfig,
     // ── Reentrancy guard (#345) ──────────────────────────────────────────────
     TransferLock,
 }
