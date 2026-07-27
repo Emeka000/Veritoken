@@ -113,7 +113,7 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "set_rules",
@@ -131,7 +131,7 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "add_to_blocklist",
@@ -149,7 +149,7 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "remove_from_blocklist",
@@ -163,7 +163,7 @@ export class ComplianceEngineClient {
   /** Halt all transfers. Admin-only on-chain. */
   async pause(adminAddress: string, signTx: SignTx): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "pause",
@@ -177,7 +177,7 @@ export class ComplianceEngineClient {
   /** Resume transfers. Admin-only on-chain. */
   async unpause(adminAddress: string, signTx: SignTx): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "unpause",
@@ -195,7 +195,7 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, callerAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "register_holder",
@@ -213,7 +213,7 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, callerAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "unregister_holder",
@@ -240,7 +240,7 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "add_to_allowlist",
@@ -258,7 +258,7 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "remove_from_allowlist",

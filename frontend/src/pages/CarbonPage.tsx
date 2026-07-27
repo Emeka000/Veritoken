@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useWallet } from "../lib/wallet";
-import { contracts } from "../lib/contracts";
+import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAddressValidation } from "../lib/useAddressValidation";
 import { useAmountValidation } from "../lib/validation";
@@ -104,11 +104,11 @@ export default function CarbonPage() {
 
   const [mintTo, setMintTo] = useState("");
   const [mintAmount, setMintAmount] = useState("");
-  const [mintLoading, setMintLoading] = useState(false);
+  const [mintLoading, _setMintLoading] = useState(false);
 
   const [transferTo, setTransferTo] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
-  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferLoading, _setTransferLoading] = useState(false);
 
   const [retireAmount, setRetireAmount] = useState("");
   const [retireBeneficiary, setRetireBeneficiary] = useState("");
@@ -117,6 +117,13 @@ export default function CarbonPage() {
   const [lastReceipt, setLastReceipt] = useState<RetirementReceipt | null>(
     null,
   );
+
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => Promise<void>;
+  } | null>(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
 
   const [receipts, setReceipts] = useState<RetirementReceipt[]>([]);
   const [totalCount, setTotalCount] = useState<number | null>(null);
@@ -145,9 +152,8 @@ export default function CarbonPage() {
       .then(setEvents)
       .catch(() => {})
       .finally(() => setEventsLoading(false));
-    const placeholder = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
-    contracts.carbonToken.getRegistryLink(placeholder)
-      .then(([url, pid]) => { setRegistryUrl(url); setRegistryProjectId(pid); })
+    contracts.carbon.getRegistryLink()
+      .then(([url, pid]: [string, string]) => { setRegistryUrl(url); setRegistryProjectId(pid); })
       .catch(() => {});
   }, []);
 
@@ -179,7 +185,7 @@ export default function CarbonPage() {
       title: "Issue Carbon Credits",
       description: `You are about to mint ${mintAmount} tCO₂e to ${recipient.slice(0, 8)}…${recipient.slice(-4)}.`,
       onConfirm: async () => {
-        await contracts.carbonToken.mint(recipient, BigInt(mintAmount), signTx);
+        await contracts.carbon.mint(address, recipient, BigInt(mintAmount), signTx);
         addToast("Credits issued successfully.", "success");
         setMintAmount("");
         setMintTo("");
@@ -202,7 +208,7 @@ export default function CarbonPage() {
       title: "Transfer Carbon Credits",
       description: `You are about to transfer ${transferAmount} tCO₂e to ${transferTo.slice(0, 8)}…${transferTo.slice(-4)}.`,
       onConfirm: async () => {
-        await contracts.carbonToken.transfer(address, transferTo, BigInt(transferAmount), signTx);
+        await contracts.carbon.transfer(address, transferTo, BigInt(transferAmount), signTx);
         addToast("Transfer sent successfully.", "success");
         setTransferAmount("");
         setTransferTo("");
@@ -224,7 +230,7 @@ export default function CarbonPage() {
         setRetireLoading(true);
         setLastReceipt(null);
         try {
-          const receipt = await contracts.carbonToken.retire(
+          const receipt = await contracts.carbon.retire(
             address, BigInt(retireAmount), retireBeneficiary, retireReason, signTx,
           );
           setLastReceipt(receipt);
@@ -246,12 +252,11 @@ export default function CarbonPage() {
     }
     setReceiptsLoading(true);
     try {
-      const count = await contracts.carbonToken.retirementCount(address);
+      const count = await contracts.carbon.retirementCount();
       setTotalCount(count);
-      const fetched = await contracts.carbonToken.getReceipts(
+      const fetched = await contracts.carbon.getReceipts(
         targetPage * PAGE_SIZE,
         PAGE_SIZE,
-        address,
       );
       setReceipts(fetched);
       setPage(targetPage);

@@ -59,3 +59,20 @@ pub fn write_total_supply(env: &Env, supply: i128) {
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     env.storage().instance().set(&DataKey::TotalSupply, &supply);
 }
+
+pub fn read_max_supply(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxSupply)
+        .unwrap_or(0)
+}
+
+pub fn write_max_supply(env: &Env, cap: i128) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    env.storage().instance().set(&DataKey::MaxSupply, &cap);
+}

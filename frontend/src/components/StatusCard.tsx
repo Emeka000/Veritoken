@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useWallet } from "../lib/wallet";
-import { contracts } from "../lib/contracts";
+import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS } from "../lib/stellar";
 import { Card } from "./ui";
 import type { KycRecord } from "../types";

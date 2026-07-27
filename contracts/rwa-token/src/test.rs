@@ -44,6 +44,7 @@ fn setup() -> Harness {
             kyc_id.clone(),
             compliance_id.clone(),
             Option::<ComplianceMetadata>::None,
+            0i128, // max_supply: 0 = unlimited
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);
@@ -158,6 +159,7 @@ fn test_transfer_blocked_by_max_amount() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     assert!(h.token.try_transfer(&alice, &bob, &51).is_err());
@@ -182,6 +184,7 @@ fn test_max_holder_cap_blocks_new_holder_and_maintains_count() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     h.token.mint(&alice, &1_000);
@@ -217,6 +220,7 @@ fn test_max_holders_blocks_new_holders_via_token() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     // First two distinct holders fill the cap.
@@ -367,6 +371,7 @@ fn test_constructor_sets_compliance_metadata() {
                 isin: None,
                 prospectus_hash: None,
             }),
+            0i128, // max_supply: 0 = unlimited
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);
@@ -416,6 +421,7 @@ fn test_invalid_asset_type() {
             kyc_id,
             compliance_id,
             Option::<ComplianceMetadata>::None,
+            0i128,
         ),
     );
 }
@@ -658,6 +664,7 @@ fn test_batch_transfer_max_amount_rule_per_entry() {
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     // Single entry of 51 exceeds per-transfer cap

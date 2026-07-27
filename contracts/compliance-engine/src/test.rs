@@ -36,6 +36,8 @@ fn rules(
         max_holders,
         require_same_jurisdiction: false,
         paused,
+        allowlist_mode: false,
+        max_holding_period: 0,
     }
 }
 
@@ -239,6 +241,8 @@ fn jurisdiction_rules(require_same_jurisdiction: bool) -> ComplianceRules {
         max_holders: 0,
         require_same_jurisdiction,
         paused: false,
+        allowlist_mode: false,
+        max_holding_period: 0,
     }
 }
 
@@ -319,6 +323,8 @@ fn test_require_same_jurisdiction_blocks_cross_jurisdiction_transfer() {
         max_holders: 0,
         require_same_jurisdiction: true,
         paused: false,
+        allowlist_mode: false,
+        max_holding_period: 0,
     });
 
     // Cross-jurisdiction: blocked
@@ -389,4 +395,85 @@ fn test_get_blocklist_pagination() {
     // Start beyond length returns empty
     let empty = client.get_blocklist(&10, &5);
     assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_max_holding_period_blocks_over_held_receiver() {
+    let (env, client, _admin) = setup();
+    let sender = Address::generate(&env);
+    let over_held = Address::generate(&env);
+    let fresh = Address::generate(&env);
+
+    // max_holding_period = 1_000 seconds
+    client.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+        max_holding_period: 1_000,
+    });
+
+    // Register over_held at t=1_000
+    env.ledger().set_timestamp(1_000);
+    client.register_holder(&over_held);
+
+    // At t=2_001 the over_held address has held for 1_001 seconds (>= 1_000).
+    env.ledger().set_timestamp(2_001);
+
+    // Sending FROM over_held is still allowed (forced-exit is always permitted).
+    assert!(client.can_transfer(&over_held, &fresh, &1));
+
+    // Sending TO over_held is blocked (they may not receive more tokens).
+    assert!(!client.can_transfer(&sender, &over_held, &1));
+}
+
+#[test]
+fn test_max_holding_period_zero_means_unlimited() {
+    let (env, client, _admin) = setup();
+    let sender = Address::generate(&env);
+    let long_holder = Address::generate(&env);
+
+    // No max holding period (0 = unlimited)
+    client.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+        max_holding_period: 0,
+    });
+
+    // Register at t=0; jump far into the future
+    env.ledger().set_timestamp(0);
+    client.register_holder(&long_holder);
+    env.ledger().set_timestamp(u64::MAX / 2);
+
+    // Even after an astronomically long hold, receiving is still allowed when max=0.
+    assert!(client.can_transfer(&sender, &long_holder, &1));
+}
+
+#[test]
+fn test_max_holding_period_new_holder_not_blocked() {
+    let (env, client, _admin) = setup();
+    let sender = Address::generate(&env);
+    let new_holder = Address::generate(&env);
+
+    client.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+        max_holding_period: 500,
+    });
+
+    env.ledger().set_timestamp(10_000);
+
+    // new_holder has never held any tokens (no HolderSince entry), so they
+    // cannot possibly be over-held.  The transfer should be allowed.
+    assert!(client.can_transfer(&sender, &new_holder, &1));
 }

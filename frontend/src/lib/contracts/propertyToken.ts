@@ -108,7 +108,7 @@ export class PropertyTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "mint",
@@ -127,7 +127,7 @@ export class PropertyTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, fromAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "transfer",
@@ -148,7 +148,7 @@ export class PropertyTokenClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(
+    await writeCall(
       this.server,
       this.contractId,
       "deposit_dividend",

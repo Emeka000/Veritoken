@@ -50,6 +50,24 @@ pub struct ComplianceRules {
     pub require_same_jurisdiction: bool,
     pub paused: bool,
     pub allowlist_mode: bool,      // true = only allowlisted addresses may transfer
+    /// Maximum duration (in seconds) an address may hold tokens before being
+    /// required to exit.  0 = no maximum (unlimited holding).
+    ///
+    /// **Advanced feature — forced-exit / liquidation window.**
+    ///
+    /// When `max_holding_period > 0`:
+    /// - An address whose `HolderSince` timestamp plus `max_holding_period`
+    ///   is less than or equal to the current ledger timestamp is considered
+    ///   "over-held".
+    /// - Over-held addresses MAY still *send* tokens (forced exit is always
+    ///   allowed so they can liquidate their position).
+    /// - Over-held addresses may NOT *receive* additional tokens.  Any
+    ///   incoming transfer to an address that has already exceeded its
+    ///   maximum holding window is blocked.
+    ///
+    /// Use-case: REIT regulations that require periodic portfolio rebalancing,
+    /// or any fund structure that must enforce a mandatory exit date.
+    pub max_holding_period: u64,   // seconds; 0 = unlimited
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -83,6 +101,7 @@ impl ComplianceEngine {
             require_same_jurisdiction: false,
             paused: false,
             allowlist_mode: false,
+            max_holding_period: 0,
         };
         env.storage()
             .instance()
@@ -361,6 +380,20 @@ impl ComplianceEngine {
             if let Some(since) = env.storage().persistent().get::<DataKey, u64>(&key) {
                 let elapsed = env.ledger().timestamp().saturating_sub(since);
                 if elapsed < rules.min_holding_period {
+                    return false;
+                }
+            }
+        }
+
+        // ── Max holding period (forced-exit window) ───────────────────────────
+        // If max_holding_period > 0, block the *recipient* (`to`) from receiving
+        // more tokens once they have already exceeded their maximum holding window.
+        // The *sender* (`from`) is still allowed to transfer out (forced exit).
+        if rules.max_holding_period > 0 {
+            let key = DataKey::HolderSince(to.clone());
+            if let Some(since) = env.storage().persistent().get::<DataKey, u64>(&key) {
+                let elapsed = env.ledger().timestamp().saturating_sub(since);
+                if elapsed >= rules.max_holding_period {
                     return false;
                 }
             }

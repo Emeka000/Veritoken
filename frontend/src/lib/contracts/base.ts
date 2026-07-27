@@ -70,7 +70,7 @@ export async function readCall<T>(
   return scValToNative(result.retval) as T;
 }
 
-/** Build, simulate, and submit a state-mutating call. Returns once confirmed. */
+/** Build, simulate, and submit a state-mutating call. Returns the confirmed tx response. */
 export async function writeCall(
   _server: rpc.Server,
   contractId: string,
@@ -79,9 +79,9 @@ export async function writeCall(
   senderAddress: string,
   senderSequence: string,
   signTx: SignTx
-): Promise<void> {
+): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
   const xdrTx = buildTx(contractId, method, args, senderAddress, senderSequence);
-  await simulateAndSend(xdrTx, signTx);
+  return simulateAndSend(xdrTx, signTx);
 }
 
 // ── ScVal converters ─────────────────────────────────────────────────────────
