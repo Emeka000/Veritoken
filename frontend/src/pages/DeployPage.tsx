@@ -1,21 +1,6 @@
 import { useState } from "react";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
-import {
-  validateIsin,
-  validateIpfsHash,
-  validateLegalEntity,
-  validateGoverningLaw,
-  validateVintageYear,
-  type ValidationResult,
-} from "../lib/metadataValidation";
-import {
-  buildRwaDeployCommand,
-  buildCarbonDeployCommand,
-  isDeployReady,
-  DEPLOY_PRESETS,
-  type RwaDeployParams,
-  type CarbonDeployParams,
-} from "../lib/contractFactory";
+import { CopyButton } from "../components/CopyButton";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -76,28 +61,14 @@ function FieldError({ result }: { result: ValidationResult }) {
   return <p style={styles.fieldError}>{result.error}</p>;
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-  return (
-    <button onClick={copy} style={styles.copyBtn}>
-      {copied ? "Copied!" : "Copy"}
-    </button>
-  );
-}
-
-function CommandOutput({ command, ready }: { command: string; ready: boolean }) {
-  if (!ready) return null;
+function CommandOutput({ command }: { command: string }) {
+  const hasContent = Object.values({ command }).some((v) => v.includes('"" ') === false);
+  if (!hasContent) return null;
   return (
     <div style={styles.outputWrap}>
       <div style={styles.outputHeader}>
         <span style={styles.outputLabel}>Generated deploy command</span>
-        <CopyButton text={command} />
+        <CopyButton text={command} label="Copy deploy command" />
       </div>
       <pre style={styles.pre}>
         <code>{command}</code>
@@ -347,13 +318,5 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--text)",
     fontFamily: "var(--font-mono, monospace)",
   },
-  copyBtn: {
-    fontSize: "0.75rem",
-    padding: "0.3rem 0.75rem",
-    borderRadius: 6,
-    border: "1px solid var(--border)",
-    background: "var(--surface)",
-    color: "var(--text)",
-    cursor: "pointer",
-  },
+
 };

@@ -1,5 +1,9 @@
 # Mainnet Deployment Guide
 
+> **See also:** [docs/storage-patterns.md](storage-patterns.md) — documents the
+> instance vs. persistent vs. temporary storage strategy for every `DataKey` in
+> every contract, including TTL bump locations and known expiry risks.
+
 This guide covers deploying Veritoken contracts to the Stellar mainnet in a production-ready, secure configuration. Follow every step in order. Do not skip the checklist.
 
 ---
