@@ -24,7 +24,7 @@ fn meta(env: &Env) -> ProjectMeta {
         project_type: String::from_str(env, "forestry"),
         country: String::from_str(env, "BR"),
         verifier: String::from_str(env, "Verra"),
-        ipfs_cert_hash: String::from_str(env, "Qm..."),
+        ipfs_cert_hash: String::from_str(env, ""),
         registry_url: String::from_str(env, "https://registry.verra.org"),
         registry_project_id: String::from_str(env, "VCS-1234"),
     }
@@ -309,7 +309,7 @@ fn test_update_compliance_engine_admin_only() {
     let ce2_id = h.env.register(ComplianceEngine, ());
     let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
     let dummy_kyc = h.env.register(kyc_registry::KycRegistry, ());
-    ce2.initialize(&h.admin, &dummy_kyc);
+    ce2.initialize(&h.admin, &dummy_kyc, &0u64);
     ce2.pause();
 
     // Admin can update
@@ -419,7 +419,7 @@ fn test_update_compliance_engine_affects_transfers() {
     let ce2_id = h.env.register(ComplianceEngine, ());
     let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
     let dummy_kyc = h.env.register(kyc_registry::KycRegistry, ());
-    ce2.initialize(&h.admin, &dummy_kyc);
+    ce2.initialize(&h.admin, &dummy_kyc, &0u64);
     ce2.pause();
 
     h.token.update_compliance_engine(&ce2_id);
@@ -797,4 +797,100 @@ fn test_batch_retire_ten_entries_at_cap_succeeds() {
     assert_eq!(h.token.retirement_count(), 10);
     assert_eq!(h.token.balance(&alice), 900);
     assert_eq!(h.token.total_retired(), 100);
+}
+
+// ── Receipt verification tests (#356) ────────────────────────────────────────
+
+#[test]
+fn test_verify_receipt_valid() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &50);
+
+    h.token.retire(
+        &alice,
+        &50,
+        &String::from_str(&h.env, "Acme Corp"),
+        &String::from_str(&h.env, "Annual offset"),
+    );
+
+    let v = h.token.verify_receipt(&0);
+    assert!(v.valid);
+    assert_eq!(v.index, 0);
+    assert_eq!(v.amount, 50);
+    assert_eq!(v.retiree, alice);
+    // serial should be project_id + "-0"
+    let expected_serial = String::from_str(&h.env, "VCS-1234-0");
+    assert_eq!(v.serial, expected_serial);
+}
+
+#[test]
+fn test_verify_receipt_out_of_range_is_invalid() {
+    let h = setup();
+    let v = h.token.verify_receipt(&99);
+    assert!(!v.valid);
+}
+
+#[test]
+fn test_get_receipts_by_retiree() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+    h.token.mint(&bob, &100);
+
+    h.token.retire(
+        &alice,
+        &30,
+        &String::from_str(&h.env, "Alice Org"),
+        &String::from_str(&h.env, "scope 1"),
+    );
+    h.token.retire(
+        &bob,
+        &20,
+        &String::from_str(&h.env, "Bob Org"),
+        &String::from_str(&h.env, "scope 2"),
+    );
+    h.token.retire(
+        &alice,
+        &10,
+        &String::from_str(&h.env, "Alice Org 2"),
+        &String::from_str(&h.env, "scope 3"),
+    );
+
+    // Alice should have 2 receipts
+    let alice_receipts = h.token.get_receipts_by_retiree(&alice, &0, &10);
+    assert_eq!(alice_receipts.len(), 2);
+    assert_eq!(alice_receipts.get(0).unwrap().amount, 30);
+    assert_eq!(alice_receipts.get(1).unwrap().amount, 10);
+
+    // Bob should have 1 receipt
+    let bob_receipts = h.token.get_receipts_by_retiree(&bob, &0, &10);
+    assert_eq!(bob_receipts.len(), 1);
+    assert_eq!(bob_receipts.get(0).unwrap().amount, 20);
+}
+
+#[test]
+fn test_verify_receipt_zero_amount_is_invalid() {
+    // Can't retire 0 (InvalidAmount error), so we verify an out-of-range index instead
+    // to confirm invalid-state path. The contract rejects amount=0 at retire time.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &10);
+
+    h.token.retire(
+        &alice,
+        &10,
+        &String::from_str(&h.env, "Corp"),
+        &String::from_str(&h.env, "reason"),
+    );
+
+    // Index 0 is valid
+    assert!(h.token.verify_receipt(&0).valid);
+    // Index 1 does not exist → invalid
+    assert!(!h.token.verify_receipt(&1).valid);
 }

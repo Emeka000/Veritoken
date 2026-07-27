@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
+import { CopyButton } from "../components/CopyButton";
 
-type AssetTab = "invoice" | "property" | "carbon";
+// ── types ─────────────────────────────────────────────────────────────────────
 
 interface InvoiceFields {
   admin: string;
@@ -27,6 +28,8 @@ interface CarbonFields {
   project_id: string;
 }
 
+type AssetTab = "invoice" | "property" | "carbon";
+
 const EMPTY_INVOICE: InvoiceFields = {
   admin: "",
   name: "",
@@ -51,68 +54,11 @@ const EMPTY_CARBON: CarbonFields = {
   project_id: "",
 };
 
-function flag(name: string, value: string) {
-  return value.trim() ? ` \\\n  --${name} "${value.trim()}"` : "";
-}
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-function buildRwaCommand(f: InvoiceFields, assetType: string, wasm: string): string {
-  let cmd = `stellar contract deploy \\
-  --wasm ${wasm} \\
-  --source <YOUR_KEYPAIR> \\
-  --network testnet \\
-  -- \\
-  --admin "${f.admin}" \\
-  --decimal 7 \\
-  --name "${f.name}" \\
-  --symbol "${f.symbol}" \\
-  --asset_type "${assetType}" \\
-  --kyc_registry "${f.kyc_registry}" \\
-  --compliance_engine "${f.compliance_engine}"`;
-
-  const pairs: string[] = [];
-  if (f.legal_entity.trim()) pairs.push(`legal_entity="${f.legal_entity.trim()}"`);
-  if (f.governing_law.trim()) pairs.push(`governing_law="${f.governing_law.trim()}"`);
-  if (f.isin.trim()) pairs.push(`isin="${f.isin.trim()}"`);
-  if (f.prospectus_hash.trim()) pairs.push(`prospectus_hash="${f.prospectus_hash.trim()}"`);
-  if (pairs.length > 0) {
-    cmd += ` \\\n  --compliance_metadata '{${pairs.join(", ")}}'`;
-  }
-  return cmd;
-}
-
-function buildCarbonCommand(f: CarbonFields): string {
-  return (
-    `stellar contract deploy \\
-  --wasm carbon_credit_token.wasm \\
-  --source <YOUR_KEYPAIR> \\
-  --network testnet \\
-  -- \\
-  --admin "${f.admin}" \\
-  --decimal 7 \\
-  --name "${f.name}" \\
-  --symbol "${f.symbol}" \\
-  --kyc_registry "${f.kyc_registry}" \\
-  --compliance_engine "${f.compliance_engine}"` +
-    flag("vintage_year", f.vintage_year) +
-    flag("methodology", f.methodology) +
-    flag("registry", f.registry) +
-    flag("project_id", f.project_id)
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-  return (
-    <button onClick={copy} style={styles.copyBtn}>
-      {copied ? "Copied!" : "Copy"}
-    </button>
-  );
+function FieldError({ result }: { result: ValidationResult }) {
+  if (result.isValid || !result.error) return null;
+  return <p style={styles.fieldError}>{result.error}</p>;
 }
 
 function CommandOutput({ command }: { command: string }) {
@@ -122,7 +68,7 @@ function CommandOutput({ command }: { command: string }) {
     <div style={styles.outputWrap}>
       <div style={styles.outputHeader}>
         <span style={styles.outputLabel}>Generated deploy command</span>
-        <CopyButton text={command} />
+        <CopyButton text={command} label="Copy deploy command" />
       </div>
       <pre style={styles.pre}>
         <code>{command}</code>
@@ -131,16 +77,28 @@ function CommandOutput({ command }: { command: string }) {
   );
 }
 
+// ── tabs ──────────────────────────────────────────────────────────────────────
+
 function InvoiceTab() {
   const [f, setF] = useState<InvoiceFields>(EMPTY_INVOICE);
   const set = (k: keyof InvoiceFields) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
-  const command = buildRwaCommand(f, "invoice", "rwa_token.wasm");
+
+  const isinResult = validateIsin(f.isin);
+  const ipfsResult = validateIpfsHash(f.prospectus_hash);
+  const legalResult = validateLegalEntity(f.legal_entity);
+  const govResult = validateGoverningLaw(f.governing_law);
+
+  const hasErrors = !isinResult.isValid || !ipfsResult.isValid || !legalResult.isValid || !govResult.isValid;
+  const preset = DEPLOY_PRESETS.invoice;
+  const ready = !hasErrors && isDeployReady(f as unknown as Record<string, string>, preset);
+  const params: RwaDeployParams = f;
+  const command = buildRwaDeployCommand(params, preset);
 
   return (
     <div style={styles.tabContent}>
       <p className="muted" style={{ marginBottom: "1.5rem" }}>
-        Deploy an invoice-backed RWA token. Fill in the fields and copy the generated CLI command.
+        {preset.description}
       </p>
       <div style={styles.grid}>
         <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
@@ -148,12 +106,24 @@ function InvoiceTab() {
         <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="IVTK" />
         <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
         <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
-        <Field label="Legal entity" value={f.legal_entity} onChange={set("legal_entity")} placeholder="Acme Corp LLC" />
-        <Field label="Governing law" value={f.governing_law} onChange={set("governing_law")} placeholder="New York" />
-        <Field label="ISIN" value={f.isin} onChange={set("isin")} placeholder="US1234567890" />
-        <Field label="Prospectus hash (IPFS)" value={f.prospectus_hash} onChange={set("prospectus_hash")} placeholder="QmXxx…" />
+        <div>
+          <Field label="Legal entity" value={f.legal_entity} onChange={set("legal_entity")} placeholder="Acme Corp LLC" />
+          <FieldError result={legalResult} />
+        </div>
+        <div>
+          <Field label="Governing law" value={f.governing_law} onChange={set("governing_law")} placeholder="New York" />
+          <FieldError result={govResult} />
+        </div>
+        <div>
+          <Field label="ISIN" value={f.isin} onChange={set("isin")} placeholder="US1234567890" />
+          <FieldError result={isinResult} />
+        </div>
+        <div>
+          <Field label="Prospectus hash (IPFS)" value={f.prospectus_hash} onChange={set("prospectus_hash")} placeholder="Qm… or baf…" />
+          <FieldError result={ipfsResult} />
+        </div>
       </div>
-      <CommandOutput command={command} />
+      <CommandOutput command={command} ready={ready} />
     </div>
   );
 }
@@ -162,12 +132,22 @@ function PropertyTab() {
   const [f, setF] = useState<InvoiceFields>(EMPTY_INVOICE);
   const set = (k: keyof InvoiceFields) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
-  const command = buildRwaCommand(f, "property", "rwa_token.wasm");
+
+  const isinResult = validateIsin(f.isin);
+  const ipfsResult = validateIpfsHash(f.prospectus_hash);
+  const legalResult = validateLegalEntity(f.legal_entity);
+  const govResult = validateGoverningLaw(f.governing_law);
+
+  const hasErrors = !isinResult.isValid || !ipfsResult.isValid || !legalResult.isValid || !govResult.isValid;
+  const preset = DEPLOY_PRESETS.property;
+  const ready = !hasErrors && isDeployReady(f as unknown as Record<string, string>, preset);
+  const params: RwaDeployParams = f;
+  const command = buildRwaDeployCommand(params, preset);
 
   return (
     <div style={styles.tabContent}>
       <p className="muted" style={{ marginBottom: "1.5rem" }}>
-        Deploy a real-estate property RWA token. Fill in the fields and copy the generated CLI command.
+        {preset.description}
       </p>
       <div style={styles.grid}>
         <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
@@ -175,12 +155,24 @@ function PropertyTab() {
         <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="PROP" />
         <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
         <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
-        <Field label="Legal entity" value={f.legal_entity} onChange={set("legal_entity")} placeholder="Realty Partners LLC" />
-        <Field label="Governing law" value={f.governing_law} onChange={set("governing_law")} placeholder="Delaware" />
-        <Field label="ISIN" value={f.isin} onChange={set("isin")} placeholder="US0000000000" />
-        <Field label="Prospectus hash (IPFS)" value={f.prospectus_hash} onChange={set("prospectus_hash")} placeholder="QmXxx…" />
+        <div>
+          <Field label="Legal entity" value={f.legal_entity} onChange={set("legal_entity")} placeholder="Realty Partners LLC" />
+          <FieldError result={legalResult} />
+        </div>
+        <div>
+          <Field label="Governing law" value={f.governing_law} onChange={set("governing_law")} placeholder="Delaware" />
+          <FieldError result={govResult} />
+        </div>
+        <div>
+          <Field label="ISIN" value={f.isin} onChange={set("isin")} placeholder="US0000000000" />
+          <FieldError result={isinResult} />
+        </div>
+        <div>
+          <Field label="Title hash (IPFS)" value={f.prospectus_hash} onChange={set("prospectus_hash")} placeholder="Qm… or baf…" />
+          <FieldError result={ipfsResult} />
+        </div>
       </div>
-      <CommandOutput command={command} />
+      <CommandOutput command={command} ready={ready} />
     </div>
   );
 }
@@ -189,12 +181,19 @@ function CarbonTab() {
   const [f, setF] = useState<CarbonFields>(EMPTY_CARBON);
   const set = (k: keyof CarbonFields) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
-  const command = buildCarbonCommand(f);
+
+  const vintageResult = validateVintageYear(f.vintage_year);
+
+  const hasErrors = !vintageResult.isValid;
+  const preset = DEPLOY_PRESETS.carbon;
+  const ready = !hasErrors && isDeployReady(f as unknown as Record<string, string>, preset);
+  const params: CarbonDeployParams = f;
+  const command = buildCarbonDeployCommand(params);
 
   return (
     <div style={styles.tabContent}>
       <p className="muted" style={{ marginBottom: "1.5rem" }}>
-        Deploy a carbon credit token. Fill in the fields and copy the generated CLI command.
+        {preset.description}
       </p>
       <div style={styles.grid}>
         <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
@@ -202,15 +201,20 @@ function CarbonTab() {
         <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="ACC" />
         <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
         <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
-        <Field label="Vintage year" value={f.vintage_year} onChange={set("vintage_year")} placeholder="2024" />
+        <div>
+          <Field label="Vintage year" value={f.vintage_year} onChange={set("vintage_year")} placeholder="2024" />
+          <FieldError result={vintageResult} />
+        </div>
         <Field label="Methodology" value={f.methodology} onChange={set("methodology")} placeholder="VCS VM0010" />
         <Field label="Registry" value={f.registry} onChange={set("registry")} placeholder="Verra" />
         <Field label="Project ID" value={f.project_id} onChange={set("project_id")} placeholder="VCS-1234" />
       </div>
-      <CommandOutput command={command} />
+      <CommandOutput command={command} ready={ready} />
     </div>
   );
 }
+
+// ── page ──────────────────────────────────────────────────────────────────────
 
 export default function DeployPage() {
   const [tab, setTab] = useState<AssetTab>("invoice");
@@ -243,6 +247,8 @@ export default function DeployPage() {
     </div>
   );
 }
+
+// ── styles ────────────────────────────────────────────────────────────────────
 
 const styles: Record<string, React.CSSProperties> = {
   tabs: {
@@ -278,6 +284,11 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "1rem",
     marginBottom: "1.5rem",
   },
+  fieldError: {
+    margin: "0.25rem 0 0",
+    fontSize: "0.78rem",
+    color: "var(--error, #e05252)",
+  },
   outputWrap: {
     marginTop: "1.5rem",
     borderRadius: 10,
@@ -307,13 +318,5 @@ const styles: Record<string, React.CSSProperties> = {
     color: "var(--text)",
     fontFamily: "var(--font-mono, monospace)",
   },
-  copyBtn: {
-    fontSize: "0.75rem",
-    padding: "0.3rem 0.75rem",
-    borderRadius: 6,
-    border: "1px solid var(--border)",
-    background: "var(--surface)",
-    color: "var(--text)",
-    cursor: "pointer",
-  },
+
 };

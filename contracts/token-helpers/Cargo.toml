@@ -1,0 +1,15 @@
+[package]
+name = "token-helpers"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Shared admin, KYC, compliance, and validation helpers for Veritoken asset contracts"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[features]
+testutils = ["soroban-sdk/testutils"]

@@ -13,8 +13,12 @@ mod compliance;
 mod events;
 mod kyc;
 mod metadata;
+mod roles;
 mod storage_types;
 mod versioning;
+
+// Re-export public KYC sync types so the generated client surfaces them.
+pub use kyc::{KycSyncStatus, KycStatusMirror};
 
 #[cfg(test)]
 mod test;
@@ -51,6 +55,8 @@ pub enum RwaError {
     NoActiveRecovery = 14,
     /// Threshold must be ≥ 1 and ≤ len(members).
     InvalidRecoveryConfig = 15,
+    /// Mint would exceed the configured max supply cap.
+    ExceedsMaxSupply = 16,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -110,8 +116,8 @@ pub struct RecipientEntry {
 // Every transfer entry point (`transfer`, `transfer_from`, `batch_transfer`,
 // `batch_transfer_from`) wraps its execution in `enter_transfer_guard` /
 // `exit_transfer_guard`. The guard stores a boolean flag in instance storage
-// (`DataKey::TransferLock`) and panics with `TransferReentrant` if a nested
-// entry is attempted while the flag is set.
+// (`DataKey::TransferLock`) and panics if a nested entry is attempted while
+// the flag is set.
 //
 // In Soroban's single-threaded WASM execution model, true reentrancy within
 // a single invocation is not possible. This guard exists to make the
@@ -165,6 +171,7 @@ impl RwaToken {
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+        balance::write_max_supply(&env, max_supply);
         versioning::write_initial_version(&env);
         if let Some(meta) = compliance_metadata {
             if let Some(v) = meta.legal_entity {
@@ -207,32 +214,87 @@ impl RwaToken {
         events::emit_admin_set(&env, old_admin, new_admin);
     }
 
-    pub fn update_kyc_registry(env: Env, new_registry: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
-        kyc::write_kyc_registry(&env, &new_registry);
-        events::emit_kyc_updated(&env, new_registry);
+    /// Step 1 of the two-step admin handover.
+    ///
+    /// `caller` must be the admin or the `"governance"` role holder.
+    /// Requires the current admin nonce (#349) to prevent accidental replay.
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_GOVERNANCE));
+        admin::consume_nonce(&env, nonce);
+        admin::write_pending_admin(&env, &new_admin);
+        events::emit_admin_proposed(&env, new_admin, nonce);
     }
 
-    pub fn update_compliance_engine(env: Env, new_engine: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Step 2 of the two-step admin handover — called by the proposed admin.
+    pub fn accept_admin(env: Env) {
+        let pending = admin::read_pending_admin(&env)
+            .unwrap_or_else(|| panic!("no pending admin"));
+        pending.require_auth();
+        let old_admin = admin::read_admin(&env);
+        admin::write_admin(&env, &pending);
+        admin::remove_pending_admin(&env);
+        events::emit_admin_set(&env, old_admin, pending);
+    }
+
+    /// Updates the KYC registry address.
+    /// `caller` must be the admin or the `"registry"` role holder.
+    /// Nonce-protected (#349).
+    pub fn update_kyc_registry(env: Env, caller: Address, new_registry: Address, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_REGISTRY));
+        admin::consume_nonce(&env, nonce);
+        kyc::write_kyc_registry(&env, &new_registry);
+        events::emit_kyc_updated(&env, new_registry, nonce);
+    }
+
+    /// Updates the compliance engine address.
+    /// `caller` must be the admin or the `"registry"` role holder.
+    /// Nonce-protected (#349).
+    pub fn update_compliance_engine(env: Env, caller: Address, new_engine: Address, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_REGISTRY));
+        admin::consume_nonce(&env, nonce);
         compliance::write_compliance_engine(&env, &new_engine);
-        events::emit_ce_updated(&env, new_engine);
+        events::emit_ce_updated(&env, new_engine, nonce);
+    }
+
+    // ── Granular roles (#347) ─────────────────────────────────────────────────
+
+    /// Assigns `holder` to the given `role`.  Admin-only, nonce-protected.
+    ///
+    /// Role symbols: `"governance"`, `"compliance"`, `"liquidity"`, `"registry"`.
+    pub fn assign_role(env: Env, role: Symbol, holder: Address, nonce: u64) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        admin::consume_nonce(&env, nonce);
+        roles::write_role_holder(&env, &role, &holder);
+        events::emit_role_assigned(&env, role, holder, nonce);
+    }
+
+    /// Removes the holder for the given `role`.  Admin-only, nonce-protected.
+    pub fn revoke_role(env: Env, role: Symbol, nonce: u64) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        admin::consume_nonce(&env, nonce);
+        roles::remove_role_holder(&env, &role);
+        events::emit_role_revoked(&env, role, nonce);
+    }
+
+    /// Returns the address currently holding `role`, or `None` if unassigned.
+    pub fn get_role_holder(env: Env, role: Symbol) -> Option<Address> {
+        roles::read_role_holder(&env, &role)
     }
 
     // ── Freeze / Unfreeze ─────────────────────────────────────────────────────
 
-    pub fn freeze(env: Env, addr: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Freezes an account.  `caller` must be the admin or the `"compliance"` role holder.
+    pub fn freeze(env: Env, caller: Address, addr: Address) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_COMPLIANCE));
         compliance::set_frozen(&env, &addr, true);
         events::emit_freeze(&env, addr);
     }
 
-    pub fn unfreeze(env: Env, addr: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Unfreezes an account.  `caller` must be the admin or the `"compliance"` role holder.
+    pub fn unfreeze(env: Env, caller: Address, addr: Address) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_COMPLIANCE));
         compliance::set_frozen(&env, &addr, false);
         events::emit_unfreeze(&env, addr);
     }
@@ -279,6 +341,7 @@ impl RwaToken {
             compliance::unregister_holder(&env, &from);
         }
         events::emit_transfer(&env, from, to, amount);
+        Self::exit_transfer_guard(&env);
     }
 
     /// Delegated single transfer: identical invariants to `transfer`, plus allowance deduction.
@@ -297,6 +360,7 @@ impl RwaToken {
             compliance::unregister_holder(&env, &from);
         }
         events::emit_transfer(&env, from, to, amount);
+        Self::exit_transfer_guard(&env);
     }
 
     pub fn burn(env: Env, from: Address, amount: i128) {
@@ -362,13 +426,13 @@ impl RwaToken {
 
     // ── Minting ───────────────────────────────────────────────────────────────
 
-    pub fn mint(env: Env, to: Address, amount: i128) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Mints `amount` tokens to `to`.
+    /// `caller` must be the admin or the `"liquidity"` role holder.
+    pub fn mint(env: Env, caller: Address, to: Address, amount: i128) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_LIQUIDITY));
         if amount <= 0 {
             panic_with_error!(env, RwaError::NegativeAmount);
         }
-        // Enforce max supply cap (0 = unlimited).
         let max_supply = balance::read_max_supply(&env);
         if max_supply > 0 {
             let current_supply = balance::read_total_supply(&env);
@@ -506,9 +570,11 @@ impl RwaToken {
         compliance::read_compliance_engine(&env)
     }
 
-    pub fn set_compliance_metadata(env: Env, key: Symbol, value: String) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Sets a compliance metadata field.  Nonce-protected (#349).
+    /// `caller` must be the admin or the `"compliance"` role holder.
+    pub fn set_compliance_metadata(env: Env, caller: Address, key: Symbol, value: String, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_COMPLIANCE));
+        admin::consume_nonce(&env, nonce);
         compliance::write_metadata(&env, key, value);
     }
 
@@ -533,7 +599,128 @@ impl RwaToken {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
-    // ── Versioning & Migration (#342) ─────────────────────────────────────────
+    // ── Metadata export ───────────────────────────────────────────────────────
+
+    /// Admin-only: store an optional URI pointing to an off-chain metadata
+    /// document (e.g. `ipfs://Qm...` or `https://api.example.com/tokens/1`).
+    /// Pass an empty string to clear the value.
+    pub fn set_external_uri(env: Env, uri: String) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        if uri.len() > 0 {
+            env.storage()
+                .instance()
+                .set(&storage_types::DataKey::ExternalUri, &uri);
+        } else {
+            env.storage()
+                .instance()
+                .remove(&storage_types::DataKey::ExternalUri);
+        }
+        env.events()
+            .publish((symbol_short!("ext_uri"),), uri);
+    }
+
+    /// Returns the optional external URI set by the admin (empty string if unset).
+    pub fn get_external_uri(env: Env) -> String {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::ExternalUri)
+            .unwrap_or_else(|| String::from_str(&env, ""))
+    }
+
+    // ── KYC synchronization layer ─────────────────────────────────────────────
+
+    /// Read-only: returns the live KYC status for `addr` as seen from this
+    /// token contract.
+    ///
+    /// This is the primary synchronization read for frontends and external tools.
+    /// It fetches the current record from the linked KYC registry (a cross-contract
+    /// call) and evaluates whether the address is truly active right now —
+    /// accounting for both status (Approved/Revoked/Rejected) and expiry.
+    ///
+    /// ## Behavior
+    /// - `is_active = true`  only when `status == Approved` AND (expiry == 0 OR expiry >= now)
+    /// - `is_active = false` when status is Revoked/Rejected/Pending, or when expired
+    ///
+    /// ## Frontend usage
+    /// Poll this before showing transfer UI or after receiving a `kyc_stale` event:
+    /// ```ts
+    /// const status = await contracts.rwa.checkKycStatus(walletAddress);
+    /// if (!status.is_active) showKycWarning(status);
+    /// ```
+    pub fn check_kyc_status(env: Env, addr: Address) -> kyc::KycSyncStatus {
+        kyc::fetch_kyc_sync_status(&env, &addr)
+    }
+
+    /// Permissionless: verify `addr`'s live KYC state and emit a `kyc_stale`
+    /// event when the approval is no longer active (expired or revoked).
+    ///
+    /// Anyone may call this.  It is the on-chain signal that frontends and
+    /// automation scripts subscribe to for cache invalidation.
+    ///
+    /// ## Events emitted
+    /// - `("kyc_stale", addr)` with data `(is_active: bool, expiry: u64)`
+    ///   — always emitted, giving listeners both the current state and expiry.
+    ///
+    /// ## Automation pattern
+    /// Schedule periodic `sync_kyc_status` calls (e.g. via a keeper bot) for
+    /// all addresses that hold tokens.  Frontends subscribe to `kyc_stale` events
+    /// on the token contract and re-check wallet KYC status when they appear.
+    pub fn sync_kyc_status(env: Env, addr: Address) -> bool {
+        let snap = kyc::fetch_kyc_sync_status(&env, &addr);
+        // Always emit so listeners can refresh state; the bool payload
+        // tells them whether they need to act.
+        env.events().publish(
+            (symbol_short!("kyc_stale"), addr),
+            (snap.is_active, snap.expiry),
+        );
+        snap.is_active
+    }
+
+    /// Returns a canonical metadata export snapshot for external integrations.
+    ///
+    /// This is the primary integration point for blockchain explorers,
+    /// dashboards, and metadata APIs. The returned struct contains:
+    /// - Core token fields (name, symbol, decimals, asset type, supply)
+    /// - Linked contract addresses (KYC registry, compliance engine)
+    /// - All compliance metadata fields (legal entity, governing law, ISIN, prospectus hash)
+    /// - An optional external URI for extended off-chain metadata
+    ///
+    /// ## Explorer integration
+    ///
+    /// Call this method read-only via simulateTransaction:
+    ///   stellar contract invoke --network testnet --id <CONTRACT_ID> -- get_token_export
+    ///
+    /// ## JSON-LD metadata
+    ///
+    /// The returned struct serialises directly to XDR and can be decoded
+    /// by any Stellar SDK. The SDK getTokenExport() helper re-encodes
+    /// it as a JSON object ready for indexers.
+    pub fn get_token_export(env: Env) -> storage_types::TokenExportMetadata {
+        let read_compliance = |key: &str| {
+            let v = compliance::read_metadata(&env, Symbol::new(&env, key));
+            if v.len() > 0 { Some(v) } else { None }
+        };
+        storage_types::TokenExportMetadata {
+            name: metadata::read_name(&env),
+            symbol: metadata::read_symbol(&env),
+            decimals: metadata::read_decimal(&env),
+            asset_type: metadata::read_asset_type(&env),
+            total_supply: balance::read_total_supply(&env),
+            max_supply: balance::read_max_supply(&env),
+            contract_version: String::from_str(&env, env!("CARGO_PKG_VERSION")),
+            kyc_registry: kyc::read_kyc_registry(&env),
+            compliance_engine: compliance::read_compliance_engine(&env),
+            legal_entity: read_compliance(META_LEGAL_ENTITY),
+            governing_law: read_compliance(META_GOVERNING_LAW),
+            isin: read_compliance(META_ISIN),
+            prospectus_hash: read_compliance(META_PROSPECTUS_HASH),
+            external_uri: env
+                .storage()
+                .instance()
+                .get(&storage_types::DataKey::ExternalUri),
+        }
+    }
 
     /// Returns the on-chain stored version string, total migration count, and
     /// the ledger timestamp of the last migration (0 if none have run).
@@ -551,16 +738,14 @@ impl RwaToken {
     }
 
     /// Admin-only migration entry point. Records the version bump on-chain.
-    ///
-    /// Call this after deploying an upgraded WASM blob via
-    /// `stellar contract upgrade`. The `new_version` string follows semver
-    /// (e.g. `"0.2.0"`) and is stored for downstream clients to detect.
-    pub fn migrate(env: Env, new_version: String, description: String) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Nonce-protected (#349) to prevent accidental re-submission.
+    pub fn migrate(env: Env, new_version: String, description: String, nonce: u64) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        admin::consume_nonce(&env, nonce);
         versioning::apply_migration(&env, new_version.clone(), description);
         env.events()
-            .publish((symbol_short!("migrated"),), new_version);
+            .publish((symbol_short!("migrated"),), (new_version, nonce));
     }
 
     /// Returns the migration record at the given index, or panics if out of range.
@@ -569,7 +754,38 @@ impl RwaToken {
             .expect("migration record not found")
     }
 
+    // ── Replay-protection nonce (#349) ────────────────────────────────────────
+
+    /// Returns the current admin nonce.  Callers must pass this value to every
+    /// nonce-protected admin operation.  It increments by 1 on each successful
+    /// protected call, so repeated or out-of-order submissions are rejected.
+    pub fn admin_nonce(env: Env) -> u64 {
+        admin::read_admin_nonce(&env)
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// Sets the reentrancy guard flag.  Panics if already set.
+    fn enter_transfer_guard(env: &Env) {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&storage_types::DataKey::TransferLock)
+            .unwrap_or(false)
+        {
+            panic!("transfer reentrant");
+        }
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &true);
+    }
+
+    /// Clears the reentrancy guard flag.
+    fn exit_transfer_guard(env: &Env) {
+        env.storage()
+            .instance()
+            .remove(&storage_types::DataKey::TransferLock);
+    }
 
     /// Validates the sending side of a transfer: frozen check + KYC.
     /// Called once per transfer (or once per batch, not per entry).
@@ -603,6 +819,28 @@ impl RwaToken {
         if from != to && to_balance_before == 0 {
             compliance::register_holder(env, to);
         }
+    }
+
+    /// Sets the reentrancy guard flag; panics if a transfer is already in progress.
+    fn enter_transfer_guard(env: &Env) {
+        if env
+            .storage()
+            .instance()
+            .get::<storage_types::DataKey, bool>(&storage_types::DataKey::TransferLock)
+            .unwrap_or(false)
+        {
+            panic!("transfer reentrancy detected");
+        }
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &true);
+    }
+
+    /// Clears the reentrancy guard flag set by [`enter_transfer_guard`].
+    fn exit_transfer_guard(env: &Env) {
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &false);
     }
 
     fn read_recovery_config(env: &Env) -> RecoveryConfig {

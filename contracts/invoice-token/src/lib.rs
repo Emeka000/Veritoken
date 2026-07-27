@@ -23,6 +23,7 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
     Address, Env, String, Vec,
 };
+use token_helpers as th;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,8 @@ pub enum InvoiceError {
     UnderSettlement = 18,
     /// Settlement or redemption is blocked because the lifecycle is paused.
     LifecyclePaused = 19,
+    /// Metadata field contains an invalid value (e.g. malformed ISIN or currency code).
+    InvalidMetadata = 20,
 }
 
 // ── Lifecycle state machine ───────────────────────────────────────────────────
@@ -87,10 +90,6 @@ pub struct JournalEntry {
 
 #[contracttype]
 pub enum DataKey {
-    Admin,
-    PendingAdmin,
-    KycRegistry,
-    ComplianceEngine,
     InvoiceMeta(String),
     Balance(Address, String),
     Allowance(Address, Address, String),
@@ -153,9 +152,9 @@ impl InvoiceToken {
         compliance_engine: Address,
         meta: InvoiceMeta,
     ) {
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::KycRegistry, &kyc_registry);
-        env.storage().instance().set(&DataKey::ComplianceEngine, &compliance_engine);
+        th::write_admin(&env, &admin);
+        th::write_kyc_registry(&env, &kyc_registry);
+        th::write_compliance_engine(&env, &compliance_engine);
         Self::do_create_invoice(&env, meta);
     }
 
@@ -174,36 +173,19 @@ impl InvoiceToken {
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     pub fn update_kyc_registry(env: Env, new_registry: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::KycRegistry, &new_registry);
-        env.events().publish((symbol_short!("upd_kyc"),), new_registry);
+        th::update_kyc_registry(&env, new_registry);
     }
 
     pub fn update_compliance_engine(env: Env, new_engine: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::ComplianceEngine, &new_engine);
-        env.events().publish((symbol_short!("upd_ce"),), new_engine);
+        th::update_compliance_engine(&env, new_engine);
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) {
-        Self::require_admin(&env);
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
-        env.events().publish((symbol_short!("proposed"),), new_admin);
+        th::propose_admin(&env, new_admin);
     }
 
     pub fn accept_admin(env: Env) {
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .expect("no pending admin");
-        pending.require_auth();
-        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        env.storage().instance().set(&DataKey::Admin, &pending);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
+        th::accept_admin(&env);
     }
 
     // ── Lifecycle pause ───────────────────────────────────────────────────────
@@ -213,7 +195,7 @@ impl InvoiceToken {
     /// Admin-only.
     pub fn pause_lifecycle(env: Env) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         env.storage().instance().set(&DataKey::LifecyclePaused, &true);
         env.events().publish((symbol_short!("lc_pause"),), ());
     }
@@ -222,7 +204,7 @@ impl InvoiceToken {
     /// Admin-only.
     pub fn unpause_lifecycle(env: Env) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         env.storage().instance().set(&DataKey::LifecyclePaused, &false);
         env.events().publish((symbol_short!("lc_unpse"),), ());
     }
@@ -241,7 +223,7 @@ impl InvoiceToken {
     /// Create a new invoice. Admin-only.
     pub fn create_invoice(env: Env, meta: InvoiceMeta) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         Self::do_create_invoice(&env, meta);
     }
 
@@ -279,8 +261,9 @@ impl InvoiceToken {
 
     /// Replace stored invoice metadata. Admin-only; rejected if already settled.
     pub fn update_meta(env: Env, invoice_id: String, new_meta: InvoiceMeta) {
-        Self::require_admin(&env);
+        th::require_admin(&env);
         Self::validate_webhook(&env, &new_meta.notification_webhook);
+        Self::validate_invoice_meta(&env, &new_meta);
         let status = Self::read_status(&env, &invoice_id);
         if !matches!(status, InvoiceStatus::Created | InvoiceStatus::Issued) {
             panic_with_error!(env, InvoiceError::AlreadySettled);
@@ -321,14 +304,12 @@ impl InvoiceToken {
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     /// Mint tokens for a specific invoice. Admin-only.
-    ///
-    /// Transitions: `Created → Issued` on the first mint; subsequent mints stay in `Issued`.
-    /// Rejects issuance once settlement has begun (PartiallySettled / FullySettled / Redeemed).
-    /// Rejects any mint that would push total_supply above face_value_usd.
     pub fn issue(env: Env, invoice_id: String, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
-        Self::require_kyc(&env, &to);
+        th::require_admin(&env);
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
 
         let status = Self::read_status(&env, &invoice_id);
         match status {
@@ -368,7 +349,7 @@ impl InvoiceToken {
             THRESHOLD,
             BUMP,
         );
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         env.storage()
             .persistent()
             .set(&DataKey::TotalSupply(invoice_id.clone()), &(supply + amount));
@@ -384,12 +365,9 @@ impl InvoiceToken {
     }
 
     /// Mark an invoice as fully settled (settlement_amount = face_value_usd).
-    ///
-    /// Valid from: `Created`, `Issued`, `PartiallySettled`.
-    /// Allowing `Created → FullySettled` preserves backward-compatibility for pre-issuance settlement.
     pub fn settle(env: Env, invoice_id: String) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         Self::require_lifecycle_active(&env);
 
         let meta: InvoiceMeta = env
@@ -402,7 +380,6 @@ impl InvoiceToken {
         if matches!(from_status, InvoiceStatus::FullySettled | InvoiceStatus::Redeemed) {
             panic_with_error!(env, InvoiceError::AlreadySettled);
         }
-        // Created, Issued, and PartiallySettled are all valid origins for a full settle.
 
         Self::transition_status(&env, &invoice_id, from_status, InvoiceStatus::FullySettled);
 
@@ -419,13 +396,9 @@ impl InvoiceToken {
     }
 
     /// Mark an invoice as partially settled with a specific payment amount.
-    ///
-    /// Valid from: `Created`, `Issued`.
-    /// If `settlement_amount == face_value_usd` the invoice transitions to `FullySettled` directly.
-    /// Calling `partial_settle` a second time is rejected with `AlreadySettled`.
     pub fn partial_settle(env: Env, invoice_id: String, settlement_amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         Self::require_lifecycle_active(&env);
 
         if settlement_amount <= 0 {
@@ -473,11 +446,7 @@ impl InvoiceToken {
             .unwrap_or(0)
     }
 
-    /// Redeem (burn) tokens after settlement. Each holder may redeem at most
-    /// `balance * settlement_amount / total_supply` tokens (proportional cap).
-    ///
-    /// Valid from: `PartiallySettled`, `FullySettled`.
-    /// Transitions to `Redeemed` when total_supply reaches zero.
+    /// Redeem (burn) tokens after settlement.
     pub fn redeem(env: Env, invoice_id: String, from: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
@@ -488,7 +457,9 @@ impl InvoiceToken {
             panic_with_error!(env, InvoiceError::NotSettled);
         }
 
-        Self::check_redeem_compliance(&env, &from, amount);
+        if !th::can_transfer_compliance(&env, &from, &from, amount) {
+            panic_with_error!(env, InvoiceError::TransferBlocked);
+        }
 
         let bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if bal < amount {
@@ -535,13 +506,15 @@ impl InvoiceToken {
             .publish((symbol_short!("redeemed"), from), (invoice_id, amount));
     }
 
-    /// SEP-41-style burn — destroys tokens from `from`.
-    /// Allowed in any lifecycle state provided the holder has sufficient balance.
-    /// Transitions to `Redeemed` if supply hits zero and the invoice is already settled.
+    /// SEP-41-style burn.
     pub fn burn(env: Env, invoice_id: String, from: Address, amount: i128) {
         from.require_auth();
-        Self::require_kyc(&env, &from);
-        Self::check_redeem_compliance(&env, &from, amount);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &from, &from, amount) {
+            panic_with_error!(env, InvoiceError::TransferBlocked);
+        }
 
         let bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if bal < amount {
@@ -577,7 +550,7 @@ impl InvoiceToken {
             .publish((symbol_short!("burn"), from), (invoice_id, amount));
     }
 
-    /// SEP-41-style burn_from — destroys tokens from `from` on behalf of `spender`.
+    /// SEP-41-style burn_from.
     pub fn burn_from(
         env: Env,
         spender: Address,
@@ -586,8 +559,12 @@ impl InvoiceToken {
         amount: i128,
     ) {
         spender.require_auth();
-        Self::require_kyc(&env, &from);
-        Self::check_redeem_compliance(&env, &from, amount);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &from, &from, amount) {
+            panic_with_error!(env, InvoiceError::TransferBlocked);
+        }
 
         let allowance = Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
         if allowance.amount < amount {
@@ -670,9 +647,26 @@ impl InvoiceToken {
         if amount < 0 {
             panic_with_error!(env, InvoiceError::NegativeAmount);
         }
-        Self::require_kyc(&env, &from);
-        Self::require_kyc(&env, &to);
-        Self::require_compliance(&env, &from, &to, amount);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &from, &to, amount) {
+            panic_with_error!(env, InvoiceError::TransferBlocked);
+        }
+
+        // ── Fee deduction ────────────────────────────────────────────────
+        // Compute fee: floor(amount * transfer_fee_bps / 10_000).
+        // The fee is deducted from `from`'s balance and credited to `fee_recipient`.
+        // If fee_recipient is None or fee_bps is 0, no fee is collected.
+        let fee = if meta.transfer_fee_bps > 0 {
+            amount * meta.transfer_fee_bps as i128 / 10_000
+        } else {
+            0
+        };
+        let net_amount = amount - fee;
 
         let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
@@ -690,14 +684,14 @@ impl InvoiceToken {
         let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
         env.storage().persistent().set(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
-            &(to_bal + amount),
+            &(to_bal + net_amount),
         );
         env.storage().persistent().extend_ttl(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
     }
@@ -735,9 +729,15 @@ impl InvoiceToken {
         if amount < 0 {
             panic_with_error!(env, InvoiceError::NegativeAmount);
         }
-        Self::require_kyc(&env, &from);
-        Self::require_kyc(&env, &to);
-        Self::require_compliance(&env, &from, &to, amount);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &from, &to, amount) {
+            panic_with_error!(env, InvoiceError::TransferBlocked);
+        }
 
         let allowance = Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
         if allowance.expiration_ledger < env.ledger().sequence() {
@@ -753,6 +753,15 @@ impl InvoiceToken {
                 expiration_ledger: allowance.expiration_ledger,
             },
         );
+
+        // ── Fee deduction ────────────────────────────────────────────────
+        // `meta` was already fetched above for the due_date check; reuse it here.
+        let fee = if meta.transfer_fee_bps > 0 {
+            amount * meta.transfer_fee_bps as i128 / 10_000
+        } else {
+            0
+        };
+        let net_amount = amount - fee;
 
         let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
@@ -770,14 +779,14 @@ impl InvoiceToken {
         let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
         env.storage().persistent().set(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
-            &(to_bal + amount),
+            &(to_bal + net_amount),
         );
         env.storage().persistent().extend_ttl(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
     }
@@ -920,8 +929,22 @@ impl InvoiceToken {
         }
     }
 
+    /// Validates normalizable metadata fields on an InvoiceMeta record.
+    fn validate_invoice_meta(env: &Env, meta: &InvoiceMeta) {
+        if !th::is_valid_currency(&meta.currency) {
+            panic_with_error!(env, InvoiceError::InvalidMetadata);
+        }
+        if meta.face_value_usd <= 0 {
+            panic_with_error!(env, InvoiceError::InvalidMetadata);
+        }
+        if !th::is_valid_ipfs_hash(&meta.ipfs_doc_hash) {
+            panic_with_error!(env, InvoiceError::InvalidMetadata);
+        }
+    }
+
     fn do_create_invoice(env: &Env, meta: InvoiceMeta) {
         Self::validate_webhook(env, &meta.notification_webhook);
+        Self::validate_invoice_meta(env, &meta);
         let invoice_id = meta.invoice_id.clone();
         if env
             .storage()
@@ -967,15 +990,6 @@ impl InvoiceToken {
         env.events().publish((symbol_short!("inv_crt"),), invoice_id);
     }
 
-    fn require_admin(env: &Env) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin must be set");
-        admin.require_auth();
-    }
-
     fn require_lifecycle_active(env: &Env) {
         let paused: bool = env
             .storage()
@@ -985,66 +999,6 @@ impl InvoiceToken {
         if paused {
             panic_with_error!(env, InvoiceError::LifecyclePaused);
         }
-    }
-
-    #[allow(dead_code)]
-    fn validate_currency(currency: &String) {
-        if currency.len() != 3 {
-            panic!("currency must be ISO 4217 (3 uppercase letters)");
-        }
-        let mut bytes = [0u8; 3];
-        currency.copy_into_slice(&mut bytes);
-        for b in bytes {
-            if b < b'A' || b > b'Z' {
-                panic!("currency must be ISO 4217 (3 uppercase letters)");
-            }
-        }
-    }
-
-    fn require_kyc(env: &Env, addr: &Address) {
-        let registry: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::KycRegistry)
-            .expect("kyc registry must be set");
-        let client = KycRegistryClient::new(env, &registry);
-        if !client.is_approved(addr) {
-            panic_with_error!(env, InvoiceError::KycNotApproved);
-        }
-    }
-
-    fn check_redeem_compliance(env: &Env, holder: &Address, amount: i128) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        if !client.can_transfer(holder, holder, &amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
-        }
-    }
-
-    fn require_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .unwrap();
-        let client = ComplianceEngineClient::new(env, &engine);
-        if !client.can_transfer(from, to, &amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
-        }
-    }
-
-    fn register_holder(env: &Env, addr: &Address) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .unwrap();
-        let client = ComplianceEngineClient::new(env, &engine);
-        client.register_holder(addr);
     }
 
     fn read_balance(env: &Env, addr: Address, invoice_id: String) -> i128 {
@@ -1069,45 +1023,3 @@ impl InvoiceToken {
             })
     }
 }
-
-// ── External contract interfaces ──────────────────────────────────────────────
-
-mod kyc_iface {
-    use soroban_sdk::{contractclient, Address};
-    #[contractclient(name = "KycRegistryClient")]
-    #[allow(dead_code)]
-    pub trait KycRegistry {
-        fn is_approved(env: soroban_sdk::Env, addr: Address) -> bool;
-    }
-}
-
-mod compliance_iface {
-    use soroban_sdk::{contractclient, Address};
-    #[contractclient(name = "ComplianceEngineClient")]
-    #[allow(dead_code)]
-    pub trait ComplianceEngine {
-        fn get_rules(env: soroban_sdk::Env) -> super::compliance_engine_types::ComplianceRules;
-        fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
-        fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
-        fn register_holder(env: soroban_sdk::Env, addr: Address);
-    }
-}
-
-mod compliance_engine_types {
-    use soroban_sdk::contracttype;
-
-    #[contracttype]
-    #[derive(Clone)]
-    pub struct ComplianceRules {
-        pub max_transfer_amount: i128,
-        pub min_holding_period: u64,
-        pub max_holders: u32,
-        pub require_same_jurisdiction: bool,
-        pub paused: bool,
-        pub allowlist_mode: bool,
-        pub max_holding_period: u64,
-    }
-}
-
-use compliance_iface::ComplianceEngineClient;
-use kyc_iface::KycRegistryClient;

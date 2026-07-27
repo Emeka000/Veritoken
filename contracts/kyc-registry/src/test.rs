@@ -1048,3 +1048,144 @@ fn test_two_verifiers_have_independent_lifecycle_histories() {
     assert_eq!(hist.get(1).unwrap().verifier, v1);
     assert_eq!(hist.get(2).unwrap().verifier, v2);
 }
+
+// ── get_full_record ───────────────────────────────────────────────────────────
+
+/// The subject themselves can retrieve their own full record.
+#[test]
+fn test_get_full_record_self_access() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    client.approve(&verifier, &subject, &2, &0, &js(&env, "DE"));
+
+    let full = client.get_full_record(&subject, &subject);
+
+    // Record reflects the last approve.
+    assert!(matches!(full.record.status, KycStatus::Approved));
+    assert_eq!(full.record.tier, 2);
+    assert_eq!(full.record.jurisdiction, js(&env, "DE"));
+
+    // Three actions → three verifier-log entries for this subject.
+    assert_eq!(full.log_entries.len(), 3);
+    assert_eq!(full.log_entries.get(0).unwrap().action, js(&env, "approve"));
+    assert_eq!(full.log_entries.get(1).unwrap().action, js(&env, "revoke"));
+    assert_eq!(full.log_entries.get(2).unwrap().action, js(&env, "approve"));
+
+    // Every entry references the correct subject.
+    for i in 0..full.log_entries.len() {
+        assert_eq!(full.log_entries.get(i).unwrap().subject, subject);
+    }
+
+    // Registry field is the contract's own address.
+    assert_eq!(full.registry, client.address);
+}
+
+/// An admin can retrieve the full record for any subject.
+#[test]
+fn test_get_full_record_admin_access() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+
+    // Admin is a different address from the subject — should still succeed.
+    let full = client.get_full_record(&admin, &subject);
+    assert!(matches!(full.record.status, KycStatus::Approved));
+    assert_eq!(full.log_entries.len(), 1);
+}
+
+/// A second admin added later can also call get_full_record.
+#[test]
+fn test_get_full_record_second_admin_access() {
+    let (env, client, admin) = setup();
+    let second_admin = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_admin(&admin, &second_admin);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "GB"));
+
+    let full = client.get_full_record(&second_admin, &subject);
+    assert!(matches!(full.record.status, KycStatus::Approved));
+    assert_eq!(full.record.tier, 1);
+}
+
+/// A caller that is neither the subject nor an admin must be rejected.
+#[test]
+fn test_get_full_record_unauthorized_panics() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    let rogue = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+
+    let res = client.try_get_full_record(&rogue, &subject);
+    assert_eq!(res, Err(Ok(Error::from(KycError::NotAuthorized))));
+}
+
+/// Calling get_full_record for an address with no KYC record panics with NoRecord.
+#[test]
+fn test_get_full_record_no_record_panics() {
+    let (env, client, admin) = setup();
+    let subject = Address::generate(&env);
+
+    // Subject requests their own record, but no record has been written yet.
+    let res = client.try_get_full_record(&subject, &subject);
+    assert_eq!(res, Err(Ok(Error::from(KycError::NoRecord))));
+
+    // Admin requesting a non-existent record also panics with NoRecord.
+    let res2 = client.try_get_full_record(&admin, &subject);
+    assert_eq!(res2, Err(Ok(Error::from(KycError::NoRecord))));
+}
+
+/// Log entries from other subjects are not included in the result.
+#[test]
+fn test_get_full_record_log_entries_are_subject_scoped() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    // Approve both subjects; each gets one log entry.
+    client.approve(&verifier, &s1, &0, &0, &js(&env, "US"));
+    client.approve(&verifier, &s2, &0, &0, &js(&env, "US"));
+
+    // s1's full record should only contain s1's log entry.
+    let full_s1 = client.get_full_record(&s1, &s1);
+    assert_eq!(full_s1.log_entries.len(), 1);
+    assert_eq!(full_s1.log_entries.get(0).unwrap().subject, s1);
+
+    // s2's full record should only contain s2's log entry.
+    let full_s2 = client.get_full_record(&s2, &s2);
+    assert_eq!(full_s2.log_entries.len(), 1);
+    assert_eq!(full_s2.log_entries.get(0).unwrap().subject, s2);
+}
+
+/// get_full_record returns an empty log_entries vec for a subject that has a
+/// KYC record but was written without going through a log-emitting path
+/// (reject on a fresh subject does emit a log, so we verify count matches).
+#[test]
+fn test_get_full_record_log_entries_match_verifier_log_count() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    // Four transitions → four log entries.
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "DE"));
+    client.reject(&verifier, &subject);
+
+    assert_eq!(client.verifier_log_count(), 4);
+
+    let full = client.get_full_record(&subject, &subject);
+    assert_eq!(full.log_entries.len(), 4);
+}
