@@ -42,7 +42,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </span>
           </Link>
 
-          <nav style={styles.nav} className="nav-desktop">
+          <nav style={styles.nav} className="nav-desktop" aria-label="Main navigation">
             {NAV.map((n) => {
               const active = n.to === "/" ? pathname === "/" : pathname.startsWith(n.to);
               return (
@@ -58,11 +58,12 @@ export default function Layout({ children }: { children: ReactNode }) {
           </nav>
 
           <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-            <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }} role="group" aria-label="Network selection">
               <button
                 onClick={() => handleNetworkChange("testnet")}
                 className={network === "testnet" ? "btn-accent" : "btn-ghost"}
                 style={{ fontSize: "0.75rem", padding: "0.4rem 0.8rem" }}
+                aria-pressed={network === "testnet"}
               >
                 Testnet
               </button>
@@ -70,6 +71,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                 onClick={() => handleNetworkChange("mainnet")}
                 className={network === "mainnet" ? "btn-accent" : "btn-ghost"}
                 style={{ fontSize: "0.75rem", padding: "0.4rem 0.8rem" }}
+                aria-pressed={network === "mainnet"}
               >
                 Mainnet
               </button>
@@ -91,7 +93,9 @@ export default function Layout({ children }: { children: ReactNode }) {
               className="hamburger"
               onClick={() => setMenuOpen(!menuOpen)}
               style={styles.hamburger}
-              aria-label="Toggle menu"
+              aria-label={menuOpen ? "Close menu" : "Open menu"}
+              aria-expanded={menuOpen}
+              aria-controls="mobile-nav"
             >
               <span style={styles.hamburgerLine} />
               <span style={styles.hamburgerLine} />
@@ -101,9 +105,14 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {menuOpen && <div style={styles.overlay} onClick={closeMenu} />}
+      {menuOpen && <div style={styles.overlay} onClick={closeMenu} aria-hidden="true" />}
 
-      <nav style={{ ...styles.drawer, ...(menuOpen ? styles.drawerOpen : {}) }}>
+      <nav
+        id="mobile-nav"
+        aria-label="Mobile navigation"
+        aria-hidden={!menuOpen}
+        style={{ ...styles.drawer, ...(menuOpen ? styles.drawerOpen : {}) }}
+      >
         {NAV.map((n) => {
           const active = n.to === "/" ? pathname === "/" : pathname.startsWith(n.to);
           return (

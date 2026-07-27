@@ -69,12 +69,24 @@ export class InvoiceTokenClient {
 
   /** Returns true when the invoice has been settled and redemption is open. */
   async isSettled(): Promise<boolean> {
-    return readCall<boolean>(
-      this.server,
-      this.contractId,
-      "is_settled",
-      []
-    );
+    return readCall<boolean>(this.server, this.contractId, "is_settled", []);
+  }
+
+  /** Returns true when settlement and redemption are currently paused. */
+  async lifecyclePaused(): Promise<boolean> {
+    return readCall<boolean>(this.server, this.contractId, "lifecycle_paused", []);
+  }
+
+  /** Pause settlement and redemption (lifecycle pause). Admin-only on-chain. */
+  async pauseLifecycle(adminAddress: string, signTx: SignTx): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    return writeCall(this.server, this.contractId, "pause_lifecycle", [], adminAddress, seq, signTx);
+  }
+
+  /** Resume settlement and redemption. Admin-only on-chain. */
+  async unpauseLifecycle(adminAddress: string, signTx: SignTx): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    return writeCall(this.server, this.contractId, "unpause_lifecycle", [], adminAddress, seq, signTx);
   }
 
   /** Returns the current allowance granted by `from` to `spender`. */

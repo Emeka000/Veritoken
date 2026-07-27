@@ -51,6 +51,8 @@ pub enum InvoiceError {
     OverSettlement = 17,
     /// Settlement amount is below the required minimum (e.g. zero).
     UnderSettlement = 18,
+    /// Settlement or redemption is blocked because the lifecycle is paused.
+    LifecyclePaused = 19,
 }
 
 // ── Lifecycle state machine ───────────────────────────────────────────────────
@@ -100,6 +102,8 @@ pub enum DataKey {
     Journal(String),
     InvoicesList,
     HolderList,
+    /// When true, settle() and redeem() are blocked for all invoices.
+    LifecyclePaused,
 }
 
 // ── Supporting types ──────────────────────────────────────────────────────────
@@ -200,6 +204,36 @@ impl InvoiceToken {
         env.storage().instance().set(&DataKey::Admin, &pending);
         env.storage().instance().remove(&DataKey::PendingAdmin);
         env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
+    }
+
+    // ── Lifecycle pause ───────────────────────────────────────────────────────
+
+    /// Pause settlement and redemption for all invoices in this contract.
+    /// Ordinary transfers (while in `Issued` state) are unaffected.
+    /// Admin-only.
+    pub fn pause_lifecycle(env: Env) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+        env.storage().instance().set(&DataKey::LifecyclePaused, &true);
+        env.events().publish((symbol_short!("lc_pause"),), ());
+    }
+
+    /// Resume settlement and redemption.
+    /// Admin-only.
+    pub fn unpause_lifecycle(env: Env) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+        env.storage().instance().set(&DataKey::LifecyclePaused, &false);
+        env.events().publish((symbol_short!("lc_unpse"),), ());
+    }
+
+    /// Returns true when settlement and redemption are currently paused.
+    pub fn lifecycle_paused(env: Env) -> bool {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::LifecyclePaused)
+            .unwrap_or(false)
     }
 
     // ── Invoice management ────────────────────────────────────────────────────
@@ -356,6 +390,7 @@ impl InvoiceToken {
     pub fn settle(env: Env, invoice_id: String) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
+        Self::require_lifecycle_active(&env);
 
         let meta: InvoiceMeta = env
             .storage()
@@ -391,6 +426,7 @@ impl InvoiceToken {
     pub fn partial_settle(env: Env, invoice_id: String, settlement_amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::require_admin(&env);
+        Self::require_lifecycle_active(&env);
 
         if settlement_amount <= 0 {
             panic_with_error!(env, InvoiceError::UnderSettlement);
@@ -445,6 +481,7 @@ impl InvoiceToken {
     pub fn redeem(env: Env, invoice_id: String, from: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
+        Self::require_lifecycle_active(&env);
 
         let status = Self::read_status(&env, &invoice_id);
         if !matches!(status, InvoiceStatus::PartiallySettled | InvoiceStatus::FullySettled) {
@@ -937,6 +974,17 @@ impl InvoiceToken {
             .get(&DataKey::Admin)
             .expect("admin must be set");
         admin.require_auth();
+    }
+
+    fn require_lifecycle_active(env: &Env) {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::LifecyclePaused)
+            .unwrap_or(false);
+        if paused {
+            panic_with_error!(env, InvoiceError::LifecyclePaused);
+        }
     }
 
     #[allow(dead_code)]

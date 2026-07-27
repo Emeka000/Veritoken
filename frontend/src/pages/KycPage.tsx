@@ -87,10 +87,16 @@ export default function KycPage() {
           style={{ display: "flex", gap: "0.75rem" }}
         >
           <div style={{ flex: 1 }}>
+            <label htmlFor="kyc-lookup-address" className="sr-only">
+              Stellar address to look up
+            </label>
             <input
+              id="kyc-lookup-address"
               placeholder="Stellar address (G…)"
               value={lookup}
               onChange={(e) => setLookup(e.target.value)}
+              aria-invalid={!lookupValidation.isValid && lookup.length > 0 ? "true" : undefined}
+              aria-describedby={lookupValidation.error && lookup.length > 0 ? "kyc-lookup-error" : undefined}
               style={{
                 width: "100%",
                 boxSizing: "border-box",
@@ -102,6 +108,8 @@ export default function KycPage() {
             />
             {lookupValidation.error && lookup.length > 0 && (
               <div
+                id="kyc-lookup-error"
+                role="alert"
                 style={{
                   color: "#ef4444",
                   fontSize: "0.8rem",
