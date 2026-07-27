@@ -4,10 +4,11 @@ import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
+import { EventFeed } from "../components/EventFeed";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
-import type { PropertyMeta, ContractEvent } from "../types";
+import type { PropertyMeta, ContractEvent, DividendEvent } from "../types";
 
 function Spinner() {
   return (
@@ -39,7 +40,7 @@ export default function PropertyPage() {
   const { connected, address, signTx } = useWallet();
   const { addToast } = useToast();
 
-  const [tab, setTab] = useState<"mint" | "dividends">("mint");
+  const [tab, setTab] = useState<"mint" | "dividends" | "history">("mint");
 
   // ── On-chain state ───────────────────────────────────────────────────────
   const [meta, setMeta] = useState<PropertyMeta | null>(null);
@@ -56,6 +57,13 @@ export default function PropertyPage() {
   // ── Deposit dividend form ────────────────────────────────────────────────
   const [depositAmount, setDepositAmount] = useState("");
   const [depositLoading, setDepositLoading] = useState(false);
+  const [depositType, setDepositType] = useState<number>(2); // 0=Rent,1=Capital,2=Other
+
+  // ── Dividend history ─────────────────────────────────────────────────────
+  const [dividendHistory, setDividendHistory] = useState<DividendEvent[] | null>(null);
+  const [dividendHistoryCount, setDividendHistoryCount] = useState<number | null>(null);
+  const [dividendHistoryLoading, setDividendHistoryLoading] = useState(false);
+  const [dividendHistoryError, setDividendHistoryError] = useState<string | null>(null);
 
   // ── Claim dividend ───────────────────────────────────────────────────────
   const [claimLoading, setClaimLoading] = useState(false);
@@ -110,6 +118,28 @@ export default function PropertyPage() {
     }
   }, [connected, address]);
 
+  const loadDividendHistory = useCallback(async () => {
+    if (!CONTRACT_IDS.propertyToken) return;
+    setDividendHistoryLoading(true);
+    setDividendHistoryError(null);
+    try {
+      const count = await contracts.property.dividendDepositCount();
+      setDividendHistoryCount(count);
+      if (count > 0) {
+        // Load last 20 deposits (most recent first = highest indices)
+        const start = count > 20 ? count - 20 : 0;
+        const entries = await contracts.property.getDividendHistory(start, 20);
+        setDividendHistory([...entries].reverse()); // most recent first
+      } else {
+        setDividendHistory([]);
+      }
+    } catch (err) {
+      setDividendHistoryError(err instanceof Error ? err.message : "Failed to load dividend history.");
+    } finally {
+      setDividendHistoryLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadMeta();
   }, [loadMeta]);
@@ -118,13 +148,19 @@ export default function PropertyPage() {
     loadPendingDividend();
   }, [loadPendingDividend]);
 
-  useEffect(() => {
+  const fetchEvents = async () => {
     if (!CONTRACT_IDS.propertyToken) return;
+    try {
+      const fetched = await fetchContractEvents(CONTRACT_IDS.propertyToken, 10);
+      setEvents(fetched);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
     setEventsLoading(true);
-    fetchContractEvents(CONTRACT_IDS.propertyToken, 10)
-      .then(setEvents)
-      .catch(() => {})
-      .finally(() => setEventsLoading(false));
+    fetchEvents().finally(() => setEventsLoading(false));
 
     Promise.all([
       contracts.property.holderCount(),
@@ -178,10 +214,13 @@ export default function PropertyPage() {
         address,
         BigInt(depositAmount),
         signTx,
+        depositType,
       );
       addToast("Dividend deposited successfully.", "success");
       setDepositAmount("");
       await loadPendingDividend();
+      // Refresh history if it was already loaded
+      if (dividendHistory !== null) loadDividendHistory();
     } catch (err) {
       addToast(err instanceof Error ? err.message : String(err), "error");
     } finally {
@@ -343,6 +382,13 @@ export default function PropertyPage() {
         >
           Deposit Dividend
         </button>
+        <button
+          onClick={() => { setTab("history"); if (!dividendHistory && !dividendHistoryLoading) loadDividendHistory(); }}
+          className={tab === "history" ? "" : "btn-ghost"}
+          style={styles.tab}
+        >
+          Dividend History
+        </button>
       </div>
 
       {/* ── Mint tab ───────────────────────────────────────────────────── */}
@@ -395,6 +441,21 @@ export default function PropertyPage() {
                 required
                 error={depositValidation.error}
               />
+              <div style={{ marginBottom: "0.75rem" }}>
+                <label style={{ fontSize: "0.85rem", fontWeight: 500, display: "block", marginBottom: "0.35rem" }}>
+                  Distribution Type
+                </label>
+                <select
+                  value={depositType}
+                  onChange={(e) => setDepositType(Number(e.target.value))}
+                  style={{ width: "100%", padding: "0.5rem 0.65rem", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-1)", color: "inherit", fontSize: "0.875rem" }}
+                  aria-label="Distribution type"
+                >
+                  <option value={0}>Rent Yield</option>
+                  <option value={1}>Capital Return</option>
+                  <option value={2}>Other</option>
+                </select>
+              </div>
               <button
                 type="submit"
                 className="btn-block"
@@ -409,7 +470,13 @@ export default function PropertyPage() {
         </WalletGuard>
       )}
 
-      <RecentTransactions events={events} loading={eventsLoading} />
+      <EventFeed
+        events={events}
+        loading={eventsLoading}
+        onRefresh={fetchEvents}
+        title="Recent Property Activity"
+        autoRefreshInterval={30000}
+      />
 
       {confirm && (
         <ConfirmDialog
@@ -422,78 +489,6 @@ export default function PropertyPage() {
     </div>
   );
 }
-
-function RecentTransactions({
-  events,
-  loading,
-}: {
-  events: ContractEvent[];
-  loading: boolean;
-}) {
-  return (
-    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
-      {loading ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          Loading…
-        </p>
-      ) : events.length === 0 ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          No recent events found.
-        </p>
-      ) : (
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: "0.82rem",
-          }}
-        >
-          <thead>
-            <tr
-              style={{
-                borderBottom: "1px solid var(--border)",
-                textAlign: "left",
-              }}
-            >
-              <th style={th}>Type</th>
-              <th style={th}>Amount</th>
-              <th style={th}>Counterparty</th>
-              <th style={th}>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={td}>{ev.type}</td>
-                <td style={td}>{ev.amount}</td>
-                <td
-                  style={{
-                    ...td,
-                    fontFamily: "monospace",
-                    maxWidth: 140,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {ev.counterparty}
-                </td>
-                <td style={td}>{ev.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
-  );
-}
-
-const th: React.CSSProperties = {
-  padding: "0.4rem 0.5rem",
-  fontWeight: 600,
-  color: "var(--muted)",
-};
-const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
 
 const styles: Record<string, React.CSSProperties> = {
   tabs: {

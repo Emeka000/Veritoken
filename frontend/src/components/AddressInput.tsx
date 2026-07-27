@@ -42,23 +42,33 @@ export function AddressInput({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const inputId = `address-input-${label.replace(/\s+/g, "-").toLowerCase()}`;
+
   return (
     <div style={{ position: "relative" }}>
       <div className="field">
-        <label>{label}</label>
+        <label htmlFor={inputId}>{label}</label>
         <input
+          id={inputId}
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
           placeholder={placeholder}
           required={required}
+          aria-required={required}
+          aria-autocomplete="list"
+          aria-controls={showSuggestions ? `${inputId}-suggestions` : undefined}
+          aria-expanded={showSuggestions}
         />
       </div>
 
       {showSuggestions && suggestions.length > 0 && (
         <div
           ref={suggestionsRef}
+          id={`${inputId}-suggestions`}
+          role="listbox"
+          aria-label={`Suggestions for ${label}`}
           style={{
             position: "absolute",
             top: "calc(100% - 0.5rem)",
@@ -75,6 +85,8 @@ export function AddressInput({
           {suggestions.map((s) => (
             <div
               key={s.address}
+              role="option"
+              aria-selected={value === s.address}
               onClick={() => {
                 onChange(s.address);
                 setShowSuggestions(false);

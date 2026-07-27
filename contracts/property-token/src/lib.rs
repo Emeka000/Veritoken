@@ -13,6 +13,7 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
     Address, Env, String, Vec,
 };
+use token_helpers as th;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -27,6 +28,8 @@ pub enum PropertyError {
     CompliancePaused = 7,
     Blocklisted = 8,
     TransferBlocked = 9,
+    /// A required metadata field contains an invalid value.
+    InvalidMetadata = 10,
 }
 
 #[contracttype]
@@ -40,10 +43,6 @@ pub enum DistributionType {
 
 #[contracttype]
 pub enum DataKey {
-    Admin,
-    PendingAdmin,
-    KycRegistry,
-    ComplianceEngine,
     PropertyMeta,
     Balance(Address),
     TotalShares,
@@ -132,6 +131,18 @@ impl PropertyToken {
         }
     }
 
+    fn validate_property_meta(env: &Env, meta: &PropertyMeta) {
+        if !th::is_valid_legal_entity(&meta.legal_name) {
+            panic_with_error!(env, PropertyError::InvalidMetadata);
+        }
+        if !th::is_valid_legal_entity(&meta.jurisdiction) {
+            panic_with_error!(env, PropertyError::InvalidMetadata);
+        }
+        if !th::is_valid_ipfs_hash(&meta.ipfs_title_hash) {
+            panic_with_error!(env, PropertyError::InvalidMetadata);
+        }
+    }
+
     /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
     /// Eliminates the deploy→initialize front-running window.
     pub fn __constructor(
@@ -142,13 +153,10 @@ impl PropertyToken {
         meta: PropertyMeta,
     ) {
         Self::validate_property_type(&env, &meta.property_type);
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::KycRegistry, &kyc_registry);
-        env.storage()
-            .instance()
-            .set(&DataKey::ComplianceEngine, &compliance_engine);
+        Self::validate_property_meta(&env, &meta);
+        th::write_admin(&env, &admin);
+        th::write_kyc_registry(&env, &kyc_registry);
+        th::write_compliance_engine(&env, &compliance_engine);
         env.storage()
             .instance()
             .set(&DataKey::TotalShares, &meta.total_shares);
@@ -173,38 +181,19 @@ impl PropertyToken {
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     pub fn update_kyc_registry(env: Env, new_registry: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::KycRegistry, &new_registry);
-        env.events()
-            .publish((symbol_short!("upd_kyc"),), new_registry);
+        th::update_kyc_registry(&env, new_registry);
     }
 
     pub fn update_compliance_engine(env: Env, new_engine: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::ComplianceEngine, &new_engine);
-        env.events()
-            .publish((symbol_short!("upd_ce"),), new_engine);
+        th::update_compliance_engine(&env, new_engine);
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) {
-        Self::require_admin(&env);
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
-        env.events().publish((symbol_short!("proposed"),), new_admin);
+        th::propose_admin(&env, new_admin);
     }
 
     pub fn accept_admin(env: Env) {
-        let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).expect("no pending admin");
-        pending.require_auth();
-        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        env.storage().instance().set(&DataKey::Admin, &pending);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
+        th::accept_admin(&env);
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────
@@ -219,10 +208,14 @@ impl PropertyToken {
 
     pub fn update_meta(env: Env, new_meta: PropertyMeta) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         Self::validate_property_type(&env, &new_meta.property_type);
-        let current = Self::get_meta(env.clone());
-        // Cannot change structural fields
+        Self::validate_property_meta(&env, &new_meta);
+        let current: PropertyMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::PropertyMeta)
+            .expect("property meta must be set");
         if new_meta.property_id != current.property_id || new_meta.total_shares != current.total_shares {
             panic!("Cannot change property_id or total_shares");
         }
@@ -249,10 +242,20 @@ impl PropertyToken {
 
     pub fn mint(env: Env, to: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
-        Self::require_kyc(&env, &to);
+        th::require_admin(&env);
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
         Self::require_tier(&env, &to);
-        Self::check_mint_compliance(&env, &to, shares);
+        let meta: PropertyMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::PropertyMeta)
+            .expect("property meta must be set");
+        let admin = th::read_admin(&env);
+        if !th::can_transfer_compliance(&env, &admin, &to, shares) {
+            panic!("mint blocked by compliance");
+        }
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
@@ -273,11 +276,12 @@ impl PropertyToken {
         if outstanding + shares > total_shares {
             panic!("exceeds authorized share count");
         }
+        let _ = meta; // validation used above
         Self::accrue(&env, to.clone());
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + shares);
         Self::reset_debt(&env, to.clone());
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         Self::add_holder_local(&env, &to);
         let minted: i128 = env.storage().instance().get(&DataKey::MintedShares).unwrap_or(0);
         env.storage().instance().set(&DataKey::MintedShares, &(minted + shares));
@@ -287,10 +291,16 @@ impl PropertyToken {
     pub fn transfer(env: Env, from: Address, to: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
-        Self::require_kyc(&env, &from);
-        Self::require_kyc(&env, &to);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
         Self::require_tier(&env, &to);
-        Self::check_compliance(&env, &from, &to, shares);
+        if !th::can_transfer_compliance(&env, &from, &to, shares) {
+            panic_with_error!(env, PropertyError::TransferBlocked);
+        }
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
@@ -305,7 +315,7 @@ impl PropertyToken {
         Self::write_balance(&env, to.clone(), to_bal + shares);
         Self::reset_debt(&env, from.clone());
         Self::reset_debt(&env, to.clone());
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         Self::add_holder_local(&env, &to);
         if from_bal == shares {
             Self::remove_holder_local(&env, &from);
@@ -315,24 +325,21 @@ impl PropertyToken {
     }
 
     /// Admin-initiated buyback (forced redemption) of shares from a holder.
-    /// Snapshots dividends before burning. Requires holder to have active KYC.
-    /// Decreases total minted shares. Emits a buyback event.
     pub fn buyback(env: Env, from: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
-        Self::require_kyc(&env, &from);
+        th::require_admin(&env);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
-        // Snapshot accrued dividends before balance changes
         Self::accrue(&env, from.clone());
         let balance = Self::read_balance(&env, from.clone());
         if balance < shares {
             panic_with_error!(env, PropertyError::InsufficientShares);
         }
-        // Decrease holder's balance (burn shares)
         Self::write_balance(&env, from.clone(), balance - shares);
-        // Decrease total minted shares
         let total: i128 = env
             .storage()
             .instance()
@@ -341,23 +348,17 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalShares, &(total - shares));
-        // Reset debt for the holder (new balance basis for future dividends)
         Self::reset_debt(&env, from.clone());
-        // Remove holder if balance is now zero
         if balance == shares {
             Self::remove_holder_local(&env, &from);
         }
         let minted: i128 = env.storage().instance().get(&DataKey::MintedShares).unwrap_or(0);
         env.storage().instance().set(&DataKey::MintedShares, &(minted - shares));
-        // Emit buyback event
         env.events().publish((symbol_short!("buyback"),), (from, shares));
     }
 
     // ── SEP-41 Allowance / Delegated Transfer ───────────────────────────────
 
-    /// Approve `spender` to transfer up to `amount` shares on behalf of `from`.
-    /// The allowance expires at `expiration_ledger` (inclusive). Passing
-    /// `amount = 0` revokes an existing allowance.
     pub fn approve(
         env: Env,
         from: Address,
@@ -388,26 +389,26 @@ impl PropertyToken {
         );
     }
 
-    /// Returns the number of shares `spender` is allowed to transfer on behalf
-    /// of `from`. Returns 0 if no allowance exists or it has expired.
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
         Self::read_allowance(&env, from, spender).amount
     }
 
-    /// Transfer `shares` from `from` to `to` using a previously approved
-    /// allowance. Runs the full compliance and dividend-snapshot logic.
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, shares: i128) {
         spender.require_auth();
-        Self::require_kyc(&env, &from);
-        Self::require_kyc(&env, &to);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
         Self::require_tier(&env, &to);
-        Self::check_compliance(&env, &from, &to, shares);
+        if !th::can_transfer_compliance(&env, &from, &to, shares) {
+            panic_with_error!(env, PropertyError::TransferBlocked);
+        }
         if shares <= 0 {
             panic!("shares must be positive");
         }
-        // Spend the allowance first — panics on insufficient/expired allowance.
         Self::spend_allowance(&env, from.clone(), spender, shares);
-        // Snapshot accrued dividends for both parties before balances move.
         Self::accrue(&env, from.clone());
         Self::accrue(&env, to.clone());
         let from_bal = Self::read_balance(&env, from.clone());
@@ -419,7 +420,7 @@ impl PropertyToken {
         Self::write_balance(&env, to.clone(), to_bal + shares);
         Self::reset_debt(&env, from.clone());
         Self::reset_debt(&env, to.clone());
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         Self::add_holder_local(&env, &to);
         if from_bal == shares {
             Self::remove_holder_local(&env, &from);
@@ -430,11 +431,9 @@ impl PropertyToken {
 
     // ── Dividends ────────────────────────────────────────────────────────────
 
-    /// Deposit dividend amount (in stroops) to be distributed pro-rata.
-    /// `distribution_type`: 0 = Rent, 1 = Capital, 2 = Other.
     pub fn deposit_dividend(env: Env, amount: i128, distribution_type: u32) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         let total: i128 = env
             .storage()
             .instance()
@@ -453,7 +452,6 @@ impl PropertyToken {
             .instance()
             .set(&DataKey::DividendPerShare, &new_dps);
 
-        // Update typed DPS for rent/capital tracking
         if distribution_type == DistributionType::Rent as u32 {
             let dps_rent: i128 = env
                 .storage()
@@ -568,7 +566,6 @@ impl PropertyToken {
         unclaimed + Self::accrued(&env, holder)
     }
 
-    /// Claim only rent-yield dividends for `holder`.
     pub fn claim_rent_yield(env: Env, holder: Address) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
@@ -592,7 +589,6 @@ impl PropertyToken {
         amount
     }
 
-    /// Claim only capital-return dividends for `holder`.
     pub fn claim_capital_return(env: Env, holder: Address) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
@@ -635,27 +631,16 @@ impl PropertyToken {
 
     pub fn holder_count(env: Env) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        ComplianceEngineClient::new(&env, &engine).holder_count()
+        env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0)
     }
 
     pub fn holder_slots_remaining(env: Env) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(&env, &engine);
-        let rules = client.get_rules();
+        let rules = th::get_compliance_rules(&env);
         if rules.max_holders == 0 {
             return u32::MAX;
         }
-        let count = client.holder_count();
+        let count: u32 = env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0);
         rules.max_holders.saturating_sub(count)
     }
 
@@ -673,18 +658,26 @@ impl PropertyToken {
     }
 
     /// Admin-initiated forced transfer for regulatory compliance (e.g. AML, court orders).
-    /// Does not require `from.require_auth()`. Requires active KYC for both parties,
-    /// tier for `to`, and checks pause/blocklist compliance for `to`. Snapshots dividends.
     pub fn forced_transfer(env: Env, from: Address, to: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
+        th::require_admin(&env);
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
-        Self::require_kyc(&env, &from);
-        Self::require_kyc(&env, &to);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, PropertyError::KycNotApproved);
+        }
         Self::require_tier(&env, &to);
-        Self::check_forced_compliance(&env, &to);
+        // Forced transfer: only check pause and blocklist, not transfer rules.
+        if th::is_compliance_paused(&env) {
+            panic_with_error!(env, PropertyError::CompliancePaused);
+        }
+        if th::is_compliance_blocklisted(&env, &to) {
+            panic_with_error!(env, PropertyError::Blocklisted);
+        }
         let from_bal = Self::read_balance(&env, from.clone());
         if from_bal < shares {
             panic_with_error!(env, PropertyError::InsufficientShares);
@@ -696,7 +689,7 @@ impl PropertyToken {
         Self::write_balance(&env, to.clone(), to_bal + shares);
         Self::reset_debt(&env, from.clone());
         Self::reset_debt(&env, to.clone());
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         Self::add_holder_local(&env, &to);
         if from_bal == shares {
             Self::remove_holder_local(&env, &from);
@@ -760,6 +753,18 @@ impl PropertyToken {
 
     // ── Internals ────────────────────────────────────────────────────────────
 
+    fn require_tier(env: &Env, addr: &Address) {
+        let meta: PropertyMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::PropertyMeta)
+            .expect("property meta must be set");
+        let actual = th::get_kyc_tier(env, addr);
+        if actual < meta.kyc_tier_required {
+            panic_with_error!(env, PropertyError::KycTierTooLow);
+        }
+    }
+
     fn dps(env: &Env) -> i128 {
         env.storage()
             .instance()
@@ -796,11 +801,9 @@ impl PropertyToken {
             .set(&DataKey::ClaimedDividend(holder), &debt);
     }
 
-    /// Accrue typed (rent/capital) dividends for `holder` into their typed unclaimed buckets.
     fn accrue_typed(env: &Env, holder: Address) {
         let bal = Self::read_balance(env, holder.clone());
 
-        // Rent
         let dps_rent: i128 = env
             .storage()
             .instance()
@@ -821,7 +824,6 @@ impl PropertyToken {
             .instance()
             .set(&DataKey::ClaimedDividendRent(holder.clone()), &(bal * dps_rent));
 
-        // Capital
         let dps_cap: i128 = env
             .storage()
             .instance()
@@ -841,91 +843,6 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::ClaimedDividendCapital(holder), &(bal * dps_cap));
-    }
-
-    fn require_admin(env: &Env) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin must be set");
-        admin.require_auth();
-    }
-
-    fn require_kyc(env: &Env, addr: &Address) {
-        let registry: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::KycRegistry)
-            .expect("kyc registry must be set");
-        let client = KycRegistryClient::new(env, &registry);
-        if !client.is_approved(addr) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
-        }
-    }
-
-    fn require_tier(env: &Env, addr: &Address) {
-        let registry: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::KycRegistry)
-            .expect("kyc registry must be set");
-        let client = KycRegistryClient::new(env, &registry);
-        let required = Self::get_meta(env.clone()).kyc_tier_required;
-        let actual = client.get_tier(addr);
-        if actual < required {
-            panic_with_error!(env, PropertyError::KycTierTooLow);
-        }
-    }
-
-    fn check_forced_compliance(env: &Env, to: &Address) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        if client.get_rules().paused {
-            panic_with_error!(env, PropertyError::CompliancePaused);
-        }
-        if client.is_blocklisted(to) {
-            panic_with_error!(env, PropertyError::Blocklisted);
-        }
-    }
-
-    fn check_mint_compliance(env: &Env, to: &Address, shares: i128) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if !client.can_transfer(&admin, to, &shares) {
-            panic!("mint blocked by compliance");
-        }
-    }
-
-    fn check_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        if !client.can_transfer(from, to, &amount) {
-            panic_with_error!(env, PropertyError::TransferBlocked);
-        }
-    }
-
-    fn register_holder(env: &Env, addr: &Address) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        client.register_holder(addr);
     }
 
     fn add_holder_local(env: &Env, addr: &Address) {
@@ -982,8 +899,6 @@ impl PropertyToken {
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
     }
 
-    // ── Allowance helpers ────────────────────────────────────────────────────
-
     fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceValue {
         let key = DataKey::Allowance(AllowanceKey {
             from: from.clone(),
@@ -1016,7 +931,6 @@ impl PropertyToken {
             panic!("insufficient allowance");
         }
         let new_amount = allowance.amount - amount;
-        // Rewrite without bumping TTL — expiration is unchanged.
         let key = DataKey::Allowance(AllowanceKey {
             from: from.clone(),
             spender: spender.clone(),
@@ -1035,45 +949,3 @@ impl PropertyToken {
         }
     }
 }
-
-mod kyc_iface {
-    use soroban_sdk::{contractclient, Address};
-    #[contractclient(name = "KycRegistryClient")]
-    #[allow(dead_code)]
-    pub trait KycRegistry {
-        fn is_approved(env: soroban_sdk::Env, addr: Address) -> bool;
-        fn get_tier(env: soroban_sdk::Env, addr: Address) -> u32;
-    }
-}
-
-mod compliance_iface {
-    use soroban_sdk::{contractclient, Address};
-    #[contractclient(name = "ComplianceEngineClient")]
-    #[allow(dead_code)]
-    pub trait ComplianceEngine {
-        fn get_rules(env: soroban_sdk::Env) -> super::compliance_engine::ComplianceRules;
-        fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
-        fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
-        fn register_holder(env: soroban_sdk::Env, addr: Address);
-        fn holder_count(env: soroban_sdk::Env) -> u32;
-    }
-}
-
-mod compliance_engine {
-    use soroban_sdk::contracttype;
-
-    #[contracttype]
-    #[derive(Clone)]
-    pub struct ComplianceRules {
-        pub max_transfer_amount: i128,
-        pub min_holding_period: u64,
-        pub max_holders: u32,
-        pub require_same_jurisdiction: bool,
-        pub paused: bool,
-        pub allowlist_mode: bool,
-        pub max_holding_period: u64,
-    }
-}
-
-use compliance_iface::ComplianceEngineClient;
-use kyc_iface::KycRegistryClient;

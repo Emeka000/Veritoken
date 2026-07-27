@@ -19,6 +19,7 @@ import {
   type rpc,
 } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, simulateAndSend } from "../stellar";
+import { parseContractError, type ContractName } from "../contractErrors";
 
 // A stable dummy address used only for read simulations.
 const DUMMY_SOURCE = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
@@ -108,4 +109,22 @@ export const toBool = (b: boolean): xdr.ScVal =>
 export async function fetchSequence(server: rpc.Server, address: string): Promise<string> {
   const account = await server.getAccount(address);
   return (account as unknown as { sequence: string }).sequence;
+}
+
+/**
+ * Re-throws a contract error with a human-readable message prepended.
+ * Call this in catch blocks of contract client methods.
+ *
+ * @example
+ *   } catch (err) {
+ *     throw enrichError("rwa", err);
+ *   }
+ */
+export function enrichError(contract: ContractName, err: unknown): Error {
+  const raw = err instanceof Error ? err.message : String(err);
+  const parsed = parseContractError(contract, raw);
+  if (parsed) {
+    return new Error(`${parsed.message} (${parsed.name} #${parsed.code})`);
+  }
+  return err instanceof Error ? err : new Error(raw);
 }

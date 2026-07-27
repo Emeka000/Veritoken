@@ -30,7 +30,7 @@ fn meta(env: &Env) -> InvoiceMeta {
         discount_rate_bps: 250,
         due_date: 1_900_000_000,
         currency: String::from_str(env, "USD"),
-        ipfs_doc_hash: String::from_str(env, "Qm..."),
+        ipfs_doc_hash: String::from_str(env, ""),
         transfer_fee_bps: 0,
         fee_recipient: None,
         notification_webhook: String::from_str(env, ""),
@@ -1075,4 +1075,88 @@ fn test_unpause_lifecycle_resumes_redeem() {
     h.token.unpause_lifecycle();
     h.token.redeem(&inv_id(&h.env), &holder, &500);
     assert_eq!(h.token.balance(&holder, &inv_id(&h.env)), 500);
+}
+
+// ── Transfer fee tests (#357) ─────────────────────────────────────────────────
+
+#[test]
+fn test_transfer_fee_collected() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let fee_recipient = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&fee_recipient);
+
+    // Create an invoice with a 100 bps (1%) fee
+    let fee_inv_id = String::from_str(&h.env, "FEE-INV");
+    let fee_meta = InvoiceMeta {
+        invoice_id: fee_inv_id.clone(),
+        issuer: String::from_str(&h.env, "Issuer"),
+        debtor: String::from_str(&h.env, "Debtor"),
+        face_value_usd: 1_000_000,
+        discount_rate_bps: 0,
+        due_date: 1_900_000_000,
+        currency: String::from_str(&h.env, "USD"),
+        ipfs_doc_hash: String::from_str(&h.env, ""),
+        transfer_fee_bps: 100, // 1%
+        fee_recipient: Some(fee_recipient.clone()),
+        notification_webhook: String::from_str(&h.env, ""),
+    };
+    h.token.create_invoice(&fee_meta);
+    h.token.issue(&fee_inv_id, &alice, &10_000);
+
+    // Transfer 1000 tokens; fee = 10 (1%), net = 990
+    h.token.transfer(&fee_inv_id, &alice, &bob, &1_000);
+    assert_eq!(h.token.balance(&alice, &fee_inv_id), 9_000);
+    assert_eq!(h.token.balance(&bob, &fee_inv_id), 990);
+    assert_eq!(h.token.balance(&fee_recipient, &fee_inv_id), 10);
+}
+
+#[test]
+fn test_transfer_no_fee_when_bps_zero() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    // Default invoice has transfer_fee_bps = 0
+    h.token.issue(&inv_id(&h.env), &alice, &1_000);
+    h.token.transfer(&inv_id(&h.env), &alice, &bob, &400);
+    assert_eq!(h.token.balance(&alice, &inv_id(&h.env)), 600);
+    assert_eq!(h.token.balance(&bob, &inv_id(&h.env)), 400);
+}
+
+#[test]
+fn test_transfer_fee_no_recipient_no_deduction() {
+    // If transfer_fee_bps > 0 but fee_recipient is None, no fee is collected
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    let inv = String::from_str(&h.env, "NOFEE-INV");
+    let m = InvoiceMeta {
+        invoice_id: inv.clone(),
+        issuer: String::from_str(&h.env, "Issuer"),
+        debtor: String::from_str(&h.env, "Debtor"),
+        face_value_usd: 1_000_000,
+        discount_rate_bps: 0,
+        due_date: 1_900_000_000,
+        currency: String::from_str(&h.env, "USD"),
+        ipfs_doc_hash: String::from_str(&h.env, ""),
+        transfer_fee_bps: 50, // 0.5% but no recipient
+        fee_recipient: None,
+        notification_webhook: String::from_str(&h.env, ""),
+    };
+    h.token.create_invoice(&m);
+    h.token.issue(&inv, &alice, &1_000);
+
+    // Full amount transferred because fee_recipient is None
+    h.token.transfer(&inv, &alice, &bob, &1_000);
+    assert_eq!(h.token.balance(&alice, &inv), 0);
+    assert_eq!(h.token.balance(&bob, &inv), 1_000);
 }
