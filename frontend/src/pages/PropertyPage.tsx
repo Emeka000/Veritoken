@@ -7,7 +7,7 @@ import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
-import type { PropertyMeta, ContractEvent } from "../types";
+import type { PropertyMeta, ContractEvent, DividendEvent } from "../types";
 
 function Spinner() {
   return (
@@ -39,7 +39,7 @@ export default function PropertyPage() {
   const { connected, address, signTx } = useWallet();
   const { addToast } = useToast();
 
-  const [tab, setTab] = useState<"mint" | "dividends">("mint");
+  const [tab, setTab] = useState<"mint" | "dividends" | "history">("mint");
 
   // ── On-chain state ───────────────────────────────────────────────────────
   const [meta, setMeta] = useState<PropertyMeta | null>(null);
@@ -56,6 +56,13 @@ export default function PropertyPage() {
   // ── Deposit dividend form ────────────────────────────────────────────────
   const [depositAmount, setDepositAmount] = useState("");
   const [depositLoading, setDepositLoading] = useState(false);
+  const [depositType, setDepositType] = useState<number>(2); // 0=Rent,1=Capital,2=Other
+
+  // ── Dividend history ─────────────────────────────────────────────────────
+  const [dividendHistory, setDividendHistory] = useState<DividendEvent[] | null>(null);
+  const [dividendHistoryCount, setDividendHistoryCount] = useState<number | null>(null);
+  const [dividendHistoryLoading, setDividendHistoryLoading] = useState(false);
+  const [dividendHistoryError, setDividendHistoryError] = useState<string | null>(null);
 
   // ── Claim dividend ───────────────────────────────────────────────────────
   const [claimLoading, setClaimLoading] = useState(false);
@@ -109,6 +116,28 @@ export default function PropertyPage() {
       setPendingDiv(BigInt(0));
     }
   }, [connected, address]);
+
+  const loadDividendHistory = useCallback(async () => {
+    if (!CONTRACT_IDS.propertyToken) return;
+    setDividendHistoryLoading(true);
+    setDividendHistoryError(null);
+    try {
+      const count = await contracts.property.dividendDepositCount();
+      setDividendHistoryCount(count);
+      if (count > 0) {
+        // Load last 20 deposits (most recent first = highest indices)
+        const start = count > 20 ? count - 20 : 0;
+        const entries = await contracts.property.getDividendHistory(start, 20);
+        setDividendHistory([...entries].reverse()); // most recent first
+      } else {
+        setDividendHistory([]);
+      }
+    } catch (err) {
+      setDividendHistoryError(err instanceof Error ? err.message : "Failed to load dividend history.");
+    } finally {
+      setDividendHistoryLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     loadMeta();
@@ -178,10 +207,13 @@ export default function PropertyPage() {
         address,
         BigInt(depositAmount),
         signTx,
+        depositType,
       );
       addToast("Dividend deposited successfully.", "success");
       setDepositAmount("");
       await loadPendingDividend();
+      // Refresh history if it was already loaded
+      if (dividendHistory !== null) loadDividendHistory();
     } catch (err) {
       addToast(err instanceof Error ? err.message : String(err), "error");
     } finally {
@@ -343,6 +375,13 @@ export default function PropertyPage() {
         >
           Deposit Dividend
         </button>
+        <button
+          onClick={() => { setTab("history"); if (!dividendHistory && !dividendHistoryLoading) loadDividendHistory(); }}
+          className={tab === "history" ? "" : "btn-ghost"}
+          style={styles.tab}
+        >
+          Dividend History
+        </button>
       </div>
 
       {/* ── Mint tab ───────────────────────────────────────────────────── */}
@@ -395,6 +434,21 @@ export default function PropertyPage() {
                 required
                 error={depositValidation.error}
               />
+              <div style={{ marginBottom: "0.75rem" }}>
+                <label style={{ fontSize: "0.85rem", fontWeight: 500, display: "block", marginBottom: "0.35rem" }}>
+                  Distribution Type
+                </label>
+                <select
+                  value={depositType}
+                  onChange={(e) => setDepositType(Number(e.target.value))}
+                  style={{ width: "100%", padding: "0.5rem 0.65rem", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-1)", color: "inherit", fontSize: "0.875rem" }}
+                  aria-label="Distribution type"
+                >
+                  <option value={0}>Rent Yield</option>
+                  <option value={1}>Capital Return</option>
+                  <option value={2}>Other</option>
+                </select>
+              </div>
               <button
                 type="submit"
                 className="btn-block"
@@ -407,6 +461,64 @@ export default function PropertyPage() {
             </form>
           </Card>
         </WalletGuard>
+      )}
+
+      {/* ── Dividend history tab ───────────────────────────────────────── */}
+      {tab === "history" && (
+        <Card title="Dividend Distribution History">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
+            <span className="muted" style={{ fontSize: "0.82rem" }}>
+              {dividendHistoryCount !== null ? `${dividendHistoryCount} deposit${dividendHistoryCount !== 1 ? "s" : ""} on-chain` : ""}
+            </span>
+            <button className="btn-ghost" style={{ fontSize: "0.8rem" }} onClick={loadDividendHistory} disabled={dividendHistoryLoading}>
+              {dividendHistoryLoading ? <><Spinner />Loading…</> : "Refresh"}
+            </button>
+          </div>
+          {dividendHistoryLoading ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <Skeleton height="3rem" />
+              <Skeleton height="3rem" />
+            </div>
+          ) : dividendHistoryError ? (
+            <p style={{ color: "#ef4444", fontSize: "0.875rem" }}>{dividendHistoryError}</p>
+          ) : dividendHistory && dividendHistory.length > 0 ? (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+                  <th style={th}>#</th>
+                  <th style={th}>Type</th>
+                  <th style={th}>Amount (stroops)</th>
+                  <th style={th}>Cumulative DPS</th>
+                  <th style={th}>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dividendHistory.map((ev, i) => {
+                  const typeLabel = ev.distribution_type === 0 ? "Rent" : ev.distribution_type === 1 ? "Capital" : "Other";
+                  const typeColor = ev.distribution_type === 0 ? "var(--accent-2)" : ev.distribution_type === 1 ? "#8b5cf6" : "var(--muted)";
+                  const ts = new Date(
+                    (typeof ev.timestamp === "bigint" ? Number(ev.timestamp) : ev.timestamp) * 1000,
+                  ).toLocaleDateString();
+                  const amt = typeof ev.amount === "bigint" ? ev.amount : BigInt(ev.amount as number);
+                  const dps = typeof ev.running_total_dps === "bigint" ? ev.running_total_dps : BigInt(ev.running_total_dps as number);
+                  return (
+                    <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <td style={td}>{(dividendHistoryCount ?? dividendHistory.length) - i}</td>
+                      <td style={{ ...td, color: typeColor, fontWeight: 600 }}>{typeLabel}</td>
+                      <td style={td}>{Number(amt).toLocaleString()}</td>
+                      <td style={{ ...td, fontFamily: "monospace", fontSize: "0.75rem" }}>{Number(dps)}</td>
+                      <td style={td}>{ts}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : dividendHistory && dividendHistory.length === 0 ? (
+            <p className="muted" style={{ fontSize: "0.875rem" }}>No dividend deposits recorded yet.</p>
+          ) : (
+            <p className="muted" style={{ fontSize: "0.875rem" }}>Click Refresh to load dividend history.</p>
+          )}
+        </Card>
       )}
 
       <RecentTransactions events={events} loading={eventsLoading} />

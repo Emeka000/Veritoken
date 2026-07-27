@@ -795,3 +795,171 @@ fn test_second_claim_yields_nothing() {
     assert_eq!(h.token.claim_capital_return(&alice), 0);
 }
 
+
+// ── Dividend auditability tests (#355) ───────────────────────────────────────
+
+#[test]
+fn test_dividend_deposit_count_increments() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &100);
+
+    assert_eq!(h.token.dividend_deposit_count(), 0);
+
+    h.token.deposit_dividend(&1_000, &0); // Rent
+    assert_eq!(h.token.dividend_deposit_count(), 1);
+
+    h.token.deposit_dividend(&2_000, &1); // Capital
+    assert_eq!(h.token.dividend_deposit_count(), 2);
+
+    h.token.deposit_dividend(&500, &2); // Other
+    assert_eq!(h.token.dividend_deposit_count(), 3);
+}
+
+#[test]
+fn test_get_dividend_history_returns_events() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &100);
+
+    h.token.deposit_dividend(&1_000, &0); // Rent
+    h.token.deposit_dividend(&2_000, &1); // Capital
+
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.len(), 2);
+
+    let first = history.get(0).unwrap();
+    assert_eq!(first.amount, 1_000);
+    assert_eq!(first.distribution_type, 0); // Rent
+
+    let second = history.get(1).unwrap();
+    assert_eq!(second.amount, 2_000);
+    assert_eq!(second.distribution_type, 1); // Capital
+}
+
+#[test]
+fn test_get_dividend_history_pagination() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &100);
+
+    // Deposit 5 events
+    for _ in 0..5 {
+        h.token.deposit_dividend(&100, &2);
+    }
+    assert_eq!(h.token.dividend_deposit_count(), 5);
+
+    // First page: 3 entries starting at 0
+    let page1 = h.token.get_dividend_history(&0, &3);
+    assert_eq!(page1.len(), 3);
+
+    // Second page: remaining 2 entries
+    let page2 = h.token.get_dividend_history(&3, &3);
+    assert_eq!(page2.len(), 2);
+
+    // Past end: empty
+    let past_end = h.token.get_dividend_history(&5, &3);
+    assert_eq!(past_end.len(), 0);
+}
+
+#[test]
+fn test_dividend_history_running_total_dps() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &1_000); // 1000 shares
+
+    // Deposit 1000 → dps += 1000/1000 = 1
+    h.token.deposit_dividend(&1_000, &0);
+    // Deposit 2000 → dps += 2000/1000 = 2 (cumulative = 3)
+    h.token.deposit_dividend(&2_000, &0);
+
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.get(0).unwrap().running_total_dps, 1);
+    assert_eq!(history.get(1).unwrap().running_total_dps, 3);
+}
+
+// ── Dividend auditability tests (#355) ───────────────────────────────────────
+
+#[test]
+fn test_dividend_deposit_count_increments() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &100);
+
+    assert_eq!(h.token.dividend_deposit_count(), 0);
+
+    h.token.deposit_dividend(&1_000, &0); // Rent
+    assert_eq!(h.token.dividend_deposit_count(), 1);
+
+    h.token.deposit_dividend(&2_000, &1); // Capital
+    assert_eq!(h.token.dividend_deposit_count(), 2);
+
+    h.token.deposit_dividend(&500, &2); // Other
+    assert_eq!(h.token.dividend_deposit_count(), 3);
+}
+
+#[test]
+fn test_get_dividend_history_returns_events() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &100);
+
+    h.token.deposit_dividend(&1_000, &0); // Rent
+    h.token.deposit_dividend(&2_000, &1); // Capital
+
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.len(), 2);
+
+    let first = history.get(0).unwrap();
+    assert_eq!(first.amount, 1_000);
+    assert_eq!(first.distribution_type, 0); // Rent
+
+    let second = history.get(1).unwrap();
+    assert_eq!(second.amount, 2_000);
+    assert_eq!(second.distribution_type, 1); // Capital
+}
+
+#[test]
+fn test_get_dividend_history_pagination() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &100);
+
+    for _ in 0..5 {
+        h.token.deposit_dividend(&100, &2);
+    }
+    assert_eq!(h.token.dividend_deposit_count(), 5);
+
+    let page1 = h.token.get_dividend_history(&0, &3);
+    assert_eq!(page1.len(), 3);
+
+    let page2 = h.token.get_dividend_history(&3, &3);
+    assert_eq!(page2.len(), 2);
+
+    let past_end = h.token.get_dividend_history(&5, &3);
+    assert_eq!(past_end.len(), 0);
+}
+
+#[test]
+fn test_dividend_history_running_total_dps() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc_with_tier(&alice, 1);
+    h.token.mint(&alice, &1_000); // 1000 shares
+
+    // Deposit 1000 → dps += 1000/1000 = 1
+    h.token.deposit_dividend(&1_000, &0);
+    // Deposit 2000 → dps += 2000/1000 = 2 (cumulative = 3)
+    h.token.deposit_dividend(&2_000, &0);
+
+    let history = h.token.get_dividend_history(&0, &10);
+    assert_eq!(history.get(0).unwrap().running_total_dps, 1);
+    assert_eq!(history.get(1).unwrap().running_total_dps, 3);
+}
