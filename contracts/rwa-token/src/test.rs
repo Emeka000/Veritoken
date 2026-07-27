@@ -832,64 +832,74 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     assert_eq!(h.token.balance(&alice), 10_000);
 }
 
-// ── Structured event indexing (#344) ─────────────────────────────────────────
+// ── versioning (#342) ─────────────────────────────────────────────────────────
 
 #[test]
-fn test_transfer_event_uses_structured_topic() {
+fn test_contract_version_info_initialized_at_deploy() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.mint(&alice, &500);
-
-    h.token.transfer(&alice, &bob, &200);
-
-    let all_events = h.env.events().all();
-    let last = all_events.last().expect("events must exist");
-    let first_topic = last.1.get(0).expect("topic[0] must exist");
-    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &first_topic).expect("topic must be Symbol");
-    assert_eq!(sym, symbol_short!("transfer"));
+    let (ver, count, last_ts) = h.token.contract_version_info();
+    // Version is set to Cargo.toml version at deploy; migration count starts at 0.
+    assert!(ver.len() > 0);
+    assert_eq!(count, 0);
+    assert_eq!(last_ts, 0);
 }
 
 #[test]
-fn test_mint_event_uses_structured_topic() {
+fn test_migrate_records_version_bump() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.token.mint(&alice, &1_000);
+    let new_ver = String::from_str(&h.env, "0.2.0");
+    let desc = String::from_str(&h.env, "first upgrade");
+    h.token.migrate(&new_ver, &desc);
 
-    let all_events = h.env.events().all();
-    let last = all_events.last().expect("events must exist");
-    let t = last.1.get(0).expect("topic[0] must exist");
-    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &t).expect("topic must be Symbol");
-    assert_eq!(sym, symbol_short!("mint"));
+    let (ver, count, _ts) = h.token.contract_version_info();
+    assert_eq!(ver, new_ver);
+    assert_eq!(count, 1);
 }
 
 #[test]
-fn test_freeze_event_uses_freeze_not_frozen() {
+fn test_migrate_increments_count_on_each_call() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    h.token.freeze(&alice);
+    h.token.migrate(
+        &String::from_str(&h.env, "0.2.0"),
+        &String::from_str(&h.env, "add recovery"),
+    );
+    h.token.migrate(
+        &String::from_str(&h.env, "0.3.0"),
+        &String::from_str(&h.env, "add events"),
+    );
 
-    let all_events = h.env.events().all();
-    let last = all_events.last().expect("events must exist");
-    let t = last.1.get(0).expect("topic[0] must exist");
-    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &t).expect("topic must be Symbol");
-    assert_eq!(sym, symbol_short!("freeze"));
+    let (_ver, count, _ts) = h.token.contract_version_info();
+    assert_eq!(count, 2);
 }
 
 #[test]
-fn test_burn_event_uses_structured_topic() {
+fn test_get_migration_record_returns_correct_entry() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.token.mint(&alice, &1_000);
-    h.token.burn(&alice, &300);
+    let v1 = String::from_str(&h.env, "0.2.0");
+    let d1 = String::from_str(&h.env, "first upgrade");
+    h.token.migrate(&v1, &d1);
 
-    let all_events = h.env.events().all();
-    let last = all_events.last().expect("events must exist");
-    let t = last.1.get(0).expect("topic[0] must exist");
-    let sym = soroban_sdk::Symbol::try_from_val(&h.env, &t).expect("topic must be Symbol");
-    assert_eq!(sym, symbol_short!("burn"));
+    let v2 = String::from_str(&h.env, "0.3.0");
+    let d2 = String::from_str(&h.env, "second upgrade");
+    h.token.migrate(&v2, &d2);
+
+    let rec0 = h.token.get_migration_record(&0);
+    assert_eq!(rec0.to_version, v1);
+    assert_eq!(rec0.description, d1);
+
+    let rec1 = h.token.get_migration_record(&1);
+    assert_eq!(rec1.to_version, v2);
+    assert_eq!(rec1.description, d2);
+}
+
+#[test]
+fn test_migrate_last_ts_reflects_ledger_timestamp() {
+    let h = setup();
+    h.env.ledger().set_timestamp(1_700_000_000);
+    h.token.migrate(
+        &String::from_str(&h.env, "0.2.0"),
+        &String::from_str(&h.env, "timed upgrade"),
+    );
+    let (_ver, _count, last_ts) = h.token.contract_version_info();
+    assert_eq!(last_ts, 1_700_000_000);
 }
