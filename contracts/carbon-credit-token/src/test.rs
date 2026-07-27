@@ -24,7 +24,7 @@ fn meta(env: &Env) -> ProjectMeta {
         project_type: String::from_str(env, "forestry"),
         country: String::from_str(env, "BR"),
         verifier: String::from_str(env, "Verra"),
-        ipfs_cert_hash: String::from_str(env, "Qm..."),
+        ipfs_cert_hash: String::from_str(env, ""),
         registry_url: String::from_str(env, "https://registry.verra.org"),
         registry_project_id: String::from_str(env, "VCS-1234"),
     }
@@ -309,7 +309,7 @@ fn test_update_compliance_engine_admin_only() {
     let ce2_id = h.env.register(ComplianceEngine, ());
     let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
     let dummy_kyc = h.env.register(kyc_registry::KycRegistry, ());
-    ce2.initialize(&h.admin, &dummy_kyc);
+    ce2.initialize(&h.admin, &dummy_kyc, &0u64);
     ce2.pause();
 
     // Admin can update
@@ -419,7 +419,7 @@ fn test_update_compliance_engine_affects_transfers() {
     let ce2_id = h.env.register(ComplianceEngine, ());
     let ce2 = ComplianceEngineClient::new(&h.env, &ce2_id);
     let dummy_kyc = h.env.register(kyc_registry::KycRegistry, ());
-    ce2.initialize(&h.admin, &dummy_kyc);
+    ce2.initialize(&h.admin, &dummy_kyc, &0u64);
     ce2.pause();
 
     h.token.update_compliance_engine(&ce2_id);

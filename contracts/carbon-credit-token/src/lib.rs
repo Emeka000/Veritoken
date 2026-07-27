@@ -16,6 +16,7 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
     Address, Env, String, Vec,
 };
+use token_helpers as th;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -35,10 +36,6 @@ pub enum CarbonError {
 
 #[contracttype]
 pub enum DataKey {
-    Admin,
-    PendingAdmin,
-    KycRegistry,
-    ComplianceEngine,
     ProjectMeta,
     Balance(Address),
     TotalSupply,
@@ -92,12 +89,6 @@ impl CarbonCreditToken {
         }
     }
 
-    fn validate_vintage_year(year: u32) {
-        if year < 1990 || year > 2050 {
-            panic!("invalid vintage year");
-        }
-    }
-
     /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
     /// Eliminates the deploy→initialize front-running window.
     pub fn __constructor(
@@ -108,14 +99,12 @@ impl CarbonCreditToken {
         meta: ProjectMeta,
     ) {
         Self::validate_project_type(&env, &meta.project_type);
-        Self::validate_vintage_year(meta.vintage_year);
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::KycRegistry, &kyc_registry);
-        env.storage()
-            .instance()
-            .set(&DataKey::ComplianceEngine, &compliance_engine);
+        if !th::is_valid_vintage_year(meta.vintage_year) {
+            panic!("invalid vintage year: must be 1990–2050");
+        }
+        th::write_admin(&env, &admin);
+        th::write_kyc_registry(&env, &kyc_registry);
+        th::write_compliance_engine(&env, &compliance_engine);
         env.storage().instance().set(&DataKey::ProjectMeta, &meta);
         env.storage().instance().set(&DataKey::TotalSupply, &0i128);
         env.storage().instance().set(&DataKey::TotalRetired, &0i128);
@@ -138,38 +127,19 @@ impl CarbonCreditToken {
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     pub fn update_kyc_registry(env: Env, new_registry: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::KycRegistry, &new_registry);
-        env.events()
-            .publish((symbol_short!("upd_kyc"),), new_registry);
+        th::update_kyc_registry(&env, new_registry);
     }
 
     pub fn update_compliance_engine(env: Env, new_engine: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::ComplianceEngine, &new_engine);
-        env.events()
-            .publish((symbol_short!("upd_ce"),), new_engine);
+        th::update_compliance_engine(&env, new_engine);
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) {
-        Self::require_admin(&env);
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
-        env.events().publish((symbol_short!("proposed"),), new_admin);
+        th::propose_admin(&env, new_admin);
     }
 
     pub fn accept_admin(env: Env) {
-        let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin).expect("no pending admin");
-        pending.require_auth();
-        let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        env.storage().instance().set(&DataKey::Admin, &pending);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events().publish((symbol_short!("admin_set"),), (old_admin, pending));
+        th::accept_admin(&env);
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────
@@ -181,9 +151,14 @@ impl CarbonCreditToken {
 
     /// Replace project metadata. Admin-only; project_id is immutable.
     pub fn update_meta(env: Env, new_meta: ProjectMeta) {
-        Self::require_admin(&env);
+        th::require_admin(&env);
         Self::validate_project_type(&env, &new_meta.project_type);
-        Self::validate_vintage_year(new_meta.vintage_year);
+        if !th::is_valid_vintage_year(new_meta.vintage_year) {
+            panic!("invalid vintage year: must be 1990–2050");
+        }
+        if !th::is_valid_ipfs_hash(&new_meta.ipfs_cert_hash) {
+            panic!("ipfs_cert_hash must be a valid IPFS CID (CIDv0 or CIDv1)");
+        }
         let old_meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
         if new_meta.project_id != old_meta.project_id {
             panic!("project_id is immutable");
@@ -209,9 +184,16 @@ impl CarbonCreditToken {
 
     pub fn mint(env: Env, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::require_admin(&env);
-        Self::require_kyc(&env, &to);
-        Self::check_mint_compliance(&env, &to);
+        th::require_admin(&env);
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, CarbonError::KycNotApproved);
+        }
+        if th::is_compliance_paused(&env) {
+            panic_with_error!(env, CarbonError::CompliancePaused);
+        }
+        if th::is_compliance_blocklisted(&env, &to) {
+            panic_with_error!(env, CarbonError::Blocklisted);
+        }
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + amount);
         let supply: i128 = env
@@ -222,7 +204,7 @@ impl CarbonCreditToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(supply + amount));
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         env.events().publish((symbol_short!("mint"), to), amount);
     }
 
@@ -231,9 +213,15 @@ impl CarbonCreditToken {
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
-        Self::require_kyc(&env, &from);
-        Self::require_kyc(&env, &to);
-        Self::check_compliance(&env, &from, &to, amount);
+        if !th::is_kyc_approved(&env, &from) {
+            panic_with_error!(env, CarbonError::KycNotApproved);
+        }
+        if !th::is_kyc_approved(&env, &to) {
+            panic_with_error!(env, CarbonError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &from, &to, amount) {
+            panic_with_error!(env, CarbonError::TransferBlocked);
+        }
         let from_bal = Self::read_balance(&env, from.clone());
         if from_bal < amount {
             panic_with_error!(env, CarbonError::InsufficientBalance);
@@ -241,7 +229,7 @@ impl CarbonCreditToken {
         Self::write_balance(&env, from.clone(), from_bal - amount);
         let to_bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), to_bal + amount);
-        Self::register_holder(&env, &to);
+        th::do_register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), amount);
     }
@@ -258,8 +246,12 @@ impl CarbonCreditToken {
     ) -> RetirementReceipt {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         retiree.require_auth();
-        Self::require_kyc(&env, &retiree);
-        Self::check_compliance(&env, &retiree, &retiree, amount);
+        if !th::is_kyc_approved(&env, &retiree) {
+            panic_with_error!(env, CarbonError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &retiree, &retiree, amount) {
+            panic_with_error!(env, CarbonError::TransferBlocked);
+        }
         let bal = Self::read_balance(&env, retiree.clone());
         if bal < amount {
             panic_with_error!(env, CarbonError::InsufficientBalance);
@@ -319,9 +311,15 @@ impl CarbonCreditToken {
     ) -> RetirementReceipt {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         retiree.require_auth();
-        Self::require_kyc(&env, &retiree);
-        Self::require_kyc(&env, &on_behalf_of);
-        Self::check_compliance(&env, &retiree, &retiree, amount);
+        if !th::is_kyc_approved(&env, &retiree) {
+            panic_with_error!(env, CarbonError::KycNotApproved);
+        }
+        if !th::is_kyc_approved(&env, &on_behalf_of) {
+            panic_with_error!(env, CarbonError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &retiree, &retiree, amount) {
+            panic_with_error!(env, CarbonError::TransferBlocked);
+        }
         let bal = Self::read_balance(&env, retiree.clone());
         if bal < amount {
             panic_with_error!(env, CarbonError::InsufficientBalance);
@@ -372,17 +370,6 @@ impl CarbonCreditToken {
     // ── Batch Retirement ─────────────────────────────────────────────────────
 
     /// Retire credits for multiple beneficiaries in a single transaction.
-    ///
-    /// **Advanced feature — bulk offset programs.**
-    ///
-    /// Each entry in `retirements` is a `(amount, beneficiary, reason)` tuple.
-    /// - Capped at 10 retirements per call (`CarbonError::BatchTooLarge` otherwise).
-    /// - The **total** deducted from `retiree`'s balance in one atomic operation.
-    /// - Individual receipts are created and stored for each entry.
-    /// - Returns the vector of created receipts in entry order.
-    ///
-    /// Use-case: corporate carbon-offset programs retiring credits for hundreds
-    /// of employees or projects simultaneously (e.g. annual net-zero reporting).
     pub fn batch_retire(
         env: Env,
         retiree: Address,
@@ -396,10 +383,13 @@ impl CarbonCreditToken {
             panic_with_error!(env, CarbonError::BatchTooLarge);
         }
 
-        Self::require_kyc(&env, &retiree);
-        Self::check_compliance(&env, &retiree, &retiree, 1); // pause / blocklist check
+        if !th::is_kyc_approved(&env, &retiree) {
+            panic_with_error!(env, CarbonError::KycNotApproved);
+        }
+        if !th::can_transfer_compliance(&env, &retiree, &retiree, 1) {
+            panic_with_error!(env, CarbonError::TransferBlocked);
+        }
 
-        // ── Validation pass: compute total and verify each amount is positive ──
         let mut total: i128 = 0;
         for i in 0..len {
             let entry = retirements.get(i).expect("index in bounds");
@@ -410,14 +400,11 @@ impl CarbonCreditToken {
             total = total.checked_add(amount).expect("overflow");
         }
 
-        // Single balance check for the whole batch.
         let bal = Self::read_balance(&env, retiree.clone());
         if bal < total {
             panic_with_error!(env, CarbonError::InsufficientBalance);
         }
 
-        // ── Execution pass ────────────────────────────────────────────────────
-        // Deduct the full total once.
         Self::write_balance(&env, retiree.clone(), bal - total);
 
         let supply: i128 = env
@@ -438,7 +425,6 @@ impl CarbonCreditToken {
             .instance()
             .set(&DataKey::TotalRetired, &(retired + total));
 
-        // Create one receipt per entry.
         let mut index: u32 = env
             .storage()
             .instance()
@@ -609,64 +595,6 @@ impl CarbonCreditToken {
 
     // ── Internals ────────────────────────────────────────────────────────────
 
-    fn require_admin(env: &Env) {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin must be set");
-        admin.require_auth();
-    }
-
-    fn require_kyc(env: &Env, addr: &Address) {
-        let registry: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::KycRegistry)
-            .expect("kyc registry must be set");
-        let client = KycRegistryClient::new(env, &registry);
-        if !client.is_approved(addr) {
-            panic_with_error!(env, CarbonError::KycNotApproved);
-        }
-    }
-
-    fn check_mint_compliance(env: &Env, to: &Address) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        if client.get_rules().paused {
-            panic_with_error!(env, CarbonError::CompliancePaused);
-        }
-        if client.is_blocklisted(to) {
-            panic_with_error!(env, CarbonError::Blocklisted);
-        }
-    }
-
-    fn check_compliance(env: &Env, from: &Address, to: &Address, amount: i128) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        if !client.can_transfer(from, to, &amount) {
-            panic_with_error!(env, CarbonError::TransferBlocked);
-        }
-    }
-
-    fn register_holder(env: &Env, addr: &Address) {
-        let engine: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ComplianceEngine)
-            .expect("compliance engine must be set");
-        let client = ComplianceEngineClient::new(env, &engine);
-        client.register_holder(addr);
-    }
-
     fn read_balance(env: &Env, addr: Address) -> i128 {
         env.storage()
             .persistent()
@@ -680,43 +608,3 @@ impl CarbonCreditToken {
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
     }
 }
-
-mod kyc_iface {
-    use soroban_sdk::{contractclient, Address};
-    #[contractclient(name = "KycRegistryClient")]
-    #[allow(dead_code)]
-    pub trait KycRegistry {
-        fn is_approved(env: soroban_sdk::Env, addr: Address) -> bool;
-    }
-}
-
-mod compliance_iface {
-    use soroban_sdk::{contractclient, Address};
-    #[contractclient(name = "ComplianceEngineClient")]
-    #[allow(dead_code)]
-    pub trait ComplianceEngine {
-        fn get_rules(env: soroban_sdk::Env) -> super::compliance_engine::ComplianceRules;
-        fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
-        fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
-        fn register_holder(env: soroban_sdk::Env, addr: Address);
-    }
-}
-
-mod compliance_engine {
-    use soroban_sdk::contracttype;
-
-    #[contracttype]
-    #[derive(Clone)]
-    pub struct ComplianceRules {
-        pub max_transfer_amount: i128,
-        pub min_holding_period: u64,
-        pub max_holders: u32,
-        pub require_same_jurisdiction: bool,
-        pub paused: bool,
-        pub allowlist_mode: bool,
-        pub max_holding_period: u64,
-    }
-}
-
-use compliance_iface::ComplianceEngineClient;
-use kyc_iface::KycRegistryClient;

@@ -821,6 +821,28 @@ impl RwaToken {
         }
     }
 
+    /// Sets the reentrancy guard flag; panics if a transfer is already in progress.
+    fn enter_transfer_guard(env: &Env) {
+        if env
+            .storage()
+            .instance()
+            .get::<storage_types::DataKey, bool>(&storage_types::DataKey::TransferLock)
+            .unwrap_or(false)
+        {
+            panic!("transfer reentrancy detected");
+        }
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &true);
+    }
+
+    /// Clears the reentrancy guard flag set by [`enter_transfer_guard`].
+    fn exit_transfer_guard(env: &Env) {
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &false);
+    }
+
     fn read_recovery_config(env: &Env) -> RecoveryConfig {
         env.storage()
             .instance()
