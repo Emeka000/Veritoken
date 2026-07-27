@@ -7,7 +7,7 @@ import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
-import type { InvoiceMeta, ContractEvent } from "../types";
+import type { InvoiceMeta, ContractEvent, JournalEntry } from "../types";
 
 function Spinner() {
   return (
@@ -33,7 +33,7 @@ export default function InvoicePage() {
   const { connected, address, signTx } = useWallet();
   const { addToast } = useToast();
 
-  const [tab, setTab] = useState<"issue" | "redeem">("issue");
+  const [tab, setTab] = useState<"issue" | "redeem" | "timeline">("issue");
 
   // ── On-chain state ───────────────────────────────────────────────────────
   const [meta, setMeta] = useState<InvoiceMeta | null>(null);
@@ -59,6 +59,12 @@ export default function InvoicePage() {
   // ── Events ───────────────────────────────────────────────────────────────
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+
+  // ── Timeline ─────────────────────────────────────────────────────────────
+  const [journal, setJournal] = useState<JournalEntry[] | null>(null);
+  const [journalLoading, setJournalLoading] = useState(false);
+  const [journalError, setJournalError] = useState<string | null>(null);
+
   const [confirm, setConfirm] = useState<{
     title: string;
     description: string;
@@ -171,6 +177,25 @@ export default function InvoicePage() {
     issueAmount.length > 0 && !issueAmountValidation.isValid;
   const hasRedeemAmountError =
     redeemAmount.length > 0 && !redeemAmountValidation.isValid;
+
+  const loadJournal = useCallback(async () => {
+    if (!CONTRACT_IDS.invoiceToken || !meta) return;
+    setJournalLoading(true);
+    setJournalError(null);
+    try {
+      const entries = await contracts.invoice.getJournal(meta.invoice_id);
+      setJournal(entries);
+    } catch (err) {
+      setJournalError(err instanceof Error ? err.message : "Failed to load timeline.");
+    } finally {
+      setJournalLoading(false);
+    }
+  }, [meta]);
+
+  const handleTabTimeline = () => {
+    setTab("timeline");
+    if (!journal && !journalLoading) loadJournal();
+  };
 
   const handleToggleLifecyclePause = async () => {
     if (!connected || !address) return;
@@ -299,6 +324,26 @@ export default function InvoicePage() {
                   </dd>
                 </>
               )}
+
+              {meta.transfer_fee_bps !== undefined && meta.transfer_fee_bps !== null && (
+                <>
+                  <dt style={styles.dt}>Transfer Fee</dt>
+                  <dd style={styles.dd}>
+                    {meta.transfer_fee_bps > 0
+                      ? `${meta.transfer_fee_bps} bps (${(meta.transfer_fee_bps / 100).toFixed(2)}%)`
+                      : "No fee"}
+                  </dd>
+                </>
+              )}
+
+              {meta.fee_recipient && (
+                <>
+                  <dt style={styles.dt}>Fee Recipient</dt>
+                  <dd style={{ ...styles.dd, fontFamily: "monospace", fontSize: "0.78rem", wordBreak: "break-all" }}>
+                    {meta.fee_recipient}
+                  </dd>
+                </>
+              )}
             </dl>
 
             {/* Admin: settle button, visible only when not yet settled */}
@@ -359,6 +404,13 @@ export default function InvoicePage() {
           style={styles.tab}
         >
           Redeem
+        </button>
+        <button
+          onClick={handleTabTimeline}
+          className={tab === "timeline" ? "" : "btn-ghost"}
+          style={styles.tab}
+        >
+          Timeline
         </button>
       </div>
 
@@ -432,6 +484,44 @@ export default function InvoicePage() {
         </WalletGuard>
       )}
 
+      {/* ── Timeline tab ───────────────────────────────────────────── */}
+      {tab === "timeline" && (
+        <Card title="Invoice Lifecycle Timeline">
+          <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "1rem" }}>
+            Full audit trail of state transitions for this invoice, recorded on-chain.
+          </p>
+          {journalLoading ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+              <Skeleton height="2.5rem" />
+              <Skeleton height="2.5rem" />
+            </div>
+          ) : journalError ? (
+            <p style={{ color: "#ef4444", fontSize: "0.875rem" }}>{journalError}</p>
+          ) : journal && journal.length > 0 ? (
+            <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>
+              {journal.map((entry, i) => (
+                <TimelineEntry key={i} entry={entry} index={i} total={journal.length} />
+              ))}
+            </ol>
+          ) : journal && journal.length === 0 ? (
+            <p className="muted" style={{ fontSize: "0.875rem" }}>
+              No state transitions recorded yet. Transitions are logged when tokens are issued, settled, or redeemed.
+            </p>
+          ) : (
+            <p className="muted" style={{ fontSize: "0.875rem" }}>
+              Load the invoice metadata above, then click Timeline to view the history.
+            </p>
+          )}
+          {journal !== null && (
+            <div style={{ marginTop: "0.75rem", textAlign: "right" }}>
+              <button className="btn-ghost" style={{ fontSize: "0.8rem" }} onClick={loadJournal} disabled={journalLoading}>
+                {journalLoading ? <><Spinner /> Loading…</> : "Refresh"}
+              </button>
+            </div>
+          )}
+        </Card>
+      )}
+
       <RecentTransactions events={events} loading={eventsLoading} />
 
       {confirm && (
@@ -443,6 +533,65 @@ export default function InvoicePage() {
         />
       )}
     </div>
+  );
+}
+
+const STATUS_LABELS: Record<number, { label: string; color: string }> = {
+  0: { label: "Created", color: "var(--muted)" },
+  1: { label: "Issued", color: "var(--accent-2)" },
+  2: { label: "Partially Settled", color: "#f59e0b" },
+  3: { label: "Fully Settled", color: "var(--success)" },
+  4: { label: "Redeemed", color: "#8b5cf6" },
+};
+
+function statusLabel(code: number) {
+  return STATUS_LABELS[code] ?? { label: `State ${code}`, color: "var(--muted)" };
+}
+
+function TimelineEntry({
+  entry,
+  index,
+  total,
+}: {
+  entry: JournalEntry;
+  index: number;
+  total: number;
+}) {
+  const from = statusLabel(entry.from_status);
+  const to = statusLabel(entry.to_status);
+  const isLast = index === total - 1;
+  const ts = new Date(
+    (typeof entry.timestamp === "bigint" ? Number(entry.timestamp) : entry.timestamp) * 1000,
+  ).toLocaleString();
+
+  return (
+    <li style={{ display: "flex", gap: "0.75rem", paddingBottom: isLast ? 0 : "1rem", position: "relative" }}>
+      {/* Connector line */}
+      {!isLast && (
+        <div style={{ position: "absolute", left: 11, top: 24, bottom: 0, width: 2, background: "var(--border)" }} />
+      )}
+      {/* Dot */}
+      <div
+        aria-hidden="true"
+        style={{
+          width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
+          background: to.color, display: "flex", alignItems: "center",
+          justifyContent: "center", fontSize: "0.65rem", color: "#fff", fontWeight: 700, zIndex: 1,
+        }}
+      >
+        {entry.to_status}
+      </div>
+      <div style={{ flex: 1, paddingTop: 2 }}>
+        <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>
+          <span style={{ color: from.color }}>{from.label}</span>
+          {" → "}
+          <span style={{ color: to.color }}>{to.label}</span>
+        </div>
+        <div className="muted" style={{ fontSize: "0.78rem", marginTop: 2 }}>
+          Ledger #{entry.ledger} · {ts}
+        </div>
+      </div>
+    </li>
   );
 }
 

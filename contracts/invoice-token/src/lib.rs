@@ -674,6 +674,17 @@ impl InvoiceToken {
         Self::require_kyc(&env, &to);
         Self::require_compliance(&env, &from, &to, amount);
 
+        // ── Fee deduction ────────────────────────────────────────────────
+        // Compute fee: floor(amount * transfer_fee_bps / 10_000).
+        // The fee is deducted from `from`'s balance and credited to `fee_recipient`.
+        // If fee_recipient is None or fee_bps is 0, no fee is collected.
+        let fee = if meta.transfer_fee_bps > 0 {
+            amount * meta.transfer_fee_bps as i128 / 10_000
+        } else {
+            0
+        };
+        let net_amount = amount - fee;
+
         let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
@@ -690,13 +701,35 @@ impl InvoiceToken {
         let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
         env.storage().persistent().set(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
-            &(to_bal + amount),
+            &(to_bal + net_amount),
         );
         env.storage().persistent().extend_ttl(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
+
+        // Credit fee to recipient if applicable
+        if fee > 0 {
+            if let Some(ref recipient) = meta.fee_recipient {
+                let rec_bal = Self::read_balance(&env, recipient.clone(), invoice_id.clone());
+                env.storage().persistent().set(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    &(rec_bal + fee),
+                );
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    THRESHOLD,
+                    BUMP,
+                );
+                Self::register_holder(&env, recipient);
+                env.events().publish(
+                    (symbol_short!("fee_coll"), from.clone()),
+                    (invoice_id.clone(), fee, recipient.clone()),
+                );
+            }
+        }
+
         Self::register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
@@ -754,6 +787,15 @@ impl InvoiceToken {
             },
         );
 
+        // ── Fee deduction ────────────────────────────────────────────────
+        // `meta` was already fetched above for the due_date check; reuse it here.
+        let fee = if meta.transfer_fee_bps > 0 {
+            amount * meta.transfer_fee_bps as i128 / 10_000
+        } else {
+            0
+        };
+        let net_amount = amount - fee;
+
         let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
@@ -770,13 +812,35 @@ impl InvoiceToken {
         let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
         env.storage().persistent().set(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
-            &(to_bal + amount),
+            &(to_bal + net_amount),
         );
         env.storage().persistent().extend_ttl(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
+
+        // Credit fee to recipient if applicable
+        if fee > 0 {
+            if let Some(ref recipient) = meta.fee_recipient {
+                let rec_bal = Self::read_balance(&env, recipient.clone(), invoice_id.clone());
+                env.storage().persistent().set(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    &(rec_bal + fee),
+                );
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    THRESHOLD,
+                    BUMP,
+                );
+                Self::register_holder(&env, recipient);
+                env.events().publish(
+                    (symbol_short!("fee_coll"), from.clone()),
+                    (invoice_id.clone(), fee, recipient.clone()),
+                );
+            }
+        }
+
         Self::register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
