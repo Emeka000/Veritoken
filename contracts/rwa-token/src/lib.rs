@@ -13,6 +13,7 @@ mod compliance;
 mod kyc;
 mod metadata;
 mod storage_types;
+mod versioning;
 
 #[cfg(test)]
 mod test;
@@ -52,6 +53,16 @@ pub enum RwaError {
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
+
+/// On-chain record of a single admin-initiated migration.
+#[contracttype]
+#[derive(Clone)]
+pub struct MigrationRecord {
+    pub from_version: String,
+    pub to_version: String,
+    pub timestamp: u64,
+    pub description: String,
+}
 
 /// Snapshot of an in-progress recovery proposal.
 #[contracttype]
@@ -125,6 +136,7 @@ impl RwaToken {
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+        versioning::write_initial_version(&env);
         if let Some(meta) = compliance_metadata {
             if let Some(v) = meta.legal_entity {
                 compliance::write_metadata(&env, Symbol::new(&env, META_LEGAL_ENTITY), v);
@@ -480,129 +492,40 @@ impl RwaToken {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
-    // ── Multi-admin Emergency Recovery (#343) ─────────────────────────────────
+    // ── Versioning & Migration (#342) ─────────────────────────────────────────
 
-    /// Admin-only: configure the recovery member list and approval threshold.
-    ///
-    /// `members` lists the addresses authorised to propose and approve a
-    /// recovery. `threshold` is the number of approvals required before the
-    /// new admin is accepted. Must satisfy `1 ≤ threshold ≤ members.len()`.
-    pub fn configure_recovery(env: Env, members: Vec<Address>, threshold: u32) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
-        if members.is_empty() || threshold == 0 || threshold > members.len() {
-            panic_with_error!(env, RwaError::InvalidRecoveryConfig);
-        }
-        let cfg = RecoveryConfig { members, threshold };
-        env.storage()
-            .instance()
-            .set(&storage_types::DataKey::RecoveryConfig, &cfg);
-        env.events()
-            .publish((symbol_short!("rcv_cfg"),), threshold);
-    }
-
-    /// Recovery-member-only: propose a new admin.
-    ///
-    /// The proposer's approval is counted automatically, so a threshold-1
-    /// recovery only requires one additional approval.
-    pub fn propose_recovery(env: Env, proposer: Address, new_admin: Address) {
-        proposer.require_auth();
-        if env
-            .storage()
-            .instance()
-            .has(&storage_types::DataKey::ActiveRecovery)
-        {
-            panic_with_error!(env, RwaError::RecoveryAlreadyActive);
-        }
-        let cfg = Self::read_recovery_config(&env);
-        Self::assert_recovery_member(&env, &proposer, &cfg);
-
-        let mut approved_by: Vec<Address> = Vec::new(&env);
-        approved_by.push_back(proposer.clone());
-        let proposal = RecoveryProposal {
-            proposed_admin: new_admin.clone(),
-            approvals: 1,
-            approved_by,
+    /// Returns the on-chain stored version string, total migration count, and
+    /// the ledger timestamp of the last migration (0 if none have run).
+    pub fn contract_version_info(env: Env) -> (String, u32, u64) {
+        let version = versioning::read_version(&env);
+        let count = versioning::read_migration_count(&env);
+        let last_ts: u64 = if count > 0 {
+            versioning::get_migration_record(&env, count - 1)
+                .map(|r| r.timestamp)
+                .unwrap_or(0)
+        } else {
+            0
         };
-
-        if cfg.threshold == 1 {
-            Self::finalize_recovery(&env, new_admin);
-        } else {
-            env.storage()
-                .instance()
-                .set(&storage_types::DataKey::ActiveRecovery, &proposal);
-            env.events()
-                .publish((symbol_short!("rcv_prp"),), (proposer, new_admin));
-        }
+        (version, count, last_ts)
     }
 
-    /// Recovery-member-only: approve the active recovery proposal.
+    /// Admin-only migration entry point. Records the version bump on-chain.
     ///
-    /// If this approval meets the configured threshold the proposal is
-    /// executed immediately and the active recovery is cleared.
-    pub fn approve_recovery(env: Env, approver: Address) {
-        approver.require_auth();
-        let cfg = Self::read_recovery_config(&env);
-        Self::assert_recovery_member(&env, &approver, &cfg);
-
-        let mut proposal: RecoveryProposal = env
-            .storage()
-            .instance()
-            .get(&storage_types::DataKey::ActiveRecovery)
-            .unwrap_or_else(|| panic_with_error!(env, RwaError::NoActiveRecovery));
-
-        if proposal.approved_by.contains(&approver) {
-            panic_with_error!(env, RwaError::AlreadyApproved);
-        }
-
-        proposal.approved_by.push_back(approver.clone());
-        proposal.approvals += 1;
-
-        env.events()
-            .publish((symbol_short!("rcv_apr"),), (approver, proposal.approvals));
-
-        if proposal.approvals >= cfg.threshold {
-            let new_admin = proposal.proposed_admin.clone();
-            env.storage()
-                .instance()
-                .remove(&storage_types::DataKey::ActiveRecovery);
-            Self::finalize_recovery(&env, new_admin);
-        } else {
-            env.storage()
-                .instance()
-                .set(&storage_types::DataKey::ActiveRecovery, &proposal);
-        }
-    }
-
-    /// Admin-only: cancel the active recovery proposal.
-    pub fn cancel_recovery(env: Env) {
+    /// Call this after deploying an upgraded WASM blob via
+    /// `stellar contract upgrade`. The `new_version` string follows semver
+    /// (e.g. `"0.2.0"`) and is stored for downstream clients to detect.
+    pub fn migrate(env: Env, new_version: String, description: String) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
-        if !env
-            .storage()
-            .instance()
-            .has(&storage_types::DataKey::ActiveRecovery)
-        {
-            panic_with_error!(env, RwaError::NoActiveRecovery);
-        }
-        env.storage()
-            .instance()
-            .remove(&storage_types::DataKey::ActiveRecovery);
-        env.events().publish((symbol_short!("rcv_cnl"),), ());
+        versioning::apply_migration(&env, new_version.clone(), description);
+        env.events()
+            .publish((symbol_short!("migrated"),), new_version);
     }
 
-    /// Returns the active recovery proposal, if any.
-    pub fn recovery_status(env: Env) -> Option<RecoveryProposal> {
-        env.storage()
-            .instance()
-            .get(&storage_types::DataKey::ActiveRecovery)
-    }
-
-    /// Returns the current recovery configuration, if set.
-    pub fn recovery_config(env: Env) -> Option<RecoveryConfig> {
-        env.storage()
-            .instance()
-            .get(&storage_types::DataKey::RecoveryConfig)
+    /// Returns the migration record at the given index, or panics if out of range.
+    pub fn get_migration_record(env: Env, index: u32) -> MigrationRecord {
+        versioning::get_migration_record(&env, index)
+            .expect("migration record not found")
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

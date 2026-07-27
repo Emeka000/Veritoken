@@ -21,10 +21,18 @@ pub enum DataKey {
     Allowance(AllowanceKey),
     ComplianceMeta(Symbol),
     Frozen(Address),
+    // ── Versioning (#342) ────────────────────────────────────────────────────
+    ContractSemver,
+    MigrationCount,
+    Migration(u32),
     // ── Multi-admin recovery (#343) ──────────────────────────────────────────
-    RecoveryConfig,
+    RecoveryMembers,
+    RecoveryThreshold,
     ActiveRecovery,
+    // ── Reentrancy guard (#345) ──────────────────────────────────────────────
+    TransferLock,
 }
+
 
 #[contracttype]
 #[derive(Clone)]
