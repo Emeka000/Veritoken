@@ -38,6 +38,18 @@ pub enum RwaError {
     NegativeAmount = 8,
     /// Batch recipient list exceeds the maximum of 10 entries.
     BatchTooLarge = 9,
+    /// Recovery config has not been set by the admin.
+    RecoveryNotConfigured = 10,
+    /// Caller is not in the recovery members list.
+    NotRecoveryMember = 11,
+    /// A recovery proposal is already in progress.
+    RecoveryAlreadyActive = 12,
+    /// This address has already approved the active recovery proposal.
+    AlreadyApproved = 13,
+    /// No active recovery proposal exists.
+    NoActiveRecovery = 14,
+    /// Threshold must be ≥ 1 and ≤ len(members).
+    InvalidRecoveryConfig = 15,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -550,5 +562,25 @@ impl RwaToken {
         if from != to && to_balance_before == 0 {
             compliance::register_holder(env, to);
         }
+    }
+
+    fn read_recovery_config(env: &Env) -> RecoveryConfig {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::RecoveryConfig)
+            .unwrap_or_else(|| panic_with_error!(env, RwaError::RecoveryNotConfigured))
+    }
+
+    fn assert_recovery_member(env: &Env, addr: &Address, cfg: &RecoveryConfig) {
+        if !cfg.members.contains(addr) {
+            panic_with_error!(env, RwaError::NotRecoveryMember);
+        }
+    }
+
+    fn finalize_recovery(env: &Env, new_admin: Address) {
+        let old_admin = admin::read_admin(env);
+        admin::write_admin(env, &new_admin);
+        env.events()
+            .publish((symbol_short!("rcv_exe"),), (old_admin, new_admin));
     }
 }
