@@ -1,8 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Contract, scValToNative, TransactionBuilder, Account, xdr } from "@stellar/stellar-sdk";
 import { useWallet } from "../lib/wallet";
 import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
-import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
+import { PageHeader, Card, Field, Icon } from "../components/ui";
+import { EventFeed } from "../components/EventFeed";
+import { CopyButton } from "../components/CopyButton";
+import { SkeletonCard, SkeletonForm } from "../components/SkeletonPatterns";
 import { AddressInput } from "../components/AddressInput";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -43,6 +46,16 @@ export default function AdminPage() {
   const [addAddress, setAddAddress] = useState("");
   const [addLoading, setAddLoading] = useState(false);
   const [removeLoading, setRemoveLoading] = useState<string | null>(null);
+
+  const fetchEvents = useCallback(async () => {
+    if (!CONTRACT_IDS.complianceEngine) return;
+    try {
+      const fetched = await fetchContractEvents(CONTRACT_IDS.complianceEngine, 10);
+      setEvents(fetched);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     if (!CONTRACT_IDS.complianceEngine) return;
@@ -113,13 +126,12 @@ export default function AdminPage() {
     fetchBlocklist();
 
     setEventsLoading(true);
-    fetchContractEvents(CONTRACT_IDS.complianceEngine, 10)
-      .then(setEvents)
-      .catch(() => {})
-      .finally(() => setEventsLoading(false));
+    fetchEvents().finally(() => {
+      if (!cancelled) setEventsLoading(false);
+    });
 
     return () => { cancelled = true; };
-  }, []);
+  }, [fetchEvents]);
 
   const [confirm, setConfirm] = useState<{
     title: string;
@@ -219,9 +231,8 @@ export default function AdminPage() {
 
       <Card title="Compliance Rules">
         {loading ? (
-          <div style={styles.spinnerWrap} aria-label="Loading compliance rules">
-            <span style={styles.spinner} aria-hidden="true" />
-            <span className="muted" style={{ fontSize: "0.9rem" }}>Loading current rules from chain…</span>
+          <div aria-label="Loading compliance rules">
+            <SkeletonForm fields={5} />
           </div>
         ) : (
           <form onSubmit={handleSaveRules}>
@@ -285,9 +296,8 @@ export default function AdminPage() {
         style={{ marginTop: "1.25rem" }}
       >
         {blocklistLoading ? (
-          <div style={styles.spinnerWrap} aria-label="Loading blocklist">
-            <span style={styles.spinner} aria-hidden="true" />
-            <span className="muted" style={{ fontSize: "0.9rem" }}>Loading blocklist…</span>
+          <div aria-label="Loading blocklist">
+            <SkeletonCard rows={3} />
           </div>
         ) : (
           <>
@@ -306,8 +316,9 @@ export default function AdminPage() {
                 <tbody>
                   {blocklist.map((addr) => (
                     <tr key={addr} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ ...td, fontFamily: "monospace" }}>
-                        {addr.slice(0, 8)}…{addr.slice(-8)}
+                      <td style={{ ...td, fontFamily: "monospace", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                        <span>{addr.slice(0, 8)}…{addr.slice(-8)}</span>
+                        <CopyButton text={addr} label="Copy blocked address" style={{ padding: "0.15rem 0.4rem", fontSize: "0.65rem", border: "none" }} />
                       </td>
                       <td style={{ ...td, textAlign: "right" }}>
                         <WalletGuard>
@@ -350,7 +361,13 @@ export default function AdminPage() {
         )}
       </Card>
 
-      <RecentTransactions events={events} loading={eventsLoading} />
+      <EventFeed
+        events={events}
+        loading={eventsLoading}
+        onRefresh={fetchEvents}
+        title="Recent Compliance Activity"
+        autoRefreshInterval={30000}
+      />
 
       {confirm && (
         <ConfirmDialog
@@ -364,62 +381,10 @@ export default function AdminPage() {
   );
 }
 
-function RecentTransactions({ events, loading }: { events: ContractEvent[]; loading: boolean }) {
-  return (
-    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
-      {loading ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {[1, 2, 3].map((i) => (
-            <div key={i} style={{ display: "flex", gap: "1rem", padding: "0.75rem 0" }}>
-              <Skeleton width="80px" height="1.25rem" />
-              <Skeleton width="100px" height="1.25rem" />
-              <Skeleton width="150px" height="1.25rem" />
-              <Skeleton width="120px" height="1.25rem" />
-            </div>
-          ))}
-        </div>
-      ) : events.length === 0 ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>No recent events found.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
-              <th style={th}>Type</th><th style={th}>Amount</th><th style={th}>Counterparty</th><th style={th}>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={td}>{ev.type}</td>
-                <td style={td}>{ev.amount}</td>
-                <td style={{ ...td, fontFamily: "monospace", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.counterparty}</td>
-                <td style={td}>{ev.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
-  );
-}
-
 const th: React.CSSProperties = { padding: "0.4rem 0.5rem", fontWeight: 600, color: "var(--muted)" };
 const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
 
-const SPINNER_KEYFRAMES = `@keyframes vt-spin { to { transform: rotate(360deg); } }`;
-if (typeof document !== "undefined") {
-  const id = "vt-spinner-style";
-  if (!document.getElementById(id)) {
-    const style = document.createElement("style");
-    style.id = id;
-    style.textContent = SPINNER_KEYFRAMES;
-    document.head.appendChild(style);
-  }
-}
-
 const styles: Record<string, React.CSSProperties> = {
   checkboxRow: { display: "flex", alignItems: "center", gap: "0.6rem", margin: "0.25rem 0 1.1rem", cursor: "pointer" },
-  spinnerWrap: { display: "flex", alignItems: "center", gap: "0.75rem", padding: "1.5rem 0" },
-  spinner: { display: "inline-block", width: 20, height: 20, borderRadius: "50%", border: "2.5px solid var(--border)", borderTopColor: "var(--accent-2)", animation: "vt-spin 0.7s linear infinite", flexShrink: 0 },
   errorBanner: { marginBottom: "1.25rem", padding: "0.85rem 1rem", borderRadius: 10, background: "color-mix(in srgb, #ef4444 12%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)", color: "#ef4444", fontSize: "0.875rem", lineHeight: 1.5 },
 };

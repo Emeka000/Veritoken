@@ -4,6 +4,7 @@ import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
+import { EventFeed } from "../components/EventFeed";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
@@ -102,13 +103,19 @@ export default function InvoicePage() {
     loadChainState();
   }, [loadChainState]);
 
-  useEffect(() => {
+  const fetchEvents = async () => {
     if (!CONTRACT_IDS.invoiceToken) return;
+    try {
+      const fetched = await fetchContractEvents(CONTRACT_IDS.invoiceToken, 10);
+      setEvents(fetched);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
     setEventsLoading(true);
-    fetchContractEvents(CONTRACT_IDS.invoiceToken, 10)
-      .then(setEvents)
-      .catch(() => {})
-      .finally(() => setEventsLoading(false));
+    fetchEvents().finally(() => setEventsLoading(false));
   }, []);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -484,45 +491,13 @@ export default function InvoicePage() {
         </WalletGuard>
       )}
 
-      {/* ── Timeline tab ───────────────────────────────────────────── */}
-      {tab === "timeline" && (
-        <Card title="Invoice Lifecycle Timeline">
-          <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "1rem" }}>
-            Full audit trail of state transitions for this invoice, recorded on-chain.
-          </p>
-          {journalLoading ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-              <Skeleton height="2.5rem" />
-              <Skeleton height="2.5rem" />
-            </div>
-          ) : journalError ? (
-            <p style={{ color: "#ef4444", fontSize: "0.875rem" }}>{journalError}</p>
-          ) : journal && journal.length > 0 ? (
-            <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {journal.map((entry, i) => (
-                <TimelineEntry key={i} entry={entry} index={i} total={journal.length} />
-              ))}
-            </ol>
-          ) : journal && journal.length === 0 ? (
-            <p className="muted" style={{ fontSize: "0.875rem" }}>
-              No state transitions recorded yet. Transitions are logged when tokens are issued, settled, or redeemed.
-            </p>
-          ) : (
-            <p className="muted" style={{ fontSize: "0.875rem" }}>
-              Load the invoice metadata above, then click Timeline to view the history.
-            </p>
-          )}
-          {journal !== null && (
-            <div style={{ marginTop: "0.75rem", textAlign: "right" }}>
-              <button className="btn-ghost" style={{ fontSize: "0.8rem" }} onClick={loadJournal} disabled={journalLoading}>
-                {journalLoading ? <><Spinner /> Loading…</> : "Refresh"}
-              </button>
-            </div>
-          )}
-        </Card>
-      )}
-
-      <RecentTransactions events={events} loading={eventsLoading} />
+      <EventFeed
+        events={events}
+        loading={eventsLoading}
+        onRefresh={fetchEvents}
+        title="Recent Invoice Activity"
+        autoRefreshInterval={30000}
+      />
 
       {confirm && (
         <ConfirmDialog
@@ -535,137 +510,6 @@ export default function InvoicePage() {
     </div>
   );
 }
-
-const STATUS_LABELS: Record<number, { label: string; color: string }> = {
-  0: { label: "Created", color: "var(--muted)" },
-  1: { label: "Issued", color: "var(--accent-2)" },
-  2: { label: "Partially Settled", color: "#f59e0b" },
-  3: { label: "Fully Settled", color: "var(--success)" },
-  4: { label: "Redeemed", color: "#8b5cf6" },
-};
-
-function statusLabel(code: number) {
-  return STATUS_LABELS[code] ?? { label: `State ${code}`, color: "var(--muted)" };
-}
-
-function TimelineEntry({
-  entry,
-  index,
-  total,
-}: {
-  entry: JournalEntry;
-  index: number;
-  total: number;
-}) {
-  const from = statusLabel(entry.from_status);
-  const to = statusLabel(entry.to_status);
-  const isLast = index === total - 1;
-  const ts = new Date(
-    (typeof entry.timestamp === "bigint" ? Number(entry.timestamp) : entry.timestamp) * 1000,
-  ).toLocaleString();
-
-  return (
-    <li style={{ display: "flex", gap: "0.75rem", paddingBottom: isLast ? 0 : "1rem", position: "relative" }}>
-      {/* Connector line */}
-      {!isLast && (
-        <div style={{ position: "absolute", left: 11, top: 24, bottom: 0, width: 2, background: "var(--border)" }} />
-      )}
-      {/* Dot */}
-      <div
-        aria-hidden="true"
-        style={{
-          width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
-          background: to.color, display: "flex", alignItems: "center",
-          justifyContent: "center", fontSize: "0.65rem", color: "#fff", fontWeight: 700, zIndex: 1,
-        }}
-      >
-        {entry.to_status}
-      </div>
-      <div style={{ flex: 1, paddingTop: 2 }}>
-        <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-          <span style={{ color: from.color }}>{from.label}</span>
-          {" → "}
-          <span style={{ color: to.color }}>{to.label}</span>
-        </div>
-        <div className="muted" style={{ fontSize: "0.78rem", marginTop: 2 }}>
-          Ledger #{entry.ledger} · {ts}
-        </div>
-      </div>
-    </li>
-  );
-}
-
-function RecentTransactions({
-  events,
-  loading,
-}: {
-  events: ContractEvent[];
-  loading: boolean;
-}) {
-  return (
-    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
-      {loading ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          Loading…
-        </p>
-      ) : events.length === 0 ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          No recent events found.
-        </p>
-      ) : (
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: "0.82rem",
-          }}
-        >
-          <thead>
-            <tr
-              style={{
-                borderBottom: "1px solid var(--border)",
-                textAlign: "left",
-              }}
-            >
-              <th style={th}>Type</th>
-              <th style={th}>Amount</th>
-              <th style={th}>Counterparty</th>
-              <th style={th}>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={td}>{ev.type}</td>
-                <td style={td}>{ev.amount}</td>
-                <td
-                  style={{
-                    ...td,
-                    fontFamily: "monospace",
-                    maxWidth: 140,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {ev.counterparty}
-                </td>
-                <td style={td}>{ev.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
-  );
-}
-
-const th: React.CSSProperties = {
-  padding: "0.4rem 0.5rem",
-  fontWeight: 600,
-  color: "var(--muted)",
-};
-const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
 
 const styles: Record<string, React.CSSProperties> = {
   tabs: {

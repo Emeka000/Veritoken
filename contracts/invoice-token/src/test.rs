@@ -30,7 +30,7 @@ fn meta(env: &Env) -> InvoiceMeta {
         discount_rate_bps: 250,
         due_date: 1_900_000_000,
         currency: String::from_str(env, "USD"),
-        ipfs_doc_hash: String::from_str(env, "Qm..."),
+        ipfs_doc_hash: String::from_str(env, ""),
         transfer_fee_bps: 0,
         fee_recipient: None,
         notification_webhook: String::from_str(env, ""),

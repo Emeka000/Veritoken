@@ -24,6 +24,8 @@ pub enum KycError {
     InvalidJurisdiction = 5,
     NotAdmin = 6,
     EmptyAdminList = 7,
+    /// Caller is neither the subject nor an admin.
+    NotAuthorized = 8,
 }
 
 /// Composite key for per-subject lifecycle history entries.
@@ -113,6 +115,24 @@ pub struct ExpiryEntry {
 pub struct ExpiringRecord {
     pub addr: Address,
     pub record: KycRecord,
+}
+
+/// A complete, structured snapshot of all on-chain data held about a single
+/// address. Intended for GDPR / CCPA subject-access requests and regulatory
+/// data-export requirements.
+///
+/// Fields:
+/// - `record`      — the current canonical KYC record for the subject.
+/// - `log_entries` — every verifier-log entry whose `subject` field matches
+///                   the requested address, in ascending log-index order.
+/// - `registry`    — the contract's own address, so the caller can anchor the
+///                   export to a specific on-chain registry instance.
+#[contracttype]
+#[derive(Clone)]
+pub struct KycFullRecord {
+    pub record: KycRecord,
+    pub log_entries: Vec<VerifierLogEntry>,
+    pub registry: Address,
 }
 
 #[contracttype]
@@ -693,6 +713,69 @@ impl KycRegistry {
             }
         }
         out
+    }
+
+    // ── Full-record export (GDPR / CCPA subject-access) ──────────────────────
+
+    /// Returns all on-chain data held about `subject` in a single structured
+    /// value, supporting GDPR / CCPA subject-access requests.
+    ///
+    /// Access control: `requester` must be either the subject themselves or an
+    /// admin. Any other caller causes the transaction to panic with
+    /// `KycError::NotAuthorized`.
+    ///
+    /// The returned [`KycFullRecord`] contains:
+    /// - the current `KycRecord` for `subject` (panics with `KycError::NoRecord`
+    ///   if no record exists),
+    /// - every global verifier-log entry whose `subject` field matches the
+    ///   requested address, collected in ascending log-index order, and
+    /// - the address of this registry contract so the export can be anchored
+    ///   to a specific on-chain instance.
+    pub fn get_full_record(env: Env, requester: Address, subject: Address) -> KycFullRecord {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+
+        // Require auth from the requester first, then authorisation check.
+        requester.require_auth();
+
+        // The requester must be the subject themselves OR an admin.
+        let is_subject = requester == subject;
+        let is_admin = Self::admin_list(&env).contains(&requester);
+        if !is_subject && !is_admin {
+            panic_with_error!(env, KycError::NotAuthorized);
+        }
+
+        // Fetch the canonical KYC record — panics if none exists.
+        let record: KycRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::KycStatus(subject.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, KycError::NoRecord));
+
+        // Collect every global verifier-log entry that references `subject`.
+        let log_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VerifierLogCount)
+            .unwrap_or(0);
+
+        let mut log_entries: Vec<VerifierLogEntry> = Vec::new(&env);
+        for i in 0..log_count {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, VerifierLogEntry>(&DataKey::VerifierLog(i))
+            {
+                if entry.subject == subject {
+                    log_entries.push_back(entry);
+                }
+            }
+        }
+
+        KycFullRecord {
+            record,
+            log_entries,
+            registry: env.current_contract_address(),
+        }
     }
 
     pub fn version(env: Env) -> String {

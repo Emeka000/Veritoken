@@ -4,6 +4,7 @@ import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
+import { EventFeed } from "../components/EventFeed";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
@@ -147,13 +148,19 @@ export default function PropertyPage() {
     loadPendingDividend();
   }, [loadPendingDividend]);
 
-  useEffect(() => {
+  const fetchEvents = async () => {
     if (!CONTRACT_IDS.propertyToken) return;
+    try {
+      const fetched = await fetchContractEvents(CONTRACT_IDS.propertyToken, 10);
+      setEvents(fetched);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
     setEventsLoading(true);
-    fetchContractEvents(CONTRACT_IDS.propertyToken, 10)
-      .then(setEvents)
-      .catch(() => {})
-      .finally(() => setEventsLoading(false));
+    fetchEvents().finally(() => setEventsLoading(false));
 
     Promise.all([
       contracts.property.holderCount(),
@@ -463,65 +470,13 @@ export default function PropertyPage() {
         </WalletGuard>
       )}
 
-      {/* ── Dividend history tab ───────────────────────────────────────── */}
-      {tab === "history" && (
-        <Card title="Dividend Distribution History">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
-            <span className="muted" style={{ fontSize: "0.82rem" }}>
-              {dividendHistoryCount !== null ? `${dividendHistoryCount} deposit${dividendHistoryCount !== 1 ? "s" : ""} on-chain` : ""}
-            </span>
-            <button className="btn-ghost" style={{ fontSize: "0.8rem" }} onClick={loadDividendHistory} disabled={dividendHistoryLoading}>
-              {dividendHistoryLoading ? <><Spinner />Loading…</> : "Refresh"}
-            </button>
-          </div>
-          {dividendHistoryLoading ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              <Skeleton height="3rem" />
-              <Skeleton height="3rem" />
-            </div>
-          ) : dividendHistoryError ? (
-            <p style={{ color: "#ef4444", fontSize: "0.875rem" }}>{dividendHistoryError}</p>
-          ) : dividendHistory && dividendHistory.length > 0 ? (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
-                  <th style={th}>#</th>
-                  <th style={th}>Type</th>
-                  <th style={th}>Amount (stroops)</th>
-                  <th style={th}>Cumulative DPS</th>
-                  <th style={th}>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dividendHistory.map((ev, i) => {
-                  const typeLabel = ev.distribution_type === 0 ? "Rent" : ev.distribution_type === 1 ? "Capital" : "Other";
-                  const typeColor = ev.distribution_type === 0 ? "var(--accent-2)" : ev.distribution_type === 1 ? "#8b5cf6" : "var(--muted)";
-                  const ts = new Date(
-                    (typeof ev.timestamp === "bigint" ? Number(ev.timestamp) : ev.timestamp) * 1000,
-                  ).toLocaleDateString();
-                  const amt = typeof ev.amount === "bigint" ? ev.amount : BigInt(ev.amount as number);
-                  const dps = typeof ev.running_total_dps === "bigint" ? ev.running_total_dps : BigInt(ev.running_total_dps as number);
-                  return (
-                    <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={td}>{(dividendHistoryCount ?? dividendHistory.length) - i}</td>
-                      <td style={{ ...td, color: typeColor, fontWeight: 600 }}>{typeLabel}</td>
-                      <td style={td}>{Number(amt).toLocaleString()}</td>
-                      <td style={{ ...td, fontFamily: "monospace", fontSize: "0.75rem" }}>{Number(dps)}</td>
-                      <td style={td}>{ts}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          ) : dividendHistory && dividendHistory.length === 0 ? (
-            <p className="muted" style={{ fontSize: "0.875rem" }}>No dividend deposits recorded yet.</p>
-          ) : (
-            <p className="muted" style={{ fontSize: "0.875rem" }}>Click Refresh to load dividend history.</p>
-          )}
-        </Card>
-      )}
-
-      <RecentTransactions events={events} loading={eventsLoading} />
+      <EventFeed
+        events={events}
+        loading={eventsLoading}
+        onRefresh={fetchEvents}
+        title="Recent Property Activity"
+        autoRefreshInterval={30000}
+      />
 
       {confirm && (
         <ConfirmDialog
@@ -534,78 +489,6 @@ export default function PropertyPage() {
     </div>
   );
 }
-
-function RecentTransactions({
-  events,
-  loading,
-}: {
-  events: ContractEvent[];
-  loading: boolean;
-}) {
-  return (
-    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
-      {loading ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          Loading…
-        </p>
-      ) : events.length === 0 ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          No recent events found.
-        </p>
-      ) : (
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: "0.82rem",
-          }}
-        >
-          <thead>
-            <tr
-              style={{
-                borderBottom: "1px solid var(--border)",
-                textAlign: "left",
-              }}
-            >
-              <th style={th}>Type</th>
-              <th style={th}>Amount</th>
-              <th style={th}>Counterparty</th>
-              <th style={th}>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={td}>{ev.type}</td>
-                <td style={td}>{ev.amount}</td>
-                <td
-                  style={{
-                    ...td,
-                    fontFamily: "monospace",
-                    maxWidth: 140,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {ev.counterparty}
-                </td>
-                <td style={td}>{ev.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
-  );
-}
-
-const th: React.CSSProperties = {
-  padding: "0.4rem 0.5rem",
-  fontWeight: 600,
-  color: "var(--muted)",
-};
-const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
 
 const styles: Record<string, React.CSSProperties> = {
   tabs: {
