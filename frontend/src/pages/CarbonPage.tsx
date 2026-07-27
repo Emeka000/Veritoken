@@ -8,7 +8,7 @@ import { PageHeader, Card, Field, Icon } from "../components/ui";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
-import type { RetirementReceipt, ContractEvent } from "../types";
+import type { RetirementReceipt, ContractEvent, ReceiptVerification } from "../types";
 
 const PAGE_SIZE = 10;
 
@@ -36,10 +36,16 @@ function ReceiptCard({
   receipt,
   index,
   highlight = false,
+  verification,
+  onVerify,
+  verifying,
 }: {
   receipt: RetirementReceipt;
   index: number;
   highlight?: boolean;
+  verification?: ReceiptVerification | null;
+  onVerify?: (index: number) => void;
+  verifying?: boolean;
 }) {
   const amount =
     typeof receipt.amount === "bigint"
@@ -92,6 +98,39 @@ function ReceiptCard({
             {receipt.retirement_reason}
           </div>
         )}
+        {/* Verification badge */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.25rem" }}>
+          {verification === undefined && onVerify && (
+            <button
+              className="btn-ghost"
+              style={{ fontSize: "0.72rem", padding: "0.15rem 0.5rem" }}
+              onClick={() => onVerify(index)}
+              disabled={verifying}
+            >
+              {verifying ? "Verifying…" : "Verify"}
+            </button>
+          )}
+          {verification === null && (
+            <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>Verifying…</span>
+          )}
+          {verification && (
+            <span
+              role="status"
+              aria-label={verification.valid ? "Receipt verified" : "Receipt invalid"}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: "0.3rem",
+                fontSize: "0.72rem", fontWeight: 700, padding: "0.15rem 0.5rem",
+                borderRadius: 99,
+                background: verification.valid ? "rgba(52,211,153,0.15)" : "rgba(239,68,68,0.12)",
+                color: verification.valid ? "var(--success)" : "#ef4444",
+                border: `1px solid ${verification.valid ? "rgba(52,211,153,0.35)" : "rgba(239,68,68,0.3)"}`,
+              }}
+            >
+              {verification.valid ? "✓ Verified" : "✗ Invalid"}
+              {verification.valid && verification.serial ? ` · ${verification.serial}` : ""}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -129,6 +168,10 @@ export default function CarbonPage() {
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [receiptsLoading, setReceiptsLoading] = useState(false);
+
+  // Map from global receipt index → ReceiptVerification (null = in-flight)
+  const [verifications, setVerifications] = useState<Record<number, ReceiptVerification | null>>({});
+  const [verifyingIndex, setVerifyingIndex] = useState<number | null>(null);
 
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -243,6 +286,25 @@ export default function CarbonPage() {
         }
       },
     });
+  };
+
+  const handleVerify = async (globalIndex: number) => {
+    setVerifyingIndex(globalIndex);
+    setVerifications((prev) => ({ ...prev, [globalIndex]: null }));
+    try {
+      const result = await contracts.carbon.verifyReceipt(globalIndex);
+      setVerifications((prev) => ({ ...prev, [globalIndex]: result }));
+    } catch {
+      // On error remove the in-flight indicator so user can retry
+      setVerifications((prev) => {
+        const next = { ...prev };
+        delete next[globalIndex];
+        return next;
+      });
+      addToast("Failed to verify receipt.", "error");
+    } finally {
+      setVerifyingIndex(null);
+    }
   };
 
   const loadReceipts = async (targetPage: number) => {
@@ -553,6 +615,9 @@ export default function CarbonPage() {
               key={page * PAGE_SIZE + i}
               receipt={r}
               index={page * PAGE_SIZE + i}
+              verification={verifications[page * PAGE_SIZE + i]}
+              onVerify={handleVerify}
+              verifying={verifyingIndex === page * PAGE_SIZE + i}
             />
           ))}
           {totalPages !== null && totalPages > 1 && (
