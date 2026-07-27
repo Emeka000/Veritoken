@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, RwaError, META_ISIN, META_LEGAL_ENTITY};
+use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, vec, Address, Env, String, TryFromVal, symbol_short};
 
 #[allow(dead_code)]
 struct Harness {
