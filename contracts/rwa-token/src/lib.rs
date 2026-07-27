@@ -13,6 +13,7 @@ mod compliance;
 mod events;
 mod kyc;
 mod metadata;
+mod roles;
 mod storage_types;
 mod versioning;
 
@@ -51,6 +52,18 @@ pub enum RwaError {
     NoActiveRecovery = 14,
     /// Threshold must be ≥ 1 and ≤ len(members).
     InvalidRecoveryConfig = 15,
+    /// Mint would exceed the configured maximum supply cap.
+    ExceedsMaxSupply = 16,
+    /// The KYC registry cross-contract call failed (contract unavailable or trapped).
+    /// (#348) Distinguishes infrastructure failures from KYC denials.
+    KycRegistryUnavailable = 17,
+    /// The compliance engine cross-contract call failed (contract unavailable or trapped).
+    /// (#348) Distinguishes infrastructure failures from rule violations.
+    ComplianceEngineUnavailable = 18,
+    /// Caller does not hold the required role and is not the admin. (#347)
+    UnauthorizedRole = 19,
+    /// Admin nonce did not match the stored value. (#349)
+    InvalidNonce = 20,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -110,8 +123,8 @@ pub struct RecipientEntry {
 // Every transfer entry point (`transfer`, `transfer_from`, `batch_transfer`,
 // `batch_transfer_from`) wraps its execution in `enter_transfer_guard` /
 // `exit_transfer_guard`. The guard stores a boolean flag in instance storage
-// (`DataKey::TransferLock`) and panics with `TransferReentrant` if a nested
-// entry is attempted while the flag is set.
+// (`DataKey::TransferLock`) and panics if a nested entry is attempted while
+// the flag is set.
 //
 // In Soroban's single-threaded WASM execution model, true reentrancy within
 // a single invocation is not possible. This guard exists to make the
@@ -207,32 +220,87 @@ impl RwaToken {
         events::emit_admin_set(&env, old_admin, new_admin);
     }
 
-    pub fn update_kyc_registry(env: Env, new_registry: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
-        kyc::write_kyc_registry(&env, &new_registry);
-        events::emit_kyc_updated(&env, new_registry);
+    /// Step 1 of the two-step admin handover.
+    ///
+    /// `caller` must be the admin or the `"governance"` role holder.
+    /// Requires the current admin nonce (#349) to prevent accidental replay.
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_GOVERNANCE));
+        admin::consume_nonce(&env, nonce);
+        admin::write_pending_admin(&env, &new_admin);
+        events::emit_admin_proposed(&env, new_admin, nonce);
     }
 
-    pub fn update_compliance_engine(env: Env, new_engine: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Step 2 of the two-step admin handover — called by the proposed admin.
+    pub fn accept_admin(env: Env) {
+        let pending = admin::read_pending_admin(&env)
+            .unwrap_or_else(|| panic!("no pending admin"));
+        pending.require_auth();
+        let old_admin = admin::read_admin(&env);
+        admin::write_admin(&env, &pending);
+        admin::remove_pending_admin(&env);
+        events::emit_admin_set(&env, old_admin, pending);
+    }
+
+    /// Updates the KYC registry address.
+    /// `caller` must be the admin or the `"registry"` role holder.
+    /// Nonce-protected (#349).
+    pub fn update_kyc_registry(env: Env, caller: Address, new_registry: Address, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_REGISTRY));
+        admin::consume_nonce(&env, nonce);
+        kyc::write_kyc_registry(&env, &new_registry);
+        events::emit_kyc_updated(&env, new_registry, nonce);
+    }
+
+    /// Updates the compliance engine address.
+    /// `caller` must be the admin or the `"registry"` role holder.
+    /// Nonce-protected (#349).
+    pub fn update_compliance_engine(env: Env, caller: Address, new_engine: Address, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_REGISTRY));
+        admin::consume_nonce(&env, nonce);
         compliance::write_compliance_engine(&env, &new_engine);
-        events::emit_ce_updated(&env, new_engine);
+        events::emit_ce_updated(&env, new_engine, nonce);
+    }
+
+    // ── Granular roles (#347) ─────────────────────────────────────────────────
+
+    /// Assigns `holder` to the given `role`.  Admin-only, nonce-protected.
+    ///
+    /// Role symbols: `"governance"`, `"compliance"`, `"liquidity"`, `"registry"`.
+    pub fn assign_role(env: Env, role: Symbol, holder: Address, nonce: u64) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        admin::consume_nonce(&env, nonce);
+        roles::write_role_holder(&env, &role, &holder);
+        events::emit_role_assigned(&env, role, holder, nonce);
+    }
+
+    /// Removes the holder for the given `role`.  Admin-only, nonce-protected.
+    pub fn revoke_role(env: Env, role: Symbol, nonce: u64) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        admin::consume_nonce(&env, nonce);
+        roles::remove_role_holder(&env, &role);
+        events::emit_role_revoked(&env, role, nonce);
+    }
+
+    /// Returns the address currently holding `role`, or `None` if unassigned.
+    pub fn get_role_holder(env: Env, role: Symbol) -> Option<Address> {
+        roles::read_role_holder(&env, &role)
     }
 
     // ── Freeze / Unfreeze ─────────────────────────────────────────────────────
 
-    pub fn freeze(env: Env, addr: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Freezes an account.  `caller` must be the admin or the `"compliance"` role holder.
+    pub fn freeze(env: Env, caller: Address, addr: Address) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_COMPLIANCE));
         compliance::set_frozen(&env, &addr, true);
         events::emit_freeze(&env, addr);
     }
 
-    pub fn unfreeze(env: Env, addr: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Unfreezes an account.  `caller` must be the admin or the `"compliance"` role holder.
+    pub fn unfreeze(env: Env, caller: Address, addr: Address) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_COMPLIANCE));
         compliance::set_frozen(&env, &addr, false);
         events::emit_unfreeze(&env, addr);
     }
@@ -279,6 +347,7 @@ impl RwaToken {
             compliance::unregister_holder(&env, &from);
         }
         events::emit_transfer(&env, from, to, amount);
+        Self::exit_transfer_guard(&env);
     }
 
     /// Delegated single transfer: identical invariants to `transfer`, plus allowance deduction.
@@ -297,6 +366,7 @@ impl RwaToken {
             compliance::unregister_holder(&env, &from);
         }
         events::emit_transfer(&env, from, to, amount);
+        Self::exit_transfer_guard(&env);
     }
 
     pub fn burn(env: Env, from: Address, amount: i128) {
@@ -362,13 +432,13 @@ impl RwaToken {
 
     // ── Minting ───────────────────────────────────────────────────────────────
 
-    pub fn mint(env: Env, to: Address, amount: i128) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Mints `amount` tokens to `to`.
+    /// `caller` must be the admin or the `"liquidity"` role holder.
+    pub fn mint(env: Env, caller: Address, to: Address, amount: i128) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_LIQUIDITY));
         if amount <= 0 {
             panic_with_error!(env, RwaError::NegativeAmount);
         }
-        // Enforce max supply cap (0 = unlimited).
         let max_supply = balance::read_max_supply(&env);
         if max_supply > 0 {
             let current_supply = balance::read_total_supply(&env);
@@ -506,9 +576,11 @@ impl RwaToken {
         compliance::read_compliance_engine(&env)
     }
 
-    pub fn set_compliance_metadata(env: Env, key: Symbol, value: String) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Sets a compliance metadata field.  Nonce-protected (#349).
+    /// `caller` must be the admin or the `"compliance"` role holder.
+    pub fn set_compliance_metadata(env: Env, caller: Address, key: Symbol, value: String, nonce: u64) {
+        roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_COMPLIANCE));
+        admin::consume_nonce(&env, nonce);
         compliance::write_metadata(&env, key, value);
     }
 
@@ -551,16 +623,14 @@ impl RwaToken {
     }
 
     /// Admin-only migration entry point. Records the version bump on-chain.
-    ///
-    /// Call this after deploying an upgraded WASM blob via
-    /// `stellar contract upgrade`. The `new_version` string follows semver
-    /// (e.g. `"0.2.0"`) and is stored for downstream clients to detect.
-    pub fn migrate(env: Env, new_version: String, description: String) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+    /// Nonce-protected (#349) to prevent accidental re-submission.
+    pub fn migrate(env: Env, new_version: String, description: String, nonce: u64) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        admin::consume_nonce(&env, nonce);
         versioning::apply_migration(&env, new_version.clone(), description);
         env.events()
-            .publish((symbol_short!("migrated"),), new_version);
+            .publish((symbol_short!("migrated"),), (new_version, nonce));
     }
 
     /// Returns the migration record at the given index, or panics if out of range.
@@ -569,7 +639,38 @@ impl RwaToken {
             .expect("migration record not found")
     }
 
+    // ── Replay-protection nonce (#349) ────────────────────────────────────────
+
+    /// Returns the current admin nonce.  Callers must pass this value to every
+    /// nonce-protected admin operation.  It increments by 1 on each successful
+    /// protected call, so repeated or out-of-order submissions are rejected.
+    pub fn admin_nonce(env: Env) -> u64 {
+        admin::read_admin_nonce(&env)
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// Sets the reentrancy guard flag.  Panics if already set.
+    fn enter_transfer_guard(env: &Env) {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&storage_types::DataKey::TransferLock)
+            .unwrap_or(false)
+        {
+            panic!("transfer reentrant");
+        }
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::TransferLock, &true);
+    }
+
+    /// Clears the reentrancy guard flag.
+    fn exit_transfer_guard(env: &Env) {
+        env.storage()
+            .instance()
+            .remove(&storage_types::DataKey::TransferLock);
+    }
 
     /// Validates the sending side of a transfer: frozen check + KYC.
     /// Called once per transfer (or once per batch, not per entry).

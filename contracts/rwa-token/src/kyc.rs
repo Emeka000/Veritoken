@@ -25,11 +25,22 @@ pub fn write_kyc_registry(env: &Env, registry: &Address) {
 }
 
 /// Cross-contract call to the KYC registry to verify a holder is approved.
+///
+/// Error propagation (#348):
+/// - Registry call failure (contract unavailable, host trap) → `KycRegistryUnavailable`.
+/// - Registry returns `false` → `KycNotApproved`.
+///
+/// Both cases abort before any state mutation because this function is always
+/// called in the validation phase, before balance or holder-registry writes.
 pub fn require_kyc(env: &Env, addr: &Address) {
     let registry = read_kyc_registry(env);
     let client = KycRegistryClient::new(env, &registry);
-    if !client.is_approved(addr) {
-        soroban_sdk::panic_with_error!(env, RwaError::KycNotApproved);
+    match client.try_is_approved(addr) {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => soroban_sdk::panic_with_error!(env, RwaError::KycNotApproved),
+        Ok(Err(_)) | Err(_) => {
+            soroban_sdk::panic_with_error!(env, RwaError::KycRegistryUnavailable)
+        }
     }
 }
 
