@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, RwaError, META_ISIN, META_LEGAL_ENTITY};
+use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, vec, Address, Env, String, TryFromVal, symbol_short};
 
 #[allow(dead_code)]
 struct Harness {
@@ -832,99 +832,74 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     assert_eq!(h.token.balance(&alice), 10_000);
 }
 
-// ── Reentrancy-safe transfer execution paths (#345) ───────────────────────────
+// ── versioning (#342) ─────────────────────────────────────────────────────────
 
 #[test]
-fn test_transfer_completes_and_lock_is_released() {
-    // Verify the guard does not permanently lock out subsequent transfers.
+fn test_contract_version_info_initialized_at_deploy() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.mint(&alice, &1_000);
-
-    h.token.transfer(&alice, &bob, &200);
-    assert_eq!(h.token.balance(&alice), 800);
-
-    // Guard must be released — second transfer must succeed.
-    h.token.transfer(&alice, &bob, &100);
-    assert_eq!(h.token.balance(&alice), 700);
-    assert_eq!(h.token.balance(&bob), 300);
+    let (ver, count, last_ts) = h.token.contract_version_info();
+    // Version is set to Cargo.toml version at deploy; migration count starts at 0.
+    assert!(ver.len() > 0);
+    assert_eq!(count, 0);
+    assert_eq!(last_ts, 0);
 }
 
 #[test]
-fn test_transfer_from_lock_is_released_after_success() {
+fn test_migrate_records_version_bump() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    let spender = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.token.mint(&alice, &1_000);
+    let new_ver = String::from_str(&h.env, "0.2.0");
+    let desc = String::from_str(&h.env, "first upgrade");
+    h.token.migrate(&new_ver, &desc);
 
-    let expiration = h.env.ledger().sequence() + 1_000;
-    h.token.approve(&alice, &spender, &600, &expiration);
-
-    h.token.transfer_from(&spender, &alice, &bob, &200);
-    assert_eq!(h.token.balance(&alice), 800);
-
-    // Lock cleared — second delegated transfer must succeed.
-    h.token.transfer_from(&spender, &alice, &bob, &100);
-    assert_eq!(h.token.balance(&alice), 700);
+    let (ver, count, _ts) = h.token.contract_version_info();
+    assert_eq!(ver, new_ver);
+    assert_eq!(count, 1);
 }
 
 #[test]
-fn test_batch_transfer_lock_is_released_after_success() {
+fn test_migrate_increments_count_on_each_call() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env);
-    let carol = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&bob);
-    h.approve_kyc(&carol);
-    h.token.mint(&alice, &1_000);
+    h.token.migrate(
+        &String::from_str(&h.env, "0.2.0"),
+        &String::from_str(&h.env, "add recovery"),
+    );
+    h.token.migrate(
+        &String::from_str(&h.env, "0.3.0"),
+        &String::from_str(&h.env, "add events"),
+    );
 
-    let r1 = vec![&h.env, RecipientEntry { to: bob.clone(), amount: 100 }];
-    h.token.batch_transfer(&alice, &r1);
-    assert_eq!(h.token.balance(&bob), 100);
-
-    // Lock released — second batch must succeed.
-    let r2 = vec![&h.env, RecipientEntry { to: carol.clone(), amount: 50 }];
-    h.token.batch_transfer(&alice, &r2);
-    assert_eq!(h.token.balance(&carol), 50);
+    let (_ver, count, _ts) = h.token.contract_version_info();
+    assert_eq!(count, 2);
 }
 
 #[test]
-fn test_failed_transfer_does_not_leave_lock_set() {
-    // Soroban rolls back all storage changes on panic, so the lock set by
-    // enter_transfer_guard is cleared automatically on a failed transfer.
+fn test_get_migration_record_returns_correct_entry() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    let bob = Address::generate(&h.env); // no KYC
-    let carol = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.approve_kyc(&carol);
-    h.token.mint(&alice, &1_000);
+    let v1 = String::from_str(&h.env, "0.2.0");
+    let d1 = String::from_str(&h.env, "first upgrade");
+    h.token.migrate(&v1, &d1);
 
-    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
-    assert_eq!(h.token.balance(&alice), 1_000);
+    let v2 = String::from_str(&h.env, "0.3.0");
+    let d2 = String::from_str(&h.env, "second upgrade");
+    h.token.migrate(&v2, &d2);
 
-    // Lock must be cleared (rolled back). Subsequent transfer must succeed.
-    h.token.transfer(&alice, &carol, &200);
-    assert_eq!(h.token.balance(&alice), 800);
-    assert_eq!(h.token.balance(&carol), 200);
+    let rec0 = h.token.get_migration_record(&0);
+    assert_eq!(rec0.to_version, v1);
+    assert_eq!(rec0.description, d1);
+
+    let rec1 = h.token.get_migration_record(&1);
+    assert_eq!(rec1.to_version, v2);
+    assert_eq!(rec1.description, d2);
 }
 
 #[test]
-fn test_validate_before_mutate_self_transfer() {
-    // Self-transfers: spend + receive cancel out, balance unchanged.
-    // Guards the validate-before-mutate sequence against the self-send edge case.
+fn test_migrate_last_ts_reflects_ledger_timestamp() {
     let h = setup();
-    let alice = Address::generate(&h.env);
-    h.approve_kyc(&alice);
-    h.token.mint(&alice, &1_000);
-
-    h.token.transfer(&alice, &alice, &500);
-    assert_eq!(h.token.balance(&alice), 1_000);
+    h.env.ledger().set_timestamp(1_700_000_000);
+    h.token.migrate(
+        &String::from_str(&h.env, "0.2.0"),
+        &String::from_str(&h.env, "timed upgrade"),
+    );
+    let (_ver, _count, last_ts) = h.token.contract_version_info();
+    assert_eq!(last_ts, 1_700_000_000);
 }

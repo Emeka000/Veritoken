@@ -21,13 +21,18 @@ pub enum DataKey {
     Allowance(AllowanceKey),
     ComplianceMeta(Symbol),
     Frozen(Address),
+    // ── Versioning (#342) ────────────────────────────────────────────────────
+    ContractSemver,
+    MigrationCount,
+    Migration(u32),
+    // ── Multi-admin recovery (#343) ──────────────────────────────────────────
+    RecoveryMembers,
+    RecoveryThreshold,
+    ActiveRecovery,
     // ── Reentrancy guard (#345) ──────────────────────────────────────────────
-    /// Set to `true` while a transfer is executing; cleared on exit.
-    /// Any nested entry through a transfer path panics while this flag is set,
-    /// preventing state corruption if future cross-contract extensions try to
-    /// call back into this contract during an in-flight transfer.
     TransferLock,
 }
+
 
 #[contracttype]
 #[derive(Clone)]

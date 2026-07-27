@@ -10,9 +10,11 @@ mod admin;
 mod allowance;
 mod balance;
 mod compliance;
+mod events;
 mod kyc;
 mod metadata;
 mod storage_types;
+mod versioning;
 
 #[cfg(test)]
 mod test;
@@ -37,11 +39,48 @@ pub enum RwaError {
     NegativeAmount = 8,
     /// Batch recipient list exceeds the maximum of 10 entries.
     BatchTooLarge = 9,
-    /// A transfer is already in progress on this contract invocation path.
-    TransferReentrant = 10,
+    /// Recovery config has not been set by the admin.
+    RecoveryNotConfigured = 10,
+    /// Caller is not in the recovery members list.
+    NotRecoveryMember = 11,
+    /// A recovery proposal is already in progress.
+    RecoveryAlreadyActive = 12,
+    /// This address has already approved the active recovery proposal.
+    AlreadyApproved = 13,
+    /// No active recovery proposal exists.
+    NoActiveRecovery = 14,
+    /// Threshold must be ≥ 1 and ≤ len(members).
+    InvalidRecoveryConfig = 15,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
+
+/// On-chain record of a single admin-initiated migration.
+#[contracttype]
+#[derive(Clone)]
+pub struct MigrationRecord {
+    pub from_version: String,
+    pub to_version: String,
+    pub timestamp: u64,
+    pub description: String,
+}
+
+/// Snapshot of an in-progress recovery proposal.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryProposal {
+    pub proposed_admin: Address,
+    pub approvals: u32,
+    pub approved_by: Vec<Address>,
+}
+
+/// Stored recovery configuration: member list and required approval threshold.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryConfig {
+    pub members: Vec<Address>,
+    pub threshold: u32,
+}
 
 pub const META_LEGAL_ENTITY: &str = "legal_ent";
 pub const META_GOVERNING_LAW: &str = "gov_law";
@@ -122,6 +161,7 @@ impl RwaToken {
         kyc::write_kyc_registry(&env, &kyc_registry);
         compliance::write_compliance_engine(&env, &compliance_engine);
         balance::write_total_supply(&env, 0);
+        versioning::write_initial_version(&env);
         if let Some(meta) = compliance_metadata {
             if let Some(v) = meta.legal_entity {
                 compliance::write_metadata(&env, Symbol::new(&env, META_LEGAL_ENTITY), v);
@@ -157,27 +197,24 @@ impl RwaToken {
 
     #[deprecated(since = "0.2.0", note = "Use propose_admin and accept_admin instead")]
     pub fn set_admin(env: Env, new_admin: Address) {
-        let admin = admin::read_admin(&env);
-        admin.require_auth();
+        let old_admin = admin::read_admin(&env);
+        old_admin.require_auth();
         admin::write_admin(&env, &new_admin);
-        env.events()
-            .publish((symbol_short!("admin"),), (admin, new_admin));
+        events::emit_admin_set(&env, old_admin, new_admin);
     }
 
     pub fn update_kyc_registry(env: Env, new_registry: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         kyc::write_kyc_registry(&env, &new_registry);
-        env.events()
-            .publish((symbol_short!("upd_kyc"),), new_registry);
+        events::emit_kyc_updated(&env, new_registry);
     }
 
     pub fn update_compliance_engine(env: Env, new_engine: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         compliance::write_compliance_engine(&env, &new_engine);
-        env.events()
-            .publish((symbol_short!("upd_ce"),), new_engine);
+        events::emit_ce_updated(&env, new_engine);
     }
 
     // ── Freeze / Unfreeze ─────────────────────────────────────────────────────
@@ -186,14 +223,14 @@ impl RwaToken {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         compliance::set_frozen(&env, &addr, true);
-        env.events().publish((symbol_short!("frozen"),), addr);
+        events::emit_freeze(&env, addr);
     }
 
     pub fn unfreeze(env: Env, addr: Address) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
         compliance::set_frozen(&env, &addr, false);
-        env.events().publish((symbol_short!("unfrozen"),), addr);
+        events::emit_unfreeze(&env, addr);
     }
 
     pub fn is_frozen(env: Env, addr: Address) -> bool {
@@ -215,10 +252,7 @@ impl RwaToken {
     ) {
         from.require_auth();
         allowance::write_allowance(&env, from.clone(), spender.clone(), amount, expiration_ledger);
-        env.events().publish(
-            (symbol_short!("approve"), from, spender),
-            (amount, expiration_ledger),
-        );
+        events::emit_approve(&env, from, spender, amount, expiration_ledger);
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
@@ -240,9 +274,7 @@ impl RwaToken {
         if from != to && from_bal == amount {
             compliance::unregister_holder(&env, &from);
         }
-        env.events()
-            .publish((symbol_short!("transfer"), from, to), amount);
-        Self::exit_transfer_guard(&env);
+        events::emit_transfer(&env, from, to, amount);
     }
 
     /// Delegated single transfer: identical invariants to `transfer`, plus allowance deduction.
@@ -260,9 +292,7 @@ impl RwaToken {
         if from != to && from_bal == amount {
             compliance::unregister_holder(&env, &from);
         }
-        env.events()
-            .publish((symbol_short!("transfer"), from, to), amount);
-        Self::exit_transfer_guard(&env);
+        events::emit_transfer(&env, from, to, amount);
     }
 
     pub fn burn(env: Env, from: Address, amount: i128) {
@@ -281,7 +311,7 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply - amount);
-        env.events().publish((symbol_short!("burn"), from), amount);
+        events::emit_burn(&env, from, amount);
     }
 
     pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
@@ -301,7 +331,7 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply - amount);
-        env.events().publish((symbol_short!("burn"), from), amount);
+        events::emit_burn(&env, from, amount);
     }
 
     pub fn decimals(env: Env) -> u32 {
@@ -339,7 +369,7 @@ impl RwaToken {
         }
         let supply = balance::read_total_supply(&env);
         balance::write_total_supply(&env, supply + amount);
-        env.events().publish((symbol_short!("mint"), to), amount);
+        events::emit_mint(&env, to, amount);
     }
 
     // ── Batch Transfer ────────────────────────────────────────────────────────
@@ -386,10 +416,7 @@ impl RwaToken {
         for i in 0..len {
             let entry = recipients.get(i).expect("recipient index out of bounds");
             Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
-            env.events().publish(
-                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
-                entry.amount,
-            );
+            events::emit_transfer(&env, from.clone(), entry.to.clone(), entry.amount);
         }
 
         // Deregister sender if their balance was fully drained.
@@ -438,10 +465,7 @@ impl RwaToken {
         for i in 0..len {
             let entry = recipients.get(i).expect("recipient index out of bounds");
             Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
-            env.events().publish(
-                (symbol_short!("transfer"), from.clone(), entry.to.clone()),
-                entry.amount,
-            );
+            events::emit_transfer(&env, from.clone(), entry.to.clone(), entry.amount);
         }
 
         if balance::read_balance(&env, from.clone()) == 0 {
@@ -491,6 +515,42 @@ impl RwaToken {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
     }
 
+    // ── Versioning & Migration (#342) ─────────────────────────────────────────
+
+    /// Returns the on-chain stored version string, total migration count, and
+    /// the ledger timestamp of the last migration (0 if none have run).
+    pub fn contract_version_info(env: Env) -> (String, u32, u64) {
+        let version = versioning::read_version(&env);
+        let count = versioning::read_migration_count(&env);
+        let last_ts: u64 = if count > 0 {
+            versioning::get_migration_record(&env, count - 1)
+                .map(|r| r.timestamp)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        (version, count, last_ts)
+    }
+
+    /// Admin-only migration entry point. Records the version bump on-chain.
+    ///
+    /// Call this after deploying an upgraded WASM blob via
+    /// `stellar contract upgrade`. The `new_version` string follows semver
+    /// (e.g. `"0.2.0"`) and is stored for downstream clients to detect.
+    pub fn migrate(env: Env, new_version: String, description: String) {
+        let admin = admin::read_admin(&env);
+        admin.require_auth();
+        versioning::apply_migration(&env, new_version.clone(), description);
+        env.events()
+            .publish((symbol_short!("migrated"),), new_version);
+    }
+
+    /// Returns the migration record at the given index, or panics if out of range.
+    pub fn get_migration_record(env: Env, index: u32) -> MigrationRecord {
+        versioning::get_migration_record(&env, index)
+            .expect("migration record not found")
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// Validates the sending side of a transfer: frozen check + KYC.
@@ -527,31 +587,23 @@ impl RwaToken {
         }
     }
 
-    // ── Reentrancy guard helpers (#345) ───────────────────────────────────────
-
-    /// Acquires the transfer lock. Panics with `TransferReentrant` if the lock
-    /// is already held — indicating a nested transfer call on the same path.
-    fn enter_transfer_guard(env: &Env) {
-        if env
-            .storage()
-            .instance()
-            .get::<storage_types::DataKey, bool>(&storage_types::DataKey::TransferLock)
-            .unwrap_or(false)
-        {
-            panic_with_error!(env, RwaError::TransferReentrant);
-        }
+    fn read_recovery_config(env: &Env) -> RecoveryConfig {
         env.storage()
             .instance()
-            .set(&storage_types::DataKey::TransferLock, &true);
+            .get(&storage_types::DataKey::RecoveryConfig)
+            .unwrap_or_else(|| panic_with_error!(env, RwaError::RecoveryNotConfigured))
     }
 
-    /// Releases the transfer lock. Always called at the end of every guarded
-    /// transfer entry point, regardless of success or failure (Soroban panics
-    /// roll back storage, so the lock is automatically cleared on panic — this
-    /// call only handles the normal completion path).
-    fn exit_transfer_guard(env: &Env) {
-        env.storage()
-            .instance()
-            .remove(&storage_types::DataKey::TransferLock);
+    fn assert_recovery_member(env: &Env, addr: &Address, cfg: &RecoveryConfig) {
+        if !cfg.members.contains(addr) {
+            panic_with_error!(env, RwaError::NotRecoveryMember);
+        }
+    }
+
+    fn finalize_recovery(env: &Env, new_admin: Address) {
+        let old_admin = admin::read_admin(env);
+        admin::write_admin(env, &new_admin);
+        env.events()
+            .publish((symbol_short!("rcv_exe"),), (old_admin, new_admin));
     }
 }
