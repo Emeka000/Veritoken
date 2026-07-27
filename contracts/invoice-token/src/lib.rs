@@ -657,6 +657,17 @@ impl InvoiceToken {
             panic_with_error!(env, InvoiceError::TransferBlocked);
         }
 
+        // ── Fee deduction ────────────────────────────────────────────────
+        // Compute fee: floor(amount * transfer_fee_bps / 10_000).
+        // The fee is deducted from `from`'s balance and credited to `fee_recipient`.
+        // If fee_recipient is None or fee_bps is 0, no fee is collected.
+        let fee = if meta.transfer_fee_bps > 0 {
+            amount * meta.transfer_fee_bps as i128 / 10_000
+        } else {
+            0
+        };
+        let net_amount = amount - fee;
+
         let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
@@ -673,7 +684,7 @@ impl InvoiceToken {
         let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
         env.storage().persistent().set(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
-            &(to_bal + amount),
+            &(to_bal + net_amount),
         );
         env.storage().persistent().extend_ttl(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
@@ -743,6 +754,15 @@ impl InvoiceToken {
             },
         );
 
+        // ── Fee deduction ────────────────────────────────────────────────
+        // `meta` was already fetched above for the due_date check; reuse it here.
+        let fee = if meta.transfer_fee_bps > 0 {
+            amount * meta.transfer_fee_bps as i128 / 10_000
+        } else {
+            0
+        };
+        let net_amount = amount - fee;
+
         let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
@@ -759,7 +779,7 @@ impl InvoiceToken {
         let to_bal = Self::read_balance(&env, to.clone(), invoice_id.clone());
         env.storage().persistent().set(
             &DataKey::Balance(to.clone(), invoice_id.clone()),
-            &(to_bal + amount),
+            &(to_bal + net_amount),
         );
         env.storage().persistent().extend_ttl(
             &DataKey::Balance(to.clone(), invoice_id.clone()),

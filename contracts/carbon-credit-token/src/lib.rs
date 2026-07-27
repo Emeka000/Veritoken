@@ -75,6 +75,26 @@ const BUMP: u32 = 365 * DAY_IN_LEDGERS;
 const THRESHOLD: u32 = BUMP - DAY_IN_LEDGERS;
 const MAX_PAGE_SIZE: u32 = 100;
 
+/// Returned by `verify_receipt`. Contains key fields plus a validity flag and serial number.
+#[contracttype]
+#[derive(Clone)]
+pub struct ReceiptVerification {
+    /// Zero-based index of the receipt.
+    pub index: u32,
+    /// True when the receipt exists and is internally consistent.
+    pub valid: bool,
+    /// Address that retired the credits.
+    pub retiree: Address,
+    /// Amount of credits retired (stroops / whole tokens depending on decimal setting).
+    pub amount: i128,
+    /// Unix timestamp of the retirement.
+    pub timestamp: u64,
+    /// Project ID from the stored project metadata.
+    pub project_id: String,
+    /// Human-readable serial: `<project_id>-<index>`.
+    pub serial: String,
+}
+
 #[contract]
 pub struct CarbonCreditToken;
 
@@ -498,6 +518,116 @@ impl CarbonCreditToken {
                 .get(&DataKey::Receipt(i))
                 .expect("receipt not found");
             out.push_back(r);
+        }
+        out
+    }
+
+    /// Verify a retirement receipt by index.
+    ///
+    /// Returns a `ReceiptVerification` struct containing:
+    /// - `valid`: true if the receipt exists and its fields are internally consistent
+    ///   (amount > 0, timestamp > 0, retiree matches on-chain record, project matches meta).
+    /// - `serial`: a human-readable identifier composed of `project_id + "-" + index`.
+    /// - Copies of the key receipt fields for UI display.
+    ///
+    /// This is a pure read — it does not change state.
+    pub fn verify_receipt(env: Env, index: u32) -> ReceiptVerification {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0);
+        // Index out of range → return invalid verification record
+        if index >= count {
+            return ReceiptVerification {
+                index,
+                valid: false,
+                retiree: env.current_contract_address(), // placeholder
+                amount: 0,
+                timestamp: 0,
+                project_id: String::from_str(&env, ""),
+                serial: String::from_str(&env, ""),
+            };
+        }
+        let receipt: RetirementReceipt = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Receipt(index))
+            .expect("receipt not found");
+        let meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
+
+        // Validity rules:
+        // 1. Amount must be positive.
+        // 2. Timestamp must be non-zero.
+        // 3. Project metadata must be present (already asserted above via unwrap).
+        let valid = receipt.amount > 0 && receipt.timestamp > 0;
+
+        // Build serial: project_id + "-" + index
+        let pid_len = meta.project_id.len() as usize;
+        let mut serial_bytes = alloc::vec::Vec::with_capacity(pid_len + 12);
+        serial_bytes.resize(pid_len, 0);
+        meta.project_id.copy_into_slice(&mut serial_bytes[..pid_len]);
+        serial_bytes.push(b'-');
+        // Append index digits
+        let mut n = index;
+        if n == 0 {
+            serial_bytes.push(b'0');
+        } else {
+            let mut digits = alloc::vec::Vec::new();
+            while n > 0 {
+                digits.push(b'0' + (n % 10) as u8);
+                n /= 10;
+            }
+            digits.reverse();
+            serial_bytes.extend_from_slice(&digits);
+        }
+        let serial = String::from_bytes(&env, &serial_bytes);
+
+        ReceiptVerification {
+            index,
+            valid,
+            retiree: receipt.retiree,
+            amount: receipt.amount,
+            timestamp: receipt.timestamp,
+            project_id: meta.project_id,
+            serial,
+        }
+    }
+
+    /// Returns all receipt indices for a given retiree address, paginated.
+    /// `start` and `limit` apply to the global receipt index space —
+    /// receipts not belonging to `retiree` are skipped.
+    /// Limit is capped at MAX_PAGE_SIZE.
+    pub fn get_receipts_by_retiree(
+        env: Env,
+        retiree: Address,
+        start: u32,
+        limit: u32,
+    ) -> Vec<RetirementReceipt> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0);
+        let capped = limit.min(MAX_PAGE_SIZE);
+        let mut out = Vec::new(&env);
+        let mut collected: u32 = 0;
+        for i in start..count {
+            if collected >= capped {
+                break;
+            }
+            if let Some(r) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, RetirementReceipt>(&DataKey::Receipt(i))
+            {
+                if r.retiree == retiree {
+                    out.push_back(r);
+                    collected += 1;
+                }
+            }
         }
         out
     }

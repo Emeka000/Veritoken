@@ -21,6 +21,10 @@ export interface InvoiceMeta {
   ipfs_doc_hash: string;
   /** Optional HTTPS webhook URL for off-chain notification services. */
   notification_webhook: string;
+  /** Fee in basis points deducted from the sender on each transfer (0 = no fee). */
+  transfer_fee_bps: number;
+  /** Address that receives collected transfer fees. Null when no fee is configured. */
+  fee_recipient: string | null;
 }
 
 export interface PropertyMeta {
@@ -52,6 +56,43 @@ export interface RetirementReceipt {
   timestamp: number;
   beneficiary: string;
   retirement_reason: string;
+}
+
+/** One recorded entry in the per-invoice state transition journal. */
+export interface JournalEntry {
+  from_status: number;
+  to_status: number;
+  ledger: number;
+  timestamp: number;
+}
+
+/** One dividend deposit event recorded by the property contract. */
+export interface DividendEvent {
+  amount: bigint;
+  timestamp: number;
+  running_total_dps: bigint;
+  /** 0 = Rent, 1 = Capital, 2 = Other */
+  distribution_type: number;
+}
+
+/** Per-holder dividend summary returned by get_dividend_summary. */
+export interface DividendSummary {
+  holder: string;
+  shares: bigint;
+  pending_stroops: bigint;
+  claimed_dps: bigint;
+}
+
+/** Result of verify_receipt on the carbon contract. */
+export interface ReceiptVerification {
+  index: number;
+  valid: boolean;
+  retiree: string;
+  amount: bigint;
+  timestamp: number;
+  project_id: string;
+  /** Computed serial: project_id + "-" + index */
+  serial: string;
 }
 
 export interface ContractEvent {

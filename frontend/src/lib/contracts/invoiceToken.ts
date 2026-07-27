@@ -7,7 +7,7 @@
  */
 
 import type { rpc } from "@stellar/stellar-sdk";
-import type { InvoiceMeta } from "../../types";
+import type { InvoiceMeta, JournalEntry } from "../../types";
 import {
   readCall,
   writeCall,
@@ -15,6 +15,7 @@ import {
   toAddress,
   toI128,
   toU32,
+  toString,
   type SignTx,
 } from "./base";
 
@@ -70,6 +71,23 @@ export class InvoiceTokenClient {
   /** Returns true when the invoice has been settled and redemption is open. */
   async isSettled(): Promise<boolean> {
     return readCall<boolean>(this.server, this.contractId, "is_settled", []);
+  }
+
+  /** Returns the formal lifecycle status of an invoice. */
+  async invoiceStatus(invoiceId: string): Promise<number> {
+    return readCall<number>(this.server, this.contractId, "invoice_status", [
+      toString(invoiceId),
+    ]);
+  }
+
+  /**
+   * Returns the full audit journal (state transition history) for an invoice.
+   * Each entry contains { from_status, to_status, ledger, timestamp }.
+   */
+  async getJournal(invoiceId: string): Promise<JournalEntry[]> {
+    return readCall<JournalEntry[]>(this.server, this.contractId, "get_journal", [
+      toString(invoiceId),
+    ]);
   }
 
   /** Returns true when settlement and redemption are currently paused. */
