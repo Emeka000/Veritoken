@@ -6,6 +6,7 @@ members = [
     "contracts/invoice-token",
     "contracts/property-token",
     "contracts/carbon-credit-token",
+    "tests/smoke",
 ]
 resolver = "2"
 
