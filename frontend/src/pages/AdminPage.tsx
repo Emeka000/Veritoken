@@ -11,6 +11,7 @@ import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import { contracts } from "../lib/contracts/index";
+import { GovernanceLog, recordGovernanceAction } from "../components/GovernanceLog";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -310,6 +311,7 @@ export default function AdminPage() {
     setAddLoading(true);
     try {
       await contracts.compliance.addToBlocklist(address, addAddress, signTx);
+      recordGovernanceAction("blocklist_add", address, `Added ${addAddress} to blocklist.`);
       setAddAddress("");
       addToast(`${addAddress.slice(0, 8)}… added to blocklist.`, "success");
       await refreshBlocklist();
@@ -325,6 +327,7 @@ export default function AdminPage() {
     setRemoveLoading(target);
     try {
       await contracts.compliance.removeFromBlocklist(address, target, signTx);
+      recordGovernanceAction("blocklist_remove", address, `Removed ${target} from blocklist.`);
       addToast(`${target.slice(0, 8)}… removed from blocklist.`, "success");
       await refreshBlocklist();
     } catch (err) {
@@ -602,6 +605,8 @@ export default function AdminPage() {
           </>
         )}
       </Card>
+
+      <GovernanceLog />
 
       <EventFeed
         events={events}

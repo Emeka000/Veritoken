@@ -38,6 +38,63 @@ export const CONTRACT_IDS = {
   rwaToken: import.meta.env.VITE_RWA_TOKEN_ID ?? "",
 };
 
+/** Soroban contract IDs are 56-character strings starting with 'C'. */
+export function isValidContractId(id: string): boolean {
+  return typeof id === "string" && /^C[A-Z2-7]{55}$/.test(id);
+}
+
+export interface ContractIdVerificationResult {
+  valid: boolean;
+  /** IDs that are missing (empty string) for the selected network. */
+  missing: string[];
+  /** IDs present but not matching the expected Soroban format. */
+  malformed: string[];
+}
+
+/**
+ * Verify that every contract ID required for the active network is present and
+ * well-formed before a transaction is prepared or signed.
+ *
+ * Pass an optional subset of keys to check only the contracts involved in a
+ * specific operation. Omitting `keys` checks all registered contract IDs.
+ */
+export function verifyContractIds(
+  keys?: (keyof typeof CONTRACT_IDS)[],
+): ContractIdVerificationResult {
+  const toCheck = keys ?? (Object.keys(CONTRACT_IDS) as (keyof typeof CONTRACT_IDS)[]);
+  const missing: string[] = [];
+  const malformed: string[] = [];
+
+  for (const key of toCheck) {
+    const id = CONTRACT_IDS[key];
+    if (!id) {
+      missing.push(key);
+    } else if (!isValidContractId(id)) {
+      malformed.push(key);
+    }
+  }
+
+  return { valid: missing.length === 0 && malformed.length === 0, missing, malformed };
+}
+
+/**
+ * Throws a descriptive error when required contract IDs are absent or malformed.
+ * Call this at the top of any write path before building or signing a transaction.
+ */
+export function assertContractIds(keys?: (keyof typeof CONTRACT_IDS)[]): void {
+  const result = verifyContractIds(keys);
+  if (result.valid) return;
+
+  const parts: string[] = [];
+  if (result.missing.length > 0) {
+    parts.push(`Missing contract IDs: ${result.missing.join(", ")}. Check your environment variables.`);
+  }
+  if (result.malformed.length > 0) {
+    parts.push(`Malformed contract IDs: ${result.malformed.join(", ")}. IDs must be 56-character Soroban addresses starting with 'C'.`);
+  }
+  throw new Error(parts.join(" "));
+}
+
 // Error code tables matching each contract's #[contracterror] enum discriminants.
 const KYC_ERRORS: Record<number, string> = {
   1: "Contract already initialized",

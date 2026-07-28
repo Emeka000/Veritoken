@@ -3,6 +3,7 @@ import { Card } from "./ui";
 import { SkeletonTableRows } from "./SkeletonPatterns";
 import { CopyButton } from "./CopyButton";
 import type { ContractEvent } from "../types";
+import type { SortField, SortDirection } from "../lib/useEventQuery";
 
 interface EventFeedProps {
   events: ContractEvent[];
@@ -11,6 +12,15 @@ interface EventFeedProps {
   title?: string;
   autoRefreshInterval?: number;
   compact?: boolean;
+  /** Pagination controls — provided by useEventQuery. */
+  hasNextPage?: boolean;
+  hasPrevPage?: boolean;
+  onNextPage?: () => void;
+  onFirstPage?: () => void;
+  page?: number;
+  /** Sorting — provided by useEventQuery. */
+  sort?: { field: SortField; direction: SortDirection };
+  onSortChange?: (field: SortField, direction: SortDirection) => void;
 }
 
 export function EventFeed({
@@ -20,6 +30,13 @@ export function EventFeed({
   title = "Recent Activity",
   autoRefreshInterval,
   compact,
+  hasNextPage,
+  hasPrevPage,
+  onNextPage,
+  onFirstPage,
+  page,
+  sort,
+  onSortChange,
 }: EventFeedProps) {
   const [refreshing, setRefreshing] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
@@ -37,6 +54,24 @@ export function EventFeed({
       return () => clearInterval(intervalRef.current);
     }
   }, [autoRefreshInterval, onRefresh]);
+
+  /** Render a sortable column header. */
+  const SortTh = ({ field, label }: { field: SortField; label: string }) => {
+    if (!onSortChange || !sort) return <th style={th}>{label}</th>;
+    const active = sort.field === field;
+    const next: SortDirection = active && sort.direction === "asc" ? "desc" : "asc";
+    return (
+      <th style={{ ...th, cursor: "pointer", userSelect: "none" }} onClick={() => onSortChange(field, next)}>
+        {label}
+        {active && (
+          <span aria-label={sort.direction === "asc" ? "sorted ascending" : "sorted descending"}
+            style={{ marginLeft: "0.3rem", fontSize: "0.7rem" }}>
+            {sort.direction === "asc" ? "▲" : "▼"}
+          </span>
+        )}
+      </th>
+    );
+  };
 
   return (
     <Card title={title} style={{ marginTop: "1.25rem" }}>
@@ -100,10 +135,10 @@ export function EventFeed({
           >
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
-                <th style={th}>Type</th>
-                <th style={th}>Amount</th>
+                <SortTh field="type" label="Type" />
+                <SortTh field="amount" label="Amount" />
                 {!compact && <th style={th}>Counterparty</th>}
-                <th style={th}>Time</th>
+                <SortTh field="timestamp" label="Time" />
                 <th style={{ ...th, width: 60 }}></th>
               </tr>
             </thead>
@@ -150,6 +185,29 @@ export function EventFeed({
           </table>
         </div>
       )}
+
+      {/* Pagination controls */}
+      {(hasNextPage || hasPrevPage) && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "0.75rem", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+          <button
+            onClick={onFirstPage}
+            disabled={!hasPrevPage || loading}
+            aria-label="First page"
+            style={paginationBtn}
+          >
+            ← First
+          </button>
+          <span>Page {page ?? 1}</span>
+          <button
+            onClick={onNextPage}
+            disabled={!hasNextPage || loading}
+            aria-label="Next page"
+            style={paginationBtn}
+          >
+            Next →
+          </button>
+        </div>
+      )}
     </Card>
   );
 }
@@ -160,3 +218,12 @@ const th: React.CSSProperties = {
   color: "var(--muted)",
 };
 const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
+const paginationBtn: React.CSSProperties = {
+  background: "none",
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  padding: "0.25rem 0.7rem",
+  cursor: "pointer",
+  color: "var(--text-muted)",
+  fontSize: "0.8rem",
+};
