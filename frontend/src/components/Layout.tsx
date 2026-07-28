@@ -11,6 +11,8 @@ const NAV = [
   { to: "/kyc", label: "KYC" },
   { to: "/attestations", label: "Attestations" },
   { to: "/admin", label: "Admin" },
+  { to: "/batch", label: "Batch" },
+  { to: "/onboarding", label: "Onboarding" },
   { to: "/deploy", label: "Deploy" },
   { to: "/docs", label: "Docs" },
 ];
