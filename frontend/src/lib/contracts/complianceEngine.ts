@@ -21,56 +21,54 @@ import {
 } from "./base";
 import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
 
-// ── Local struct encoder ──────────────────────────────────────────────────────
+// ── Internal map builder ──────────────────────────────────────────────────────
 
 /**
- * Encode a `ComplianceRules` struct as a Soroban map ScVal.
- * Field order must match the #[contracttype] declaration in the contract.
+ * Build an ScMap ScVal from an array of [symbolKey, scVal] pairs.
+ * Entries are sorted lexicographically — required by the XDR spec.
  */
-function encodeRules(rules: ComplianceRules): xdr.ScVal {
-  return nativeToScVal(
-    {
-      max_transfer_amount: rules.max_transfer_amount,
-      min_holding_period: Number(rules.min_holding_period),
-      max_holders: rules.max_holders,
-      require_same_jurisdiction: rules.require_same_jurisdiction,
-      paused: rules.paused,
-      allowlist_mode: rules.allowlist_mode,
-    },
-    {
-      type: {
-        max_transfer_amount: ["i128"],
-        min_holding_period: ["u64"],
-        max_holders: ["u32"],
-        require_same_jurisdiction: ["bool"],
-        paused: ["bool"],
-        allowlist_mode: ["bool"],
-      },
-    }
+function scMap(entries: [string, xdr.ScVal][]): xdr.ScVal {
+  const sorted = [...entries].sort(([a], [b]) => a.localeCompare(b));
+  return xdr.ScVal.scvMap(
+    sorted.map(
+      ([key, val]) =>
+        new xdr.ScMapEntry({
+          key: nativeToScVal(key, { type: "symbol" }),
+          val,
+        }),
+    ),
   );
 }
 
+// ── Struct encoders ───────────────────────────────────────────────────────────
+
 /**
- * Encode a `TierPolicy` struct as a Soroban map ScVal.
- * Field order must match the #[contracttype] declaration in the contract.
+ * Encode a `ComplianceRules` struct as a Soroban ScMap.
+ * Field names must match the #[contracttype] declaration in compliance-engine.
+ */
+function encodeRules(rules: ComplianceRules): xdr.ScVal {
+  return scMap([
+    ["allowlist_mode",            nativeToScVal(rules.allowlist_mode, { type: "bool" })],
+    ["max_holding_period",        nativeToScVal(BigInt(rules.max_holding_period), { type: "u64" })],
+    ["max_holders",               nativeToScVal(rules.max_holders, { type: "u32" })],
+    ["max_transfer_amount",       nativeToScVal(rules.max_transfer_amount, { type: "i128" })],
+    ["min_holding_period",        nativeToScVal(BigInt(rules.min_holding_period), { type: "u64" })],
+    ["paused",                    nativeToScVal(rules.paused, { type: "bool" })],
+    ["require_same_jurisdiction", nativeToScVal(rules.require_same_jurisdiction, { type: "bool" })],
+  ]);
+}
+
+/**
+ * Encode a `TierPolicy` struct as a Soroban ScMap.
+ * Field names must match the #[contracttype] declaration in compliance-engine.
  */
 function encodeTierPolicy(policy: TierPolicy): xdr.ScVal {
-  return nativeToScVal(
-    {
-      blocked: policy.blocked,
-      max_transfer_amount: policy.max_transfer_amount,
-      min_from_tier: policy.min_from_tier,
-      min_to_tier: policy.min_to_tier,
-    },
-    {
-      type: {
-        blocked: ["bool"],
-        max_transfer_amount: ["i128"],
-        min_from_tier: ["u32"],
-        min_to_tier: ["u32"],
-      },
-    }
-  );
+  return scMap([
+    ["blocked",             nativeToScVal(policy.blocked, { type: "bool" })],
+    ["max_transfer_amount", nativeToScVal(policy.max_transfer_amount, { type: "i128" })],
+    ["min_from_tier",       nativeToScVal(policy.min_from_tier, { type: "u32" })],
+    ["min_to_tier",         nativeToScVal(policy.min_to_tier, { type: "u32" })],
+  ]);
 }
 
 export class ComplianceEngineClient {
@@ -535,16 +533,15 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
+    const encoded = scMap([
+      ["default_score", nativeToScVal(config.default_score, { type: "u32" })],
+      ["max_score",     nativeToScVal(config.max_score, { type: "u32" })],
+    ]);
     await writeCall(
       this.server,
       this.contractId,
       "set_risk_config",
-      [
-        nativeToScVal(
-          { max_score: config.max_score, default_score: config.default_score },
-          { type: { max_score: ["u32"], default_score: ["u32"] } }
-        ),
-      ],
+      [encoded],
       adminAddress,
       seq,
       signTx
