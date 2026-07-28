@@ -211,3 +211,30 @@ export interface WalletState {
   network: string;
   connected: boolean;
 }
+
+/** Attestation types supported for off-chain compliance references (#370). */
+export type AttestationType = "Legal" | "KYC" | "Compliance" | "AML" | "Accreditation" | "Other";
+
+/**
+ * Off-chain attestation record.  The `reference_url` must point to a
+ * verifiable document (https:// or ipfs://).
+ */
+export interface AttestationRecord {
+  /** Unique identifier for this attestation (client-generated UUID or hash). */
+  id: string;
+  /** Stellar address of the entity being attested. */
+  subject: string;
+  /** Category of the attestation. */
+  attestation_type: AttestationType;
+  /**
+   * External reference to the attestation document.
+   * Must start with `https://` or `ipfs://`.
+   */
+  reference_url: string;
+  /** Issuer's Stellar address or well-known DID. */
+  issuer: string;
+  /** Unix timestamp when the attestation was issued. */
+  issued_at: number;
+  /** Optional human-readable notes. */
+  notes?: string;
+}

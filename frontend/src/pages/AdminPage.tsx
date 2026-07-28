@@ -30,6 +30,35 @@ const DEFAULT_RULES: RulesFormState = {
   paused: false,
 };
 
+// Asset contracts affected by a coordinated pause
+const PAUSE_SCOPE = [
+  { label: "Compliance Engine", key: "complianceEngine" },
+  { label: "RWA Base Token", key: "rwaToken" },
+  { label: "Invoice Token", key: "invoiceToken" },
+  { label: "Property Token", key: "propertyToken" },
+  { label: "Carbon Credit Token", key: "carbonToken" },
+] as const;
+
+function formatDelay(seconds: number): string {
+  if (seconds === 0) return "0 — immediate activation";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
+  if (h > 0) return `${h}h ${m > 0 ? `${m}m` : ""}`.trim();
+  return `${m}m`;
+}
+
+function formatCountdown(activateAt: number): string {
+  const now = Math.floor(Date.now() / 1000);
+  const diff = activateAt - now;
+  if (diff <= 0) return "Ready to activate";
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h remaining`;
+  if (h > 0) return `${h}h ${m}m remaining`;
+  return `${m}m remaining`;
+}
+
 export default function AdminPage() {
   const { address, signTx } = useWallet();
   const { addToast } = useToast();
@@ -40,6 +69,16 @@ export default function AdminPage() {
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
 
+  // Rule-change delay state (#368)
+  const [ruleChangeDelay, setRuleChangeDelay] = useState<number>(0);
+  const [pendingRules, setPendingRules] = useState<{ rules: ComplianceRules; activateAt: number } | null>(null);
+  const [activateLoading, setActivateLoading] = useState(false);
+  const [proposeMode, setProposeMode] = useState(false);
+
+  // Pause state (#369)
+  const [isPaused, setIsPaused] = useState(false);
+  const [pauseLoading, setPauseLoading] = useState(false);
+
   // Blocklist state
   const [blocklist, setBlocklist] = useState<string[]>([]);
   const [blocklistCount, setBlocklistCount] = useState(0);
@@ -48,6 +87,7 @@ export default function AdminPage() {
   const [addLoading, setAddLoading] = useState(false);
   const [removeLoading, setRemoveLoading] = useState<string | null>(null);
 
+  const fetchRules = useCallback(async () => {
   const fetchEvents = useCallback(async () => {
     if (!CONTRACT_IDS.complianceEngine) return;
     try {
@@ -60,48 +100,62 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (!CONTRACT_IDS.complianceEngine) return;
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const contract = new Contract(CONTRACT_IDS.complianceEngine);
+      const dummyAccount = new Account(
+        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        "0"
+      );
+      const tx = new TransactionBuilder(dummyAccount, {
+        fee: "100",
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call("get_rules"))
+        .setTimeout(30)
+        .build();
 
+      const simResult = await server.simulateTransaction(tx);
+      if ("error" in simResult && simResult.error) {
+        throw new Error(`Simulation error: ${simResult.error}`);
+      }
+      const returnVal = (simResult as { result?: { retval: xdr.ScVal } }).result?.retval;
+      if (!returnVal) throw new Error("No return value from get_rules simulation");
+      const decoded = scValToNative(returnVal) as ComplianceRules;
+      setRules({
+        max_transfer_amount: String(decoded.max_transfer_amount ?? 0),
+        min_holding_period: String(decoded.min_holding_period ?? 0),
+        max_holders: String(decoded.max_holders ?? 0),
+        require_same_jurisdiction: Boolean(decoded.require_same_jurisdiction),
+        paused: Boolean(decoded.paused),
+      });
+      setIsPaused(Boolean(decoded.paused));
+    } catch (err) {
+      setFetchError(err instanceof Error ? err.message : "Failed to fetch compliance rules.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!CONTRACT_IDS.complianceEngine) return;
     let cancelled = false;
 
-    async function fetchRules() {
-      setLoading(true);
-      setFetchError(null);
-      try {
-        const contract = new Contract(CONTRACT_IDS.complianceEngine);
-        const dummyAccount = new Account(
-          "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-          "0"
-        );
-        const tx = new TransactionBuilder(dummyAccount, {
-          fee: "100",
-          networkPassphrase: NETWORK_PASSPHRASE,
-        })
-          .addOperation(contract.call("get_rules"))
-          .setTimeout(30)
-          .build();
+    fetchRules();
 
-        const simResult = await server.simulateTransaction(tx);
-        if ("error" in simResult && simResult.error) {
-          throw new Error(`Simulation error: ${simResult.error}`);
-        }
-        const returnVal = (simResult as { result?: { retval: xdr.ScVal } }).result?.retval;
-        if (!returnVal) throw new Error("No return value from get_rules simulation");
-        const decoded = scValToNative(returnVal) as ComplianceRules;
+    async function fetchMeta() {
+      try {
+        const [delay, pending] = await Promise.all([
+          contracts.compliance.getRuleChangeDelay(),
+          contracts.compliance.getPendingRules(),
+        ]);
         if (!cancelled) {
-          setRules({
-            max_transfer_amount: String(decoded.max_transfer_amount ?? 0),
-            min_holding_period: String(decoded.min_holding_period ?? 0),
-            max_holders: String(decoded.max_holders ?? 0),
-            require_same_jurisdiction: Boolean(decoded.require_same_jurisdiction),
-            paused: Boolean(decoded.paused),
-          });
+          setRuleChangeDelay(delay);
+          setPendingRules(pending);
         }
-      } catch (err) {
-        if (!cancelled) {
-          setFetchError(err instanceof Error ? err.message : "Failed to fetch compliance rules.");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+      } catch {
+        // non-fatal
       }
     }
 
@@ -117,13 +171,13 @@ export default function AdminPage() {
           setBlocklistCount(count);
         }
       } catch {
-        // Non-fatal; blocklist section will remain empty
+        // Non-fatal
       } finally {
         if (!cancelled) setBlocklistLoading(false);
       }
     }
 
-    fetchRules();
+    fetchMeta();
     fetchBlocklist();
 
     setEventsLoading(true);
@@ -132,7 +186,7 @@ export default function AdminPage() {
     });
 
     return () => { cancelled = true; };
-  }, [fetchEvents]);
+  }, [fetchRules, fetchEvents]);
 
   const [confirm, setConfirm] = useState<{
     title: string;
@@ -142,17 +196,58 @@ export default function AdminPage() {
 
   const handleSaveRules = (e: React.FormEvent) => {
     e.preventDefault();
+    const actionLabel = proposeMode && ruleChangeDelay > 0 ? "Propose Rule Change" : "Save Rules (Immediate)";
+    const delayNote = proposeMode && ruleChangeDelay > 0
+      ? ` Rules will enter a ${formatDelay(ruleChangeDelay)} time-lock before activation.`
+      : " This bypasses the time-lock and takes effect immediately (admin override).";
     setConfirm({
-      title: "Save Compliance Rules",
-      description: `This will update the global compliance rules on-chain. Max transfer: ${rules.max_transfer_amount}, Min holding: ${rules.min_holding_period}s, Max holders: ${rules.max_holders}.`,
-      onConfirm: () => {
-        recordGovernanceAction(
-          "rules_updated",
-          address ?? "unknown",
-          `Max transfer: ${rules.max_transfer_amount}, Min holding: ${rules.min_holding_period}s, Max holders: ${rules.max_holders}, Require same jurisdiction: ${rules.require_same_jurisdiction}`,
-        );
-        addToast("Compliance rules saved successfully.", "success");
+      title: actionLabel,
+      description: `Max transfer: ${rules.max_transfer_amount}, Min holding: ${rules.min_holding_period}s, Max holders: ${rules.max_holders}.${delayNote}`,
+      onConfirm: async () => {
         setConfirm(null);
+        try {
+          const newRules: ComplianceRules = {
+            max_transfer_amount: BigInt(rules.max_transfer_amount),
+            min_holding_period: Number(rules.min_holding_period),
+            max_holders: Number(rules.max_holders),
+            require_same_jurisdiction: rules.require_same_jurisdiction,
+            paused: rules.paused,
+            allowlist_mode: false,
+          };
+          if (proposeMode && ruleChangeDelay > 0 && address) {
+            await contracts.compliance.proposeRules(address, newRules, signTx);
+            addToast(`Rule change proposed. Activates in ${formatDelay(ruleChangeDelay)}.`, "info");
+            const pending = await contracts.compliance.getPendingRules();
+            setPendingRules(pending);
+          } else if (address) {
+            await contracts.compliance.setRules(address, newRules, signTx);
+            addToast("Compliance rules saved successfully.", "success");
+            await fetchRules();
+          }
+        } catch (err) {
+          addToast(err instanceof Error ? err.message : "Failed to save rules.", "error");
+        }
+      },
+    });
+  };
+
+  const handleActivateRules = () => {
+    setConfirm({
+      title: "Activate Pending Rules",
+      description: "The time-lock delay has elapsed. Pending rules will now become the active ruleset.",
+      onConfirm: async () => {
+        setConfirm(null);
+        setActivateLoading(true);
+        try {
+          if (address) await contracts.compliance.activateRules(address, signTx);
+          addToast("Pending rules activated successfully.", "success");
+          setPendingRules(null);
+          await fetchRules();
+        } catch (err) {
+          addToast(err instanceof Error ? err.message : "Failed to activate rules.", "error");
+        } finally {
+          setActivateLoading(false);
+        }
       },
     });
   };
@@ -160,11 +255,20 @@ export default function AdminPage() {
   const handlePause = () =>
     setConfirm({
       title: "Pause All Transfers",
-      description: "This will immediately halt every token transfer across all asset contracts. Existing balances are unaffected.",
-      onConfirm: () => {
-        recordGovernanceAction("pause", address ?? "unknown", "All token transfers paused.");
-        addToast("All transfers paused.", "info");
+      description: "This will immediately halt every token transfer across all asset contracts. The pause state is coordinated through the compliance engine — all contracts check it before allowing transfers.",
+      onConfirm: async () => {
         setConfirm(null);
+        setPauseLoading(true);
+        try {
+          if (address) await contracts.compliance.pause(address, signTx);
+          setIsPaused(true);
+          addToast("All transfers paused.", "info");
+          await fetchRules();
+        } catch (err) {
+          addToast(err instanceof Error ? err.message : "Failed to pause transfers.", "error");
+        } finally {
+          setPauseLoading(false);
+        }
       },
     });
 
@@ -172,10 +276,19 @@ export default function AdminPage() {
     setConfirm({
       title: "Unpause Transfers",
       description: "This will re-enable token transfers across all asset contracts.",
-      onConfirm: () => {
-        recordGovernanceAction("unpause", address ?? "unknown", "Token transfers re-enabled.");
-        addToast("Transfers unpaused.", "success");
+      onConfirm: async () => {
         setConfirm(null);
+        setPauseLoading(true);
+        try {
+          if (address) await contracts.compliance.unpause(address, signTx);
+          setIsPaused(false);
+          addToast("Transfers unpaused.", "success");
+          await fetchRules();
+        } catch (err) {
+          addToast(err instanceof Error ? err.message : "Failed to unpause transfers.", "error");
+        } finally {
+          setPauseLoading(false);
+        }
       },
     });
 
@@ -224,6 +337,9 @@ export default function AdminPage() {
     }
   };
 
+  const canActivateNow = pendingRules !== null &&
+    Math.floor(Date.now() / 1000) >= pendingRules.activateAt;
+
   return (
     <div className="form-narrow">
       <PageHeader
@@ -233,13 +349,148 @@ export default function AdminPage() {
         description="Configure global compliance rules. Only the contract admin can call these functions."
       />
 
+      {/* #369 — Global pause status banner */}
+      {isPaused && (
+        <div style={styles.pauseBanner} role="alert">
+          <Icon.bolt size={16} style={{ display: "inline", verticalAlign: "-3px", marginRight: 8 }} />
+          <strong>All transfers are currently PAUSED</strong> — token movements are blocked across all asset contracts until an admin unpauses.
+        </div>
+      )}
+
       {fetchError && (
         <div style={styles.errorBanner} role="alert">
           <strong>Failed to load current rules:</strong> {fetchError}
         </div>
       )}
 
+      {/* #369 — Emergency controls with coordinated scope */}
+      <WalletGuard>
+        <Card
+          title="Emergency Controls"
+          subtitle="Pause coordinates across all asset contracts via the compliance engine"
+          style={{ marginBottom: "1.25rem" }}
+        >
+          <div style={{ display: "flex", gap: "1rem", marginBottom: "1.25rem" }}>
+            <button
+              onClick={handlePause}
+              className="btn-danger"
+              style={{ flex: 1 }}
+              disabled={isPaused || pauseLoading}
+            >
+              <Icon.bolt size={15} style={{ display: "inline", verticalAlign: "-2px", marginRight: 6 }} />
+              {pauseLoading && !isPaused ? "Pausing…" : "Pause All Transfers"}
+            </button>
+            <button
+              onClick={handleUnpause}
+              className="btn-success"
+              style={{ flex: 1 }}
+              disabled={!isPaused || pauseLoading}
+            >
+              {pauseLoading && isPaused ? "Unpausing…" : "Unpause Transfers"}
+            </button>
+          </div>
+          <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.75rem" }}>
+            Contracts checked by the pause state:
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+            {PAUSE_SCOPE.map((c) => (
+              <div key={c.key} style={styles.pauseRow}>
+                <span style={{
+                  ...styles.pauseDot,
+                  background: isPaused ? "var(--danger)" : "var(--success)",
+                  boxShadow: isPaused ? "0 0 0 3px var(--danger-soft)" : "0 0 0 3px var(--success-soft)",
+                }} />
+                <span style={{ fontSize: "0.85rem" }}>{c.label}</span>
+                <span className="badge" style={{
+                  marginLeft: "auto",
+                  background: isPaused ? "var(--danger-soft)" : "var(--success-soft)",
+                  color: isPaused ? "var(--danger)" : "var(--success)",
+                }}>
+                  {isPaused ? "Paused" : "Active"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </WalletGuard>
+
+      {/* #368 — Pending rules panel */}
+      {pendingRules && (
+        <Card
+          title="Pending Rule Change"
+          subtitle={formatCountdown(pendingRules.activateAt)}
+          style={{ marginBottom: "1.25rem", border: "1px solid var(--warning)", background: "var(--warning-soft)" }}
+        >
+          <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
+            These rules were proposed and are in the time-lock period. They will replace the current active rules once activated.
+          </p>
+          <div style={styles.ruleCompare}>
+            <div>
+              <p style={styles.ruleLabel}>Max Transfer</p>
+              <p style={styles.ruleVal}>{String(pendingRules.rules.max_transfer_amount) === "0" ? "Unlimited" : String(pendingRules.rules.max_transfer_amount)}</p>
+            </div>
+            <div>
+              <p style={styles.ruleLabel}>Min Holding Period</p>
+              <p style={styles.ruleVal}>{pendingRules.rules.min_holding_period === 0 ? "None" : `${pendingRules.rules.min_holding_period}s`}</p>
+            </div>
+            <div>
+              <p style={styles.ruleLabel}>Max Holders</p>
+              <p style={styles.ruleVal}>{pendingRules.rules.max_holders === 0 ? "Unlimited" : String(pendingRules.rules.max_holders)}</p>
+            </div>
+            <div>
+              <p style={styles.ruleLabel}>Same Jurisdiction</p>
+              <p style={styles.ruleVal}>{pendingRules.rules.require_same_jurisdiction ? "Required" : "Not required"}</p>
+            </div>
+          </div>
+          {canActivateNow && (
+            <WalletGuard>
+              <button
+                className="btn-block"
+                style={{ marginTop: "1rem" }}
+                onClick={handleActivateRules}
+                disabled={activateLoading}
+              >
+                {activateLoading ? "Activating…" : "Activate Pending Rules"}
+              </button>
+            </WalletGuard>
+          )}
+        </Card>
+      )}
+
       <Card title="Compliance Rules">
+        {/* #368 — rule-change delay info + mode toggle */}
+        <div style={styles.delayInfo}>
+          <span style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
+            Rule-change delay: <strong style={{ color: "var(--text)" }}>{formatDelay(ruleChangeDelay)}</strong>
+          </span>
+          {ruleChangeDelay > 0 && (
+            <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+              <button
+                type="button"
+                className={!proposeMode ? "btn-accent" : "btn-ghost"}
+                style={{ fontSize: "0.75rem", padding: "0.35rem 0.7rem" }}
+                onClick={() => setProposeMode(false)}
+              >
+                Immediate (Override)
+              </button>
+              <button
+                type="button"
+                className={proposeMode ? "btn-accent" : "btn-ghost"}
+                style={{ fontSize: "0.75rem", padding: "0.35rem 0.7rem" }}
+                onClick={() => setProposeMode(true)}
+              >
+                Propose (Time-lock)
+              </button>
+            </div>
+          )}
+        </div>
+        {ruleChangeDelay > 0 && (
+          <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: "1rem", lineHeight: 1.5 }}>
+            {proposeMode
+              ? `Proposed rules enter a ${formatDelay(ruleChangeDelay)} time-lock before taking effect. Use the Activate button once the delay elapses.`
+              : "Immediate save bypasses the time-lock (emergency admin override). Use Propose for normal governance."}
+          </p>
+        )}
         {loading ? (
           <div aria-label="Loading compliance rules">
             <SkeletonForm fields={5} />
@@ -276,29 +527,13 @@ export default function AdminPage() {
               </span>
             </label>
             <WalletGuard>
-              <button type="submit" className="btn-block">Save Rules</button>
+              <button type="submit" className="btn-block">
+                {proposeMode && ruleChangeDelay > 0 ? "Propose Rule Change" : "Save Rules"}
+              </button>
             </WalletGuard>
           </form>
         )}
       </Card>
-
-      <WalletGuard>
-        <Card
-          title="Emergency Controls"
-          subtitle="Pause halts every transfer across all asset tokens"
-          style={{ marginTop: "1.25rem" }}
-        >
-          <div style={{ display: "flex", gap: "1rem" }}>
-            <button onClick={handlePause} className="btn-danger" style={{ flex: 1 }}>
-              <Icon.bolt size={15} style={{ display: "inline", verticalAlign: "-2px", marginRight: 6 }} />
-              Pause All Transfers
-            </button>
-            <button onClick={handleUnpause} className="btn-success" style={{ flex: 1 }}>
-              Unpause Transfers
-            </button>
-          </div>
-        </Card>
-      </WalletGuard>
 
       <Card
         title="Blocklist Management"
@@ -392,6 +627,44 @@ export default function AdminPage() {
     </div>
   );
 }
+function RecentTransactions({ events, loading }: { events: ContractEvent[]; loading: boolean }) {
+  return (
+    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
+      {loading ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          {[1, 2, 3].map((i) => (
+            <div key={i} style={{ display: "flex", gap: "1rem", padding: "0.75rem 0" }}>
+              <Skeleton width="80px" height="1.25rem" />
+              <Skeleton width="100px" height="1.25rem" />
+              <Skeleton width="150px" height="1.25rem" />
+              <Skeleton width="120px" height="1.25rem" />
+            </div>
+          ))}
+        </div>
+      ) : events.length === 0 ? (
+        <p className="muted" style={{ fontSize: "0.875rem" }}>No recent events found.</p>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+              <th style={th}>Type</th><th style={th}>Amount</th><th style={th}>Counterparty</th><th style={th}>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((ev, i) => (
+              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                <td style={td}>{ev.type}</td>
+                <td style={td}>{ev.amount}</td>
+                <td style={{ ...td, fontFamily: "monospace", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.counterparty}</td>
+                <td style={td}>{ev.timestamp}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  );
+}
 
 const th: React.CSSProperties = { padding: "0.4rem 0.5rem", fontWeight: 600, color: "var(--muted)" };
 const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
@@ -399,4 +672,14 @@ const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
 const styles: Record<string, React.CSSProperties> = {
   checkboxRow: { display: "flex", alignItems: "center", gap: "0.6rem", margin: "0.25rem 0 1.1rem", cursor: "pointer" },
   errorBanner: { marginBottom: "1.25rem", padding: "0.85rem 1rem", borderRadius: 10, background: "color-mix(in srgb, #ef4444 12%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)", color: "#ef4444", fontSize: "0.875rem", lineHeight: 1.5 },
+  // #369 pause banner
+  pauseBanner: { marginBottom: "1.25rem", padding: "0.85rem 1rem", borderRadius: 10, background: "color-mix(in srgb, #f87171 14%, transparent)", border: "1px solid color-mix(in srgb, #f87171 40%, transparent)", color: "#f87171", fontSize: "0.875rem", lineHeight: 1.5 },
+  pauseRow: { display: "flex", alignItems: "center", gap: "0.6rem", padding: "0.45rem 0.5rem", borderRadius: 8, background: "var(--surface-2)" },
+  pauseDot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
+  // #368 delay info bar
+  delayInfo: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.75rem", padding: "0.6rem 0.75rem", borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border)" },
+  // #368 pending rule compare grid
+  ruleCompare: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginTop: "0.5rem" },
+  ruleLabel: { fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.2rem" },
+  ruleVal: { fontSize: "0.9rem", fontWeight: 600 },
 };

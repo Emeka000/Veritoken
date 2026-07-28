@@ -1,12 +1,10 @@
 /**
- * Shared helpers used by every contract client.
+ * Shared helpers used by every frontend contract client.
  *
- * Soroban read calls: build a no-auth transaction → simulateTransaction → decode retval.
- * Soroban write calls: build the transaction → simulateAndSend → return.
+ * Reads:  build a dummy-source transaction → simulateTransaction → decode retval.
+ * Writes: delegate to TxPipeline for the full lifecycle with retry and sequence cache.
  *
- * The dummy source account used for simulation is the well-known fee-bump source from
- * the Stellar docs. It carries a sequence number of "0" and never needs to be funded
- * because simulation does not submit to the network.
+ * ScVal scalar encoders are kept here for backward compat with existing clients.
  */
 
 import {
@@ -18,15 +16,40 @@ import {
   nativeToScVal,
   type rpc,
 } from "@stellar/stellar-sdk";
-import { NETWORK_PASSPHRASE, simulateAndSend, isValidContractId } from "../stellar";
+import { NETWORK_PASSPHRASE, getServer } from "../stellar";
 import { parseContractError, type ContractName } from "../contractErrors";
+import { TxPipeline, SequenceCache } from "../txPipeline";
 
-// A stable dummy address used only for read simulations.
+// Stable dummy address used only for read simulations (no auth needed).
 const DUMMY_SOURCE = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 
 export type SignTx = (xdr: string) => Promise<string>;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── Lazy singleton pipeline (shared across all contract clients) ──────────────
+// Using a getter so it picks up the live server from the network store.
+
+let _pipeline: TxPipeline | null = null;
+let _seqCache: SequenceCache | null = null;
+
+/** Returns the shared TxPipeline instance, creating it if needed. */
+export function getPipeline(): TxPipeline {
+  if (!_pipeline) {
+    _seqCache = new SequenceCache();
+    _pipeline = new TxPipeline(getServer(), NETWORK_PASSPHRASE, {}, _seqCache);
+  }
+  return _pipeline;
+}
+
+/**
+ * Reset the pipeline (call when the network or server changes).
+ * The next call to getPipeline() will create a fresh instance.
+ */
+export function resetPipeline(): void {
+  _pipeline = null;
+  _seqCache = null;
+}
+
+// ── Transaction builder ───────────────────────────────────────────────────────
 
 /** Build a single-operation transaction ready for simulation or submission. */
 export function buildTx(
@@ -47,6 +70,8 @@ export function buildTx(
     .build();
   return tx.toXDR();
 }
+
+// ── Read path ─────────────────────────────────────────────────────────────────
 
 /** Simulate a read-only call and return the decoded native JS value. */
 export async function readCall<T>(
@@ -71,29 +96,50 @@ export async function readCall<T>(
   return scValToNative(result.retval) as T;
 }
 
-/** Build, simulate, and submit a state-mutating call. Returns the confirmed tx response. */
+// ── Write path ────────────────────────────────────────────────────────────────
+
+/**
+ * Full write pipeline via TxPipeline: sequence cache → simulate → assemble
+ * → sign → submit → poll.  Retries transient failures automatically.
+ */
 export async function writeCall(
   _server: rpc.Server,
   contractId: string,
   method: string,
   args: xdr.ScVal[],
   senderAddress: string,
-  senderSequence: string,
+  _senderSequence: string, // kept for API compat; pipeline manages sequence internally
   signTx: SignTx
 ): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
-  // #431 — guard against stale or misconfigured contract IDs before touching the wallet.
-  if (!isValidContractId(contractId)) {
-    throw new Error(
-      `Invalid contract ID "${contractId}" for method "${method}". ` +
-      `Contract IDs must be 56-character Soroban addresses starting with 'C'. ` +
-      `Check your environment variables.`
-    );
-  }
-  const xdrTx = buildTx(contractId, method, args, senderAddress, senderSequence);
-  return simulateAndSend(xdrTx, signTx);
+  const { response } = await getPipeline().write(
+    contractId, method, args, senderAddress, signTx,
+  );
+  return response;
 }
 
-// ── ScVal converters ─────────────────────────────────────────────────────────
+// ── Account helpers ───────────────────────────────────────────────────────────
+
+/** Fetch the current sequence number for a Stellar account. */
+export async function fetchSequence(
+  server: rpc.Server,
+  address: string
+): Promise<string> {
+  const account = await server.getAccount(address);
+  return (account as unknown as { sequence: string }).sequence;
+}
+
+// ── Error enrichment ──────────────────────────────────────────────────────────
+
+export function enrichError(contract: ContractName, err: unknown): Error {
+  const raw = err instanceof Error ? err.message : String(err);
+  const parsed = parseContractError(contract, raw);
+  if (parsed) {
+    return new Error(`${parsed.message} (${parsed.name} #${parsed.code}): ${raw}`);
+  }
+  return err instanceof Error ? err : new Error(raw);
+}
+
+// ── ScVal scalar encoders (backward compat re-exports) ────────────────────────
 
 export const toAddress = (addr: string): xdr.ScVal =>
   nativeToScVal(addr, { type: "address" });
@@ -112,27 +158,3 @@ export const toString = (s: string): xdr.ScVal =>
 
 export const toBool = (b: boolean): xdr.ScVal =>
   nativeToScVal(b, { type: "bool" });
-
-/** Fetch the current sequence number for a Stellar account. */
-export async function fetchSequence(server: rpc.Server, address: string): Promise<string> {
-  const account = await server.getAccount(address);
-  return (account as unknown as { sequence: string }).sequence;
-}
-
-/**
- * Re-throws a contract error with a human-readable message prepended.
- * Call this in catch blocks of contract client methods.
- *
- * @example
- *   } catch (err) {
- *     throw enrichError("rwa", err);
- *   }
- */
-export function enrichError(contract: ContractName, err: unknown): Error {
-  const raw = err instanceof Error ? err.message : String(err);
-  const parsed = parseContractError(contract, raw);
-  if (parsed) {
-    return new Error(`${parsed.message} (${parsed.name} #${parsed.code})`);
-  }
-  return err instanceof Error ? err : new Error(raw);
-}
