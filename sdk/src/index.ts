@@ -5,6 +5,43 @@ export { PropertyTokenClient } from "./clients/PropertyTokenClient.js";
 export { CarbonTokenClient } from "./clients/CarbonTokenClient.js";
 export { RwaTokenClient } from "./clients/RwaTokenClient.js";
 
+// Core transaction builder and read/write primitives
+export {
+  buildContractTx,
+  simulateRead,
+  submitContractTx,
+  fetchAccountSequence,
+  BaseContractClient,
+  decodeScVal,
+  SIM_SOURCE,
+} from "./clients/base.js";
+export type { SignTx, BuildTxOptions } from "./clients/base.js";
+
+// Scalar and struct ScVal encoders
+export {
+  encodeAddress,
+  encodeU32,
+  encodeU64,
+  encodeI128,
+  encodeString,
+  encodeBool,
+  encodeSymbol,
+  encodeComplianceRules,
+  encodeTierPolicy,
+  encodeRiskConfig,
+  encodeInvoiceMeta,
+  encodePropertyMeta,
+  encodeProjectMeta,
+} from "./codec.js";
+
+// Typed error model
+export {
+  lookupError,
+  parseContractError,
+  formatContractError,
+} from "./errors.js";
+export type { ContractError, ContractName } from "./errors.js";
+
 export { createServer, RPC_URLS, NETWORK_PASSPHRASES } from "./network.js";
 
 export type {

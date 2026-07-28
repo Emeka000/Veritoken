@@ -10,6 +10,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/.env
 
+# Docker local environment — contains secrets, never commit
+.env.docker
+
 # Stellar
 .stellar/
 *.wasm

@@ -9,6 +9,7 @@ const NAV = [
   { to: "/property", label: "Property" },
   { to: "/carbon", label: "Carbon" },
   { to: "/kyc", label: "KYC" },
+  { to: "/attestations", label: "Attestations" },
   { to: "/admin", label: "Admin" },
   { to: "/batch", label: "Batch" },
   { to: "/onboarding", label: "Onboarding" },
@@ -227,13 +228,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   disconnectBtn: { fontSize: "0.75rem", padding: "0.4rem 0.8rem" },
   hamburger: {
-    display: "none",
+    display: "flex",
     flexDirection: "column",
     gap: "0.35rem",
     background: "none",
     border: "none",
     cursor: "pointer",
-    padding: 0,
+    padding: "0.25rem",
   },
   hamburgerLine: {
     width: "1.5rem",
@@ -289,22 +290,4 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-// Add responsive media queries via global styles
-const mediaStyles = `
-  @media (max-width: 768px) {
-    .nav-desktop {
-      display: none !important;
-    }
-    
-    [class*="hamburger"] {
-      display: flex !important;
-    }
-  }
-`;
-
-if (typeof document !== "undefined" && !document.getElementById("layout-responsive-styles")) {
-  const style = document.createElement("style");
-  style.id = "layout-responsive-styles";
-  style.textContent = mediaStyles;
-  document.head.appendChild(style);
-}
+// Responsive behaviour is handled via media queries in index.css.
