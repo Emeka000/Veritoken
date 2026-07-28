@@ -13,12 +13,10 @@
 
 import {
   Contract,
-  Account,
   Keypair,
-  TransactionBuilder,
-  scValToNative,
-  xdr,
   rpc,
+  xdr,
+  scValToNative,
 } from "@stellar/stellar-sdk";
 import {
   parseContractError,
@@ -218,6 +216,8 @@ export async function fetchAccountSequence(
  */
 export abstract class BaseContractClient {
   protected readonly contract: Contract;
+  /** Exposed so tests and subclasses can inject a shared cache. */
+  readonly pipeline: TxPipeline;
 
   constructor(
     protected readonly contractId: string,
@@ -227,6 +227,7 @@ export abstract class BaseContractClient {
     protected readonly contractName: ContractName,
   ) {
     this.contract = new Contract(contractId);
+    this.pipeline = new TxPipeline(server, networkPassphrase, pipelineOpts);
   }
 
   /** Simulate a read-only call and return decoded value `T`. */

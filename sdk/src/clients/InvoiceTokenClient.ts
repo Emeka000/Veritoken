@@ -22,6 +22,9 @@ export class InvoiceTokenClient extends BaseContractClient {
   async getMeta(): Promise<InvoiceMeta> {
     return this.read<InvoiceMeta>("get_meta", []);
   }
+  async name(): Promise<string> { return this.read<string>("name", []); }
+  async symbol(): Promise<string> { return this.read<string>("symbol", []); }
+  async decimals(): Promise<number> { return this.read<number>("decimals", []); }
 
   async balance(addr: string): Promise<bigint> {
     return this.read<bigint>("balance", [encodeAddress(addr)]);

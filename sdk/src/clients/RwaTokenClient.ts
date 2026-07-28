@@ -28,6 +28,8 @@ export class RwaTokenClient extends BaseContractClient {
     return this.read<bigint>("total_supply", []);
   }
 
+  async balance(addr: string): Promise<bigint> { return this.read<bigint>("balance", [encodeAddress(addr)]); }
+  async totalSupply(): Promise<bigint> { return this.read<bigint>("total_supply", []); }
   async allowance(from: string, spender: string): Promise<bigint> {
     return this.read<bigint>("allowance", [
       encodeAddress(from),
