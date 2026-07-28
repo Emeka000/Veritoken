@@ -20,6 +20,11 @@ cargo build --release --target wasm32-unknown-unknown
 
 WASM_DIR="target/wasm32-unknown-unknown/release"
 
+echo ""
+echo "==> Verifying build artifacts..."
+bash "$(dirname "$0")/verify-artifacts.sh"
+echo ""
+
 build_wasm() {
   local name="$1"
   local wasm_path="$WASM_DIR/${name//-/_}.wasm"
@@ -96,6 +101,7 @@ echo ""
 echo "==> Writing .env to frontend..."
 cat > frontend/.env <<EOF
 VITE_STELLAR_NETWORK=$NETWORK
+VITE_STELLAR_RPC_URL=https://soroban-testnet.stellar.org
 VITE_KYC_REGISTRY_ID=$KYC_ID
 VITE_COMPLIANCE_ENGINE_ID=$CE_ID
 VITE_INVOICE_TOKEN_ID=$INV_ID
@@ -103,11 +109,26 @@ VITE_PROPERTY_TOKEN_ID=$PROP_ID
 VITE_CARBON_TOKEN_ID=$CARBON_ID
 EOF
 
+echo "==> Writing deploy manifest..."
+DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+cat > deploy-manifest.json <<EOF
+{
+  "network": "$NETWORK",
+  "deployed_at": "$DEPLOYED_AT",
+  "identity": "$IDENTITY",
+  "kyc_registry_id": "$KYC_ID",
+  "compliance_engine_id": "$CE_ID",
+  "invoice_token_id": "$INV_ID",
+  "property_token_id": "$PROP_ID",
+  "carbon_token_id": "$CARBON_ID"
+}
+EOF
+echo "    deploy-manifest.json written"
+
 echo ""
 echo "Done! Contract IDs written to frontend/.env"
 echo "IMPORTANT: Update the placeholder --meta values above with real asset metadata before production deployment."
 echo "Next: cd frontend && npm install && npm run dev"
 echo ""
-# Optional: verify the deployment immediately after writing .env.
-# Uncomment the line below or run manually: bash scripts/verify-deployment.sh
-# bash "$(dirname "$0")/verify-deployment.sh" "$IDENTITY"
+echo "==> Running post-deployment verification..."
+bash "$(dirname "$0")/verify-deployment.sh" "$IDENTITY"
