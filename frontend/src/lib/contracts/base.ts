@@ -18,7 +18,7 @@ import {
   nativeToScVal,
   type rpc,
 } from "@stellar/stellar-sdk";
-import { NETWORK_PASSPHRASE, simulateAndSend } from "../stellar";
+import { NETWORK_PASSPHRASE, simulateAndSend, isValidContractId } from "../stellar";
 import { parseContractError, type ContractName } from "../contractErrors";
 
 // A stable dummy address used only for read simulations.
@@ -81,6 +81,14 @@ export async function writeCall(
   senderSequence: string,
   signTx: SignTx
 ): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
+  // #431 — guard against stale or misconfigured contract IDs before touching the wallet.
+  if (!isValidContractId(contractId)) {
+    throw new Error(
+      `Invalid contract ID "${contractId}" for method "${method}". ` +
+      `Contract IDs must be 56-character Soroban addresses starting with 'C'. ` +
+      `Check your environment variables.`
+    );
+  }
   const xdrTx = buildTx(contractId, method, args, senderAddress, senderSequence);
   return simulateAndSend(xdrTx, signTx);
 }

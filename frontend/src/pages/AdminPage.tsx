@@ -11,6 +11,7 @@ import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import { contracts } from "../lib/contracts/index";
+import { GovernanceLog, recordGovernanceAction } from "../components/GovernanceLog";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -145,6 +146,11 @@ export default function AdminPage() {
       title: "Save Compliance Rules",
       description: `This will update the global compliance rules on-chain. Max transfer: ${rules.max_transfer_amount}, Min holding: ${rules.min_holding_period}s, Max holders: ${rules.max_holders}.`,
       onConfirm: () => {
+        recordGovernanceAction(
+          "rules_updated",
+          address ?? "unknown",
+          `Max transfer: ${rules.max_transfer_amount}, Min holding: ${rules.min_holding_period}s, Max holders: ${rules.max_holders}, Require same jurisdiction: ${rules.require_same_jurisdiction}`,
+        );
         addToast("Compliance rules saved successfully.", "success");
         setConfirm(null);
       },
@@ -156,6 +162,7 @@ export default function AdminPage() {
       title: "Pause All Transfers",
       description: "This will immediately halt every token transfer across all asset contracts. Existing balances are unaffected.",
       onConfirm: () => {
+        recordGovernanceAction("pause", address ?? "unknown", "All token transfers paused.");
         addToast("All transfers paused.", "info");
         setConfirm(null);
       },
@@ -166,6 +173,7 @@ export default function AdminPage() {
       title: "Unpause Transfers",
       description: "This will re-enable token transfers across all asset contracts.",
       onConfirm: () => {
+        recordGovernanceAction("unpause", address ?? "unknown", "Token transfers re-enabled.");
         addToast("Transfers unpaused.", "success");
         setConfirm(null);
       },
@@ -190,6 +198,7 @@ export default function AdminPage() {
     setAddLoading(true);
     try {
       await contracts.compliance.addToBlocklist(address, addAddress, signTx);
+      recordGovernanceAction("blocklist_add", address, `Added ${addAddress} to blocklist.`);
       setAddAddress("");
       addToast(`${addAddress.slice(0, 8)}… added to blocklist.`, "success");
       await refreshBlocklist();
@@ -205,6 +214,7 @@ export default function AdminPage() {
     setRemoveLoading(target);
     try {
       await contracts.compliance.removeFromBlocklist(address, target, signTx);
+      recordGovernanceAction("blocklist_remove", address, `Removed ${target} from blocklist.`);
       addToast(`${target.slice(0, 8)}… removed from blocklist.`, "success");
       await refreshBlocklist();
     } catch (err) {
@@ -360,6 +370,8 @@ export default function AdminPage() {
           </>
         )}
       </Card>
+
+      <GovernanceLog />
 
       <EventFeed
         events={events}
