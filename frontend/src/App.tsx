@@ -10,6 +10,7 @@ import AdminPage from "./pages/AdminPage";
 import AttestationPage from "./pages/AttestationPage";
 import DeployPage from "./pages/DeployPage";
 import DocsPage from "./pages/DocsPage";
+import OperatorDashboard from "./pages/OperatorDashboard";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./lib/toast";
 
