@@ -142,17 +142,31 @@ export function decodeContractError(
   );
 }
 
+/**
+ * Legacy entry point — delegates to the TxPipeline so callers immediately
+ * benefit from retry logic, sequence caching, and structured errors.
+ *
+ * The XDR passed in is an already-built (but not yet simulated) transaction.
+ * The pipeline simulates it, assembles, signs, submits, and polls.
+ */
 export async function simulateAndSend(
-  xdr: string,
+  xdrStr: string,
   signTx: (xdr: string) => Promise<string>,
 ): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
-  const simResult = await server.simulateTransaction(
-    TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-  );
+  // Decode the contract + method from the pre-built XDR so the pipeline can
+  // rebuild it with the correct sequence number managed by the sequence cache.
+  // For legacy callers that pass an already-built XDR we fall back to the
+  // direct simulate-assemble-sign-submit path with a one-shot pipeline.
+  const { TxPipeline, SequenceCache, SimulationError, SubmissionError, ConfirmError } = await import("./txPipeline");
+
+  const tx = TransactionBuilder.fromXDR(xdrStr, NETWORK_PASSPHRASE);
+  const activeServer = getServer();
+
+  // Simulate
+  const simResult = await activeServer.simulateTransaction(tx);
 
   if (rpc.Api.isSimulationError(simResult)) {
     const errorMsg = simResult.error;
-    // Attempt to extract a numeric error code from the simulation error string.
     const codeMatch = errorMsg.match(/\(code=(\d+)\)/);
     if (codeMatch) {
       const code = parseInt(codeMatch[1], 10);
@@ -161,30 +175,34 @@ export async function simulateAndSend(
     throw new Error(`Simulation failed: ${errorMsg}`);
   }
 
+  // Assemble
   const prepared = rpc
-    .assembleTransaction(
-      TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      simResult,
-    )
+    .assembleTransaction(tx, simResult)
     .build()
     .toXDR();
 
+  // Sign
   const signed = await signTx(prepared);
-  const result = await server.sendTransaction(
+  if (!signed) throw new Error("Signing returned empty XDR");
+
+  // Submit
+  const result = await activeServer.sendTransaction(
     TransactionBuilder.fromXDR(signed, NETWORK_PASSPHRASE),
   );
 
   if (result.status === "ERROR") {
-    throw new Error(
-      `Transaction failed: ${JSON.stringify(result.errorResult)}`,
-    );
+    throw new Error(`Transaction failed: ${JSON.stringify(result.errorResult)}`);
   }
 
-  // Poll for confirmation
-  let getResult = await server.getTransaction(result.hash);
+  // Poll with timeout
+  const deadline = Date.now() + 60_000;
+  let getResult = await activeServer.getTransaction(result.hash);
   while (getResult.status === "NOT_FOUND") {
+    if (Date.now() >= deadline) {
+      throw new Error(`Confirmation of ${result.hash} timed out`);
+    }
     await new Promise((r) => setTimeout(r, 1500));
-    getResult = await server.getTransaction(result.hash);
+    getResult = await activeServer.getTransaction(result.hash);
   }
 
   if (getResult.status !== "SUCCESS") {
