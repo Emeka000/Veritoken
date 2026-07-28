@@ -1,0 +1,35 @@
+[package]
+name = "fuzz-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# This crate contains property-based / fuzz-style tests that run under the
+# standard Soroban test environment (no external fuzzer required).  They use
+# hand-rolled generators to exercise the compliance and transfer logic with a
+# large, varied input space.
+#
+# Running:
+#   cargo test -p fuzz-tests --features testutils
+#
+# The tests are also executed in CI as part of `cargo test --all`.
+
+[lib]
+name = "fuzz_tests"
+path = "src/lib.rs"
+
+[dev-dependencies]
+soroban-sdk     = { workspace = true, features = ["testutils"] }
+kyc-registry    = { path = "../../contracts/kyc-registry",    features = ["testutils"] }
+compliance-engine = { path = "../../contracts/compliance-engine", features = ["testutils"] }
+rwa-token       = { path = "../../contracts/rwa-token",       features = ["testutils"] }
+property-token  = { path = "../../contracts/property-token",  features = ["testutils"] }
+invoice-token   = { path = "../../contracts/invoice-token",   features = ["testutils"] }
+carbon-credit-token = { path = "../../contracts/carbon-credit-token", features = ["testutils"] }
+
+[features]
+testutils = []
+
+[[test]]
+name = "fuzz"
+path = "tests/fuzz.rs"

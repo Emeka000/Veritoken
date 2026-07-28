@@ -46,6 +46,18 @@ jobs:
         working-directory: Veritoken
         run: cargo test --all
 
+      - name: Fuzz / property-based tests
+        working-directory: Veritoken
+        run: cargo test -p fuzz-tests --features testutils
+
+      - name: Dividend regression tests
+        working-directory: Veritoken
+        run: cargo test -p dividend-regression-tests --features testutils
+
+      - name: Cross-contract integration tests
+        working-directory: Veritoken
+        run: cargo test -p integration-tests --features testutils
+
       - name: Build WASM (release)
         working-directory: Veritoken
         run: cargo build --release --target wasm32-unknown-unknown
@@ -53,47 +65,9 @@ jobs:
       - name: Check WASM sizes
         working-directory: Veritoken
         shell: bash
-        run: |
-          # ── Configurable threshold ────────────────────────────────────────
-          THRESHOLD_BYTES=131072   # 128 KB
-
-          WASM_DIR="target/wasm32-unknown-unknown/release"
-          EXIT_CODE=0
-
-          echo "──────────────────────────────────────────────"
-          echo " WASM binary size report (threshold: $((THRESHOLD_BYTES / 1024)) KB)"
-          echo "──────────────────────────────────────────────"
-          printf "%-52s %10s  %s\n" "File" "Size (bytes)" "Status"
-          echo "──────────────────────────────────────────────"
-
-          for wasm in "$WASM_DIR"/*.wasm; do
-            [ -f "$wasm" ] || continue
-            SIZE=$(wc -c < "$wasm")
-            NAME=$(basename "$wasm")
-            SIZE_KB=$(echo "scale=1; $SIZE / 1024" | bc)
-
-            if [ "$SIZE" -gt "$THRESHOLD_BYTES" ]; then
-              STATUS="❌ EXCEEDS LIMIT (${SIZE_KB} KB > $((THRESHOLD_BYTES / 1024)) KB)"
-              EXIT_CODE=1
-            else
-              STATUS="✅ OK (${SIZE_KB} KB)"
-            fi
-
-            printf "%-52s %10d  %s\n" "$NAME" "$SIZE" "$STATUS"
-          done
-
-          echo "──────────────────────────────────────────────"
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo ""
-            echo "ERROR: One or more WASM binaries exceed the ${THRESHOLD_BYTES}-byte ($(( THRESHOLD_BYTES / 1024 )) KB) size limit."
-            echo "Consider:"
-            echo "  • Removing unused dependencies"
-            echo "  • Ensuring opt-level = 'z' and lto = true in [profile.release]"
-            echo "  • Running: wasm-opt -Oz <file>.wasm -o <file>.wasm"
-          fi
-
-          exit "$EXIT_CODE"
+        # Per-contract budgets are documented in docs/contract-size-budget.md.
+        # To update a budget: edit scripts/check-wasm-size.sh and that doc, then PR.
+        run: bash scripts/check-wasm-size.sh
 
   # ── Frontend checks ────────────────────────────────────────────────────────
   frontend:
