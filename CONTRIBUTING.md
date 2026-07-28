@@ -59,6 +59,29 @@ npm run dev
 
 ---
 
+## Contract Size Budget
+
+Every contract in this repository has a documented maximum WASM binary size.
+CI enforces these limits automatically after every release build.
+
+Before adding a new feature to an existing contract, check the current binary
+size:
+
+```bash
+cargo build --release --target wasm32-unknown-unknown
+bash scripts/check-wasm-size.sh --print-sizes
+```
+
+If your change causes a contract to exceed its budget, you must either reduce
+the size (remove unused code/deps, rely on workspace profile settings) or
+explicitly raise the budget by updating `scripts/check-wasm-size.sh` and
+`docs/contract-size-budget.md` in the same PR with a justification.
+
+See [docs/contract-size-budget.md](docs/contract-size-budget.md) for the full
+policy, current limits, and reduction techniques.
+
+---
+
 ## Good First Issues
 
 Look for issues labelled [`good first issue`](https://github.com/abore9769/Veritoken/issues?q=label%3A%22good+first+issue%22) — these are scoped to be approachable without deep familiarity with the full codebase.

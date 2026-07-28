@@ -1,0 +1,642 @@
+//! Cross-contract integration tests for the Veritoken contract suite.
+//!
+//! These tests instantiate the complete contract stack in the Soroban test
+//! environment and exercise realistic end-to-end workflows.  They are
+//! intentionally different from the per-contract unit tests, which mock
+//! cross-contract calls.  Here every cross-contract call is a real call into
+//! a real deployed contract instance.
+//!
+//! # Workflows covered
+//!
+//! | Test | Contracts | Scenario |
+//! |---|---|---|
+//! | `workflow_holder_onboarding_and_rwa_transfer` | KYC + CE + RWA | Full onboarding → transfer |
+//! | `workflow_compliance_pause_blocks_all_asset_types` | KYC + CE + RWA + property + carbon | Pause/unpause across three token types |
+//! | `workflow_blocklist_prevents_transfer` | KYC + CE + RWA | Blocklist mid-flight |
+//! | `workflow_kyc_expiry_blocks_transfer` | KYC + CE + RWA | Expired KYC is rejected |
+//! | `workflow_invoice_full_lifecycle` | KYC + CE + invoice | Create → issue → settle → redeem |
+//! | `workflow_invoice_lifecycle_pause_blocks_settle` | KYC + CE + invoice | Lifecycle pause guard |
+//! | `workflow_property_dividend_end_to_end` | KYC + CE + property | Mint → distribute → claim |
+//! | `workflow_carbon_mint_transfer_retire` | KYC + CE + carbon | Mint → transfer → retire |
+//! | `workflow_carbon_retire_receipt_is_permanent` | KYC + CE + carbon | On-chain retirement receipt |
+//! | `workflow_compliance_rule_propagation` | KYC + CE + RWA | Rule update propagates |
+//! | `workflow_max_holders_cap_enforced` | KYC + CE + property | max_holders cap |
+//! | `workflow_holding_period_enforced_cross_contract` | KYC + CE + RWA | min_holding_period |
+//! | `workflow_kyc_registry_admin_verifier_management` | KYC | Verifier add/remove lifecycle |
+
+#![cfg(test)]
+
+extern crate alloc;
+
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
+
+use carbon_credit_token::{CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
+use invoice_token::{InvoiceToken, InvoiceTokenClient, InvoiceMeta};
+use kyc_registry::{KycRegistry, KycRegistryClient};
+use property_token::{PropertyMeta, PropertyToken, PropertyTokenClient};
+use rwa_token::{ComplianceMetadata, RwaToken, RwaTokenClient};
+
+// ── Shared setup helpers ──────────────────────────────────────────────────────
+
+struct Stack {
+    env: Env,
+    kyc: KycRegistryClient<'static>,
+    ce: ComplianceEngineClient<'static>,
+    admin: Address,
+    verifier: Address,
+    kyc_id: Address,
+    ce_id: Address,
+}
+
+fn build_stack() -> Stack {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let verifier = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    kyc.add_verifier(&admin, &verifier);
+
+    let ce_id = env.register(ComplianceEngine, ());
+    let ce = ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
+
+    Stack { env, kyc, ce, admin, verifier, kyc_id, ce_id }
+}
+
+impl Stack {
+    /// Approve `addr` in the KYC registry with tier 1 (Accredited) and jurisdiction "US".
+    fn onboard(&self, addr: &Address) {
+        self.kyc.approve(
+            &self.verifier,
+            addr,
+            &1,
+            &0,
+            &String::from_str(&self.env, "US"),
+        );
+    }
+
+    fn deploy_rwa(&self, name: &str, symbol: &str) -> RwaTokenClient<'static> {
+        let id = self.env.register(
+            RwaToken,
+            (
+                self.admin.clone(),
+                7u32,
+                String::from_str(&self.env, name),
+                String::from_str(&self.env, symbol),
+                String::from_str(&self.env, "property"),
+                self.kyc_id.clone(),
+                self.ce_id.clone(),
+                Option::<ComplianceMetadata>::None,
+                0i128,
+            ),
+        );
+        RwaTokenClient::new(&self.env, &id)
+    }
+
+    fn deploy_property(&self, total_shares: i128) -> PropertyTokenClient<'static> {
+        let meta = PropertyMeta {
+            property_id: String::from_str(&self.env, "PROP-INT-1"),
+            legal_name: String::from_str(&self.env, "Integration Property LLC"),
+            jurisdiction: String::from_str(&self.env, "US"),
+            address: String::from_str(&self.env, "1 Integration Ave"),
+            total_valuation_usd: 10_000_000_000_000,
+            total_shares,
+            property_type: String::from_str(&self.env, "residential"),
+            ipfs_title_hash: String::from_str(&self.env, ""),
+            kyc_tier_required: 0,
+        };
+        let id = self.env.register(
+            PropertyToken,
+            (self.admin.clone(), self.kyc_id.clone(), self.ce_id.clone(), meta),
+        );
+        PropertyTokenClient::new(&self.env, &id)
+    }
+
+    fn deploy_invoice(&self, face_value: i128) -> InvoiceTokenClient<'static> {
+        let meta = InvoiceMeta {
+            invoice_id: String::from_str(&self.env, "INV-INT-001"),
+            issuer: String::from_str(&self.env, "Acme Corp"),
+            debtor: String::from_str(&self.env, "Beta Inc"),
+            face_value_usd: face_value,
+            discount_rate_bps: 500,
+            due_date: 9_999_999_999,
+            currency: String::from_str(&self.env, "USD"),
+            ipfs_doc_hash: String::from_str(&self.env, ""),
+            transfer_fee_bps: 0,
+            fee_recipient: None,
+            notification_webhook: String::from_str(&self.env, ""),
+        };
+        let id = self.env.register(
+            InvoiceToken,
+            (self.admin.clone(), self.kyc_id.clone(), self.ce_id.clone(), meta),
+        );
+        InvoiceTokenClient::new(&self.env, &id)
+    }
+
+    fn deploy_carbon(&self) -> CarbonCreditTokenClient<'static> {
+        let meta = ProjectMeta {
+            project_id: String::from_str(&self.env, "VCS-INT-001"),
+            standard: String::from_str(&self.env, "VCS"),
+            vintage_year: 2023,
+            project_name: String::from_str(&self.env, "Integration Forest"),
+            project_type: String::from_str(&self.env, "forestry"),
+            country: String::from_str(&self.env, "BR"),
+            verifier: String::from_str(&self.env, "Verra"),
+            ipfs_cert_hash: String::from_str(&self.env, ""),
+            registry_url: String::from_str(&self.env, "https://registry.verra.org"),
+            registry_project_id: String::from_str(&self.env, "VCS-999"),
+        };
+        let id = self.env.register(
+            CarbonCreditToken,
+            (self.admin.clone(), self.kyc_id.clone(), self.ce_id.clone(), meta),
+        );
+        CarbonCreditTokenClient::new(&self.env, &id)
+    }
+
+    fn default_rules() -> ComplianceRules {
+        ComplianceRules {
+            max_transfer_amount: 0,
+            min_holding_period: 0,
+            max_holders: 0,
+            require_same_jurisdiction: false,
+            paused: false,
+            allowlist_mode: false,
+            max_holding_period: 0,
+        }
+    }
+}
+
+// ── Workflow 1: holder onboarding and RWA transfer ────────────────────────────
+
+/// Full cross-contract flow: onboard two addresses via the KYC registry,
+/// then mint and transfer RWA tokens.  The token contract must call the KYC
+/// registry on every transfer.
+#[test]
+fn workflow_holder_onboarding_and_rwa_transfer() {
+    let s = build_stack();
+    let token = s.deploy_rwa("Integration RWA", "IRWA");
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+
+    // Alice and Bob are not yet approved — transfers must fail.
+    assert!(!s.kyc.is_approved(&alice));
+    assert!(!s.kyc.is_approved(&bob));
+
+    // Onboard Alice.
+    s.onboard(&alice);
+    assert!(s.kyc.is_approved(&alice));
+
+    // Mint to Alice — Bob is not yet approved, so direct mint to Alice is fine.
+    token.mint(&s.admin, &alice, &1_000);
+    assert_eq!(token.balance(&alice), 1_000);
+
+    // Transfer to unapproved Bob must fail.
+    assert!(token.try_transfer(&alice, &bob, &100).is_err());
+
+    // Onboard Bob, then the transfer must succeed.
+    s.onboard(&bob);
+    token.transfer(&alice, &bob, &100);
+
+    assert_eq!(token.balance(&alice), 900);
+    assert_eq!(token.balance(&bob), 100);
+    assert_eq!(token.total_supply(), 1_000);
+}
+
+// ── Workflow 2: pause blocks all asset types ──────────────────────────────────
+
+/// A single compliance engine pause blocks transfers across all asset types
+/// that share the engine.
+#[test]
+fn workflow_compliance_pause_blocks_all_asset_types() {
+    let s = build_stack();
+    let rwa = s.deploy_rwa("Pause RWA", "PRWA");
+    let prop = s.deploy_property(1_000);
+    let carbon = s.deploy_carbon();
+
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    // Setup initial state.
+    rwa.mint(&s.admin, &alice, &500);
+    prop.mint(&alice, &200);
+    carbon.mint(&alice, &50);
+
+    // Pre-pause: all transfers succeed.
+    rwa.transfer(&alice, &bob, &10);
+    prop.transfer(&alice, &bob, &10);
+    carbon.transfer(&alice, &bob, &5);
+
+    // Pause the shared compliance engine.
+    s.ce.pause();
+
+    // Post-pause: all asset transfers must be blocked.
+    assert!(rwa.try_transfer(&alice, &bob, &1).is_err());
+    assert!(prop.try_transfer(&alice, &bob, &1).is_err());
+    assert!(carbon.try_transfer(&alice, &bob, &1).is_err());
+
+    // Unpause — transfers must succeed again.
+    s.ce.unpause();
+    rwa.transfer(&alice, &bob, &1);
+    prop.transfer(&alice, &bob, &1);
+    carbon.transfer(&alice, &bob, &1);
+}
+
+// ── Workflow 3: blocklist prevents transfer ───────────────────────────────────
+
+#[test]
+fn workflow_blocklist_prevents_transfer() {
+    let s = build_stack();
+    let token = s.deploy_rwa("Blocklist RWA", "BRWA");
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    token.mint(&s.admin, &alice, &1_000);
+
+    // Blocklist alice mid-flight.
+    s.ce.add_to_blocklist(&alice);
+
+    // Alice as sender — blocked.
+    assert!(token.try_transfer(&alice, &bob, &100).is_err());
+
+    // Bob as sender, alice as receiver — also blocked (alice is blocklisted).
+    token.mint(&s.admin, &bob, &100);
+    assert!(token.try_transfer(&bob, &alice, &50).is_err());
+
+    // Remove alice from blocklist — transfers succeed.
+    s.ce.remove_from_blocklist(&alice);
+    token.transfer(&alice, &bob, &100);
+    assert_eq!(token.balance(&bob), 200); // 100 original + 100 transferred
+}
+
+// ── Workflow 4: KYC revocation blocks transfer ────────────────────────────────
+
+#[test]
+fn workflow_kyc_revocation_blocks_transfer() {
+    let s = build_stack();
+    let token = s.deploy_rwa("Revoke RWA", "RRWA");
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    token.mint(&s.admin, &alice, &1_000);
+    token.transfer(&alice, &bob, &100);
+    assert_eq!(token.balance(&bob), 100);
+
+    // Revoke alice's KYC.
+    s.kyc.revoke(&s.verifier, &alice);
+    assert!(!s.kyc.is_approved(&alice));
+
+    // Alice can no longer transfer.
+    assert!(token.try_transfer(&alice, &bob, &1).is_err());
+
+    // Bob to alice also fails because alice is not approved.
+    assert!(token.try_transfer(&bob, &alice, &10).is_err());
+
+    // Re-approve alice; transfers resume.
+    s.onboard(&alice);
+    token.transfer(&alice, &bob, &50);
+    assert_eq!(token.balance(&bob), 150);
+}
+
+// ── Workflow 5: invoice full lifecycle ───────────────────────────────────────
+
+#[test]
+fn workflow_invoice_full_lifecycle() {
+    let s = build_stack();
+    let face_value: i128 = 100_000_000_000; // 10 000 USD at 7 decimals
+    let invoice_token = s.deploy_invoice(face_value);
+    let alice = Address::generate(&s.env);
+    s.onboard(&alice);
+
+    let invoice_id = String::from_str(&s.env, "INV-INT-001");
+
+    // Issue tokens to alice against the invoice.
+    invoice_token.issue(&invoice_id, &alice, &face_value);
+    assert_eq!(invoice_token.balance(&alice, &invoice_id), face_value);
+
+    // Settle the invoice.
+    invoice_token.settle(&invoice_id);
+    let status = invoice_token.invoice_status(&invoice_id);
+    assert_eq!(
+        status,
+        invoice_token::InvoiceStatus::FullySettled,
+        "invoice must be FullySettled after settle()"
+    );
+
+    // Redeem alice's tokens.
+    invoice_token.redeem(&invoice_id, &alice, &face_value);
+    assert_eq!(invoice_token.balance(&alice, &invoice_id), 0);
+    assert_eq!(invoice_token.total_supply(&invoice_id), 0);
+}
+
+// ── Workflow 6: invoice lifecycle pause blocks settle ─────────────────────────
+
+#[test]
+fn workflow_invoice_lifecycle_pause_blocks_settle() {
+    let s = build_stack();
+    let face_value: i128 = 50_000_000_000;
+    let invoice_token = s.deploy_invoice(face_value);
+    let alice = Address::generate(&s.env);
+    s.onboard(&alice);
+
+    let invoice_id = String::from_str(&s.env, "INV-INT-001");
+    invoice_token.issue(&invoice_id, &alice, &face_value);
+
+    // Pause the lifecycle.
+    invoice_token.pause_lifecycle();
+    assert!(invoice_token.lifecycle_paused());
+
+    // Settle must be blocked.
+    assert!(invoice_token.try_settle(&invoice_id).is_err());
+
+    // Unpause, then settle succeeds.
+    invoice_token.unpause_lifecycle();
+    invoice_token.settle(&invoice_id);
+    assert_eq!(
+        invoice_token.invoice_status(&invoice_id),
+        invoice_token::InvoiceStatus::FullySettled
+    );
+}
+
+// ── Workflow 7: property dividend end-to-end ─────────────────────────────────
+
+#[test]
+fn workflow_property_dividend_end_to_end() {
+    let s = build_stack();
+    let prop = s.deploy_property(1_000);
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    // Mint shares.
+    prop.mint(&alice, &600);
+    prop.mint(&bob, &400);
+
+    // Deposit a dividend.
+    prop.deposit_dividend(&1_000, &2); // 2 = DistributionType::Other
+
+    // Verify pro-rata split.
+    assert_eq!(prop.pending_dividend(&alice), 600);
+    assert_eq!(prop.pending_dividend(&bob), 400);
+
+    // Claim dividends.
+    let alice_claimed = prop.claim_dividend(&alice);
+    let bob_claimed = prop.claim_dividend(&bob);
+    assert_eq!(alice_claimed, 600);
+    assert_eq!(bob_claimed, 400);
+
+    // No double-claim.
+    assert_eq!(prop.claim_dividend(&alice), 0);
+    assert_eq!(prop.claim_dividend(&bob), 0);
+}
+
+// ── Workflow 8: carbon mint, transfer, retire ─────────────────────────────────
+
+#[test]
+fn workflow_carbon_mint_transfer_retire() {
+    let s = build_stack();
+    let carbon = s.deploy_carbon();
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    carbon.mint(&alice, &100);
+    assert_eq!(carbon.balance(&alice), 100);
+    assert_eq!(carbon.total_supply(), 100);
+
+    // Transfer 30 to bob.
+    carbon.transfer(&alice, &bob, &30);
+    assert_eq!(carbon.balance(&alice), 70);
+    assert_eq!(carbon.balance(&bob), 30);
+
+    // Bob retires 10 credits.
+    let receipt = carbon.retire(
+        &bob,
+        &10,
+        &String::from_str(&s.env, "My Organisation"),
+        &String::from_str(&s.env, "offsetting 2024 emissions"),
+    );
+
+    assert_eq!(receipt.amount, 10);
+    assert_eq!(receipt.retiree, bob);
+    assert_eq!(carbon.total_retired(), 10);
+    assert_eq!(carbon.total_supply(), 90);
+    assert_eq!(carbon.balance(&bob), 20);
+}
+
+// ── Workflow 9: carbon retirement receipt is permanent ────────────────────────
+
+#[test]
+fn workflow_carbon_retire_receipt_is_permanent() {
+    let s = build_stack();
+    let carbon = s.deploy_carbon();
+    let alice = Address::generate(&s.env);
+    s.onboard(&alice);
+
+    carbon.mint(&alice, &50);
+    carbon.retire(
+        &alice,
+        &50,
+        &String::from_str(&s.env, "Entity A"),
+        &String::from_str(&s.env, "net-zero commitment"),
+    );
+
+    // Verify the receipt is retrievable and valid.
+    let verification = carbon.verify_receipt(&0);
+    assert!(verification.valid);
+    assert_eq!(verification.amount, 50);
+    assert_eq!(verification.retiree, alice);
+    assert_eq!(verification.index, 0);
+
+    // Supply is zero; no further retirements possible.
+    assert_eq!(carbon.total_supply(), 0);
+    assert!(carbon.try_retire(
+        &alice,
+        &1,
+        &String::from_str(&s.env, "anyone"),
+        &String::from_str(&s.env, "reason"),
+    ).is_err());
+}
+
+// ── Workflow 10: compliance rule update propagates to all assets ──────────────
+
+#[test]
+fn workflow_compliance_rule_propagation() {
+    let s = build_stack();
+    let rwa = s.deploy_rwa("Limit RWA", "LRWA");
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    rwa.mint(&s.admin, &alice, &10_000);
+
+    // No rule yet — large transfer is fine.
+    rwa.transfer(&alice, &bob, &5_000);
+    assert_eq!(rwa.balance(&bob), 5_000);
+
+    // Set a 100-unit cap via the compliance engine.
+    s.ce.set_rules(&ComplianceRules {
+        max_transfer_amount: 100,
+        ..Stack::default_rules()
+    });
+
+    // Transfer of 101 must fail.
+    assert!(rwa.try_transfer(&alice, &bob, &101).is_err());
+
+    // Transfer of exactly 100 must succeed.
+    rwa.transfer(&alice, &bob, &100);
+    assert_eq!(rwa.balance(&bob), 5_100);
+
+    // Remove the cap.
+    s.ce.set_rules(&Stack::default_rules());
+    rwa.transfer(&alice, &bob, &1_000);
+    assert_eq!(rwa.balance(&bob), 6_100);
+}
+
+// ── Workflow 11: max_holders cap is enforced across contracts ─────────────────
+
+#[test]
+fn workflow_max_holders_cap_enforced() {
+    let s = build_stack();
+    let prop = s.deploy_property(1_000);
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+    s.onboard(&carol);
+
+    // Set a cap of 2 holders.
+    s.ce.set_rules(&ComplianceRules {
+        max_holders: 2,
+        ..Stack::default_rules()
+    });
+
+    prop.mint(&alice, &400);
+    prop.mint(&bob, &400);
+    // Carol would be the 3rd holder — must be blocked.
+    assert!(prop.try_transfer(&alice, &carol, &100).is_err());
+
+    // Alice can still transfer to bob (existing holder).
+    prop.transfer(&alice, &bob, &100);
+    assert_eq!(prop.balance(&bob), 500);
+}
+
+// ── Workflow 12: min_holding_period enforced cross-contract ───────────────────
+
+#[test]
+fn workflow_holding_period_enforced_cross_contract() {
+    let s = build_stack();
+    let rwa = s.deploy_rwa("Hold RWA", "HRWA");
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    let base_ts: u64 = 1_000_000;
+    s.env.ledger().set_timestamp(base_ts);
+
+    // Set a 1-hour holding period.
+    s.ce.set_rules(&ComplianceRules {
+        min_holding_period: 3600,
+        ..Stack::default_rules()
+    });
+
+    rwa.mint(&s.admin, &alice, &1_000);
+    // The rwa-token registers alice as holder at mint time.
+
+    // Immediate transfer must be blocked.
+    assert!(rwa.try_transfer(&alice, &bob, &100).is_err());
+
+    // Advance time past the holding period.
+    s.env.ledger().set_timestamp(base_ts + 3601);
+    rwa.transfer(&alice, &bob, &100);
+    assert_eq!(rwa.balance(&bob), 100);
+}
+
+// ── Workflow 13: KYC verifier management lifecycle ───────────────────────────
+
+#[test]
+fn workflow_kyc_registry_admin_verifier_management() {
+    let s = build_stack();
+    let rwa = s.deploy_rwa("Verifier RWA", "VRWA");
+    let alice = Address::generate(&s.env);
+    let second_verifier = Address::generate(&s.env);
+
+    // Only the original verifier is present.
+    assert_eq!(s.kyc.verifier_count(), 1);
+
+    // Add a second verifier.
+    s.kyc.add_verifier(&s.admin, &second_verifier);
+    assert_eq!(s.kyc.verifier_count(), 2);
+
+    // Second verifier approves alice.
+    s.kyc.approve(
+        &second_verifier,
+        &alice,
+        &1,
+        &0,
+        &String::from_str(&s.env, "US"),
+    );
+    assert!(s.kyc.is_approved(&alice));
+
+    // Mint succeeds because alice is approved.
+    rwa.mint(&s.admin, &alice, &500);
+    assert_eq!(rwa.balance(&alice), 500);
+
+    // Remove the second verifier — alice's existing approval is unaffected.
+    s.kyc.remove_verifier(&s.admin, &second_verifier);
+    assert_eq!(s.kyc.verifier_count(), 1);
+    assert!(s.kyc.is_approved(&alice)); // approval persists
+
+    // Revoke alice via original verifier.
+    s.kyc.revoke(&s.verifier, &alice);
+    assert!(!s.kyc.is_approved(&alice));
+}
+
+// ── Workflow 14: new asset shares KYC + compliance with existing assets ────────
+
+/// Verify that two independently deployed RWA tokens that share the same KYC
+/// registry and compliance engine see the same rule updates.
+#[test]
+fn workflow_shared_compliance_engine_two_tokens() {
+    let s = build_stack();
+    let token_a = s.deploy_rwa("Token A", "TKNA");
+    let token_b = s.deploy_rwa("Token B", "TKNB");
+
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    token_a.mint(&s.admin, &alice, &1_000);
+    token_b.mint(&s.admin, &alice, &1_000);
+
+    // Both tokens share the same compliance engine — pause it once.
+    s.ce.pause();
+
+    assert!(token_a.try_transfer(&alice, &bob, &100).is_err());
+    assert!(token_b.try_transfer(&alice, &bob, &100).is_err());
+
+    s.ce.unpause();
+
+    token_a.transfer(&alice, &bob, &100);
+    token_b.transfer(&alice, &bob, &100);
+    assert_eq!(token_a.balance(&bob), 100);
+    assert_eq!(token_b.balance(&bob), 100);
+}

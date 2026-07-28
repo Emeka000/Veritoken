@@ -1,0 +1,31 @@
+[package]
+name = "dividend-regression-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Regression suite for the property-token dividend distribution mechanism.
+# Covers payout invariants, rounding behaviour, and repeated distribution
+# scenarios so future changes to the distribution logic are easier to validate.
+#
+# Running:
+#   cargo test -p dividend-regression-tests --features testutils
+#
+# These tests are also picked up by `cargo test --all`.
+
+[lib]
+name = "dividend_regression_tests"
+path = "src/lib.rs"
+
+[dev-dependencies]
+soroban-sdk     = { workspace = true, features = ["testutils"] }
+kyc-registry    = { path = "../../contracts/kyc-registry",    features = ["testutils"] }
+compliance-engine = { path = "../../contracts/compliance-engine", features = ["testutils"] }
+property-token  = { path = "../../contracts/property-token",  features = ["testutils"] }
+
+[features]
+testutils = []
+
+[[test]]
+name = "dividend_regression"
+path = "tests/dividend_regression.rs"
