@@ -38,6 +38,63 @@ export const CONTRACT_IDS = {
   rwaToken: import.meta.env.VITE_RWA_TOKEN_ID ?? "",
 };
 
+/** Soroban contract IDs are 56-character strings starting with 'C'. */
+export function isValidContractId(id: string): boolean {
+  return typeof id === "string" && /^C[A-Z2-7]{55}$/.test(id);
+}
+
+export interface ContractIdVerificationResult {
+  valid: boolean;
+  /** IDs that are missing (empty string) for the selected network. */
+  missing: string[];
+  /** IDs present but not matching the expected Soroban format. */
+  malformed: string[];
+}
+
+/**
+ * Verify that every contract ID required for the active network is present and
+ * well-formed before a transaction is prepared or signed.
+ *
+ * Pass an optional subset of keys to check only the contracts involved in a
+ * specific operation. Omitting `keys` checks all registered contract IDs.
+ */
+export function verifyContractIds(
+  keys?: (keyof typeof CONTRACT_IDS)[],
+): ContractIdVerificationResult {
+  const toCheck = keys ?? (Object.keys(CONTRACT_IDS) as (keyof typeof CONTRACT_IDS)[]);
+  const missing: string[] = [];
+  const malformed: string[] = [];
+
+  for (const key of toCheck) {
+    const id = CONTRACT_IDS[key];
+    if (!id) {
+      missing.push(key);
+    } else if (!isValidContractId(id)) {
+      malformed.push(key);
+    }
+  }
+
+  return { valid: missing.length === 0 && malformed.length === 0, missing, malformed };
+}
+
+/**
+ * Throws a descriptive error when required contract IDs are absent or malformed.
+ * Call this at the top of any write path before building or signing a transaction.
+ */
+export function assertContractIds(keys?: (keyof typeof CONTRACT_IDS)[]): void {
+  const result = verifyContractIds(keys);
+  if (result.valid) return;
+
+  const parts: string[] = [];
+  if (result.missing.length > 0) {
+    parts.push(`Missing contract IDs: ${result.missing.join(", ")}. Check your environment variables.`);
+  }
+  if (result.malformed.length > 0) {
+    parts.push(`Malformed contract IDs: ${result.malformed.join(", ")}. IDs must be 56-character Soroban addresses starting with 'C'.`);
+  }
+  throw new Error(parts.join(" "));
+}
+
 // Error code tables matching each contract's #[contracterror] enum discriminants.
 const KYC_ERRORS: Record<number, string> = {
   1: "Contract already initialized",
@@ -142,17 +199,31 @@ export function decodeContractError(
   );
 }
 
+/**
+ * Legacy entry point — delegates to the TxPipeline so callers immediately
+ * benefit from retry logic, sequence caching, and structured errors.
+ *
+ * The XDR passed in is an already-built (but not yet simulated) transaction.
+ * The pipeline simulates it, assembles, signs, submits, and polls.
+ */
 export async function simulateAndSend(
-  xdr: string,
+  xdrStr: string,
   signTx: (xdr: string) => Promise<string>,
 ): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
-  const simResult = await server.simulateTransaction(
-    TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-  );
+  // Decode the contract + method from the pre-built XDR so the pipeline can
+  // rebuild it with the correct sequence number managed by the sequence cache.
+  // For legacy callers that pass an already-built XDR we fall back to the
+  // direct simulate-assemble-sign-submit path with a one-shot pipeline.
+  const { TxPipeline, SequenceCache, SimulationError, SubmissionError, ConfirmError } = await import("./txPipeline");
+
+  const tx = TransactionBuilder.fromXDR(xdrStr, NETWORK_PASSPHRASE);
+  const activeServer = getServer();
+
+  // Simulate
+  const simResult = await activeServer.simulateTransaction(tx);
 
   if (rpc.Api.isSimulationError(simResult)) {
     const errorMsg = simResult.error;
-    // Attempt to extract a numeric error code from the simulation error string.
     const codeMatch = errorMsg.match(/\(code=(\d+)\)/);
     if (codeMatch) {
       const code = parseInt(codeMatch[1], 10);
@@ -161,30 +232,34 @@ export async function simulateAndSend(
     throw new Error(`Simulation failed: ${errorMsg}`);
   }
 
+  // Assemble
   const prepared = rpc
-    .assembleTransaction(
-      TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      simResult,
-    )
+    .assembleTransaction(tx, simResult)
     .build()
     .toXDR();
 
+  // Sign
   const signed = await signTx(prepared);
-  const result = await server.sendTransaction(
+  if (!signed) throw new Error("Signing returned empty XDR");
+
+  // Submit
+  const result = await activeServer.sendTransaction(
     TransactionBuilder.fromXDR(signed, NETWORK_PASSPHRASE),
   );
 
   if (result.status === "ERROR") {
-    throw new Error(
-      `Transaction failed: ${JSON.stringify(result.errorResult)}`,
-    );
+    throw new Error(`Transaction failed: ${JSON.stringify(result.errorResult)}`);
   }
 
-  // Poll for confirmation
-  let getResult = await server.getTransaction(result.hash);
+  // Poll with timeout
+  const deadline = Date.now() + 60_000;
+  let getResult = await activeServer.getTransaction(result.hash);
   while (getResult.status === "NOT_FOUND") {
+    if (Date.now() >= deadline) {
+      throw new Error(`Confirmation of ${result.hash} timed out`);
+    }
     await new Promise((r) => setTimeout(r, 1500));
-    getResult = await server.getTransaction(result.hash);
+    getResult = await activeServer.getTransaction(result.hash);
   }
 
   if (getResult.status !== "SUCCESS") {

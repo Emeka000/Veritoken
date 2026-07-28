@@ -84,6 +84,18 @@ npm install
 npm run dev
 ```
 
+### Docker (recommended for consistent local environments)
+
+The full stack — Stellar standalone node, contract toolchain, and frontend dev server — can be started with a single command. No local Rust or Node.js installation required.
+
+```bash
+cp .env.docker.example .env.docker   # fill in secrets if needed (leave blank for local dev)
+docker compose --env-file .env.docker up --build
+bash scripts/docker-health.sh        # confirm the stack is ready
+```
+
+See [docs/docker-environment.md](docs/docker-environment.md) for full instructions.
+
 ### Build contracts only
 
 ```bash
@@ -140,6 +152,10 @@ For a full reference of every public method, data structure, and error code acro
 - [x] Mainnet deployment guide with production checklist — see [docs/mainnet-deployment.md](docs/mainnet-deployment.md)
 - [x] Storage patterns reference — see [docs/storage-patterns.md](docs/storage-patterns.md)
 - [ ] TypeScript SDK wrapping contract clients for frontend developers
+- [x] Dockerized local environment — see [docs/docker-environment.md](docs/docker-environment.md)
+- [x] Release automation and changelog generation — see [docs/release-process.md](docs/release-process.md)
+- [x] Secret-safe deployment documentation — see [docs/secret-safe-deployment.md](docs/secret-safe-deployment.md)
+- [x] Rollback and recovery guide — see [docs/rollback-and-recovery.md](docs/rollback-and-recovery.md)
 
 ---
 
@@ -159,10 +175,26 @@ Veritoken/
 │       ├── lib/                # Stellar SDK + wallet bindings
 │       ├── pages/              # One page per asset type
 │       └── types/              # Shared TypeScript types
+├── docs/
+│   ├── docker-environment.md   # Docker local stack guide
+│   ├── mainnet-deployment.md   # Production deployment checklist
+│   ├── release-process.md      # Release and changelog process
+│   ├── rollback-and-recovery.md # Rollback procedures
+│   ├── secret-safe-deployment.md # Secret handling guidance
+│   ├── storage-patterns.md     # Storage tier reference
+│   └── incident-response.md   # Operational incident runbook
 ├── scripts/
 │   ├── deploy.sh               # Build + deploy all contracts
-│   └── setup-identity.sh       # Create and fund testnet identity
-└── .github/workflows/ci.yml    # Build and type-check on every push
+│   ├── setup-identity.sh       # Create and fund testnet identity
+│   ├── release.sh              # Version bump + tag automation
+│   ├── docker-health.sh        # Verify Docker stack is ready
+│   └── admin/                  # Admin operation helpers
+├── .env.docker.example         # Docker env template (copy to .env.docker)
+├── docker-compose.yml          # Full local stack definition
+├── Dockerfile                  # Multi-stage dev image
+└── .github/workflows/
+    ├── ci.yml                  # Build and type-check on every push
+    └── release.yml             # GitHub release on version tag push
 ```
 
 ---
@@ -172,6 +204,10 @@ Veritoken/
 To report a vulnerability, please follow the [Security Policy](SECURITY.md). Do not open a public issue for security findings.
 
 For operational incidents — emergency pause, admin key rotation, compromised verifier, contract upgrade — follow the [Incident Response Runbook](docs/incident-response.md).
+
+For deployment secret handling and safe environment variable practices, see [docs/secret-safe-deployment.md](docs/secret-safe-deployment.md).
+
+For rollback and recovery procedures after a bad deployment or misconfiguration, see [docs/rollback-and-recovery.md](docs/rollback-and-recovery.md).
 
 ---
 

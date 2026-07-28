@@ -5,7 +5,9 @@ import InvoicePage from "./pages/InvoicePage";
 import PropertyPage from "./pages/PropertyPage";
 import CarbonPage from "./pages/CarbonPage";
 import KycPage from "./pages/KycPage";
+import KycTimelinePage from "./pages/KycTimelinePage";
 import AdminPage from "./pages/AdminPage";
+import AttestationPage from "./pages/AttestationPage";
 import DeployPage from "./pages/DeployPage";
 import DocsPage from "./pages/DocsPage";
 import OperatorDashboard from "./pages/OperatorDashboard";
@@ -22,8 +24,9 @@ export default function App() {
           <Route path="/property" element={<ErrorBoundary><PropertyPage /></ErrorBoundary>} />
           <Route path="/carbon" element={<ErrorBoundary><CarbonPage /></ErrorBoundary>} />
           <Route path="/kyc" element={<ErrorBoundary><KycPage /></ErrorBoundary>} />
+          <Route path="/kyc/timeline" element={<ErrorBoundary><KycTimelinePage /></ErrorBoundary>} />
           <Route path="/admin" element={<ErrorBoundary><AdminPage /></ErrorBoundary>} />
-          <Route path="/operator" element={<ErrorBoundary><OperatorDashboard /></ErrorBoundary>} />
+          <Route path="/attestations" element={<ErrorBoundary><AttestationPage /></ErrorBoundary>} />
           <Route path="/deploy" element={<ErrorBoundary><DeployPage /></ErrorBoundary>} />
           <Route path="/docs" element={<ErrorBoundary><DocsPage /></ErrorBoundary>} />
         </Routes>
