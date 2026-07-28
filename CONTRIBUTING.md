@@ -111,3 +111,20 @@ Breaking changes (major bumps) must be discussed in an issue before implementati
 ## Questions
 
 Open an issue or start a discussion on GitHub. For significant changes, open an issue first to align on approach before writing code.
+
+---
+
+## Troubleshooting
+
+If you run into problems with environment setup, contract deployment, wallet
+connection, or CI, see [docs/troubleshooting.md](docs/troubleshooting.md) for
+symptoms, causes, and concrete fixes.
+
+---
+
+## Security Review
+
+Before submitting changes that touch authorization logic, storage keys, or
+transfer flow, work through the [Security Review Checklist](docs/security-checklist.md).
+It is specific to the current architecture and covers the most common findings
+in Soroban contract reviews.

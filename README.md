@@ -151,6 +151,10 @@ For a full reference of every public method, data structure, and error code acro
 - [ ] Audit by an independent Soroban security reviewer
 - [x] Mainnet deployment guide with production checklist — see [docs/mainnet-deployment.md](docs/mainnet-deployment.md)
 - [x] Storage patterns reference — see [docs/storage-patterns.md](docs/storage-patterns.md)
+- [x] Troubleshooting guide for common contributor and operator problems — see [docs/troubleshooting.md](docs/troubleshooting.md)
+- [x] Language-specific integration examples (Python, JavaScript) — see [docs/examples/](docs/examples/)
+- [x] Gas and performance report with profiling script — see [docs/gas-report.md](docs/gas-report.md)
+- [x] Security review checklist and hardening playbook — see [docs/security-checklist.md](docs/security-checklist.md)
 - [ ] TypeScript SDK wrapping contract clients for frontend developers
 - [x] Dockerized local environment — see [docs/docker-environment.md](docs/docker-environment.md)
 - [x] Release automation and changelog generation — see [docs/release-process.md](docs/release-process.md)
@@ -196,6 +200,20 @@ Veritoken/
     ├── ci.yml                  # Build and type-check on every push
     └── release.yml             # GitHub release on version tag push
 ```
+
+---
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [docs/mainnet-deployment.md](docs/mainnet-deployment.md) | Step-by-step mainnet deployment with production checklist |
+| [docs/storage-patterns.md](docs/storage-patterns.md) | Storage tier rationale and TTL bump map for every `DataKey` |
+| [docs/incident-response.md](docs/incident-response.md) | Operational runbook: pause, key rotation, compromised verifier, upgrade |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common problems and fixes for contributors and operators |
+| [docs/examples/](docs/examples/) | Language-specific integration examples (Python, JavaScript) |
+| [docs/gas-report.md](docs/gas-report.md) | Baseline gas and performance measurements |
+| [docs/security-checklist.md](docs/security-checklist.md) | Security review checklist and hardening playbook |
 
 ---
 
