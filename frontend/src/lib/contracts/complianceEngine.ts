@@ -21,56 +21,54 @@ import {
 } from "./base";
 import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
 
-// ── Local struct encoder ──────────────────────────────────────────────────────
+// ── Internal map builder ──────────────────────────────────────────────────────
 
 /**
- * Encode a `ComplianceRules` struct as a Soroban map ScVal.
- * Field order must match the #[contracttype] declaration in the contract.
+ * Build an ScMap ScVal from an array of [symbolKey, scVal] pairs.
+ * Entries are sorted lexicographically — required by the XDR spec.
  */
-function encodeRules(rules: ComplianceRules): xdr.ScVal {
-  return nativeToScVal(
-    {
-      max_transfer_amount: rules.max_transfer_amount,
-      min_holding_period: Number(rules.min_holding_period),
-      max_holders: rules.max_holders,
-      require_same_jurisdiction: rules.require_same_jurisdiction,
-      paused: rules.paused,
-      allowlist_mode: rules.allowlist_mode,
-    },
-    {
-      type: {
-        max_transfer_amount: ["i128"],
-        min_holding_period: ["u64"],
-        max_holders: ["u32"],
-        require_same_jurisdiction: ["bool"],
-        paused: ["bool"],
-        allowlist_mode: ["bool"],
-      },
-    }
+function scMap(entries: [string, xdr.ScVal][]): xdr.ScVal {
+  const sorted = [...entries].sort(([a], [b]) => a.localeCompare(b));
+  return xdr.ScVal.scvMap(
+    sorted.map(
+      ([key, val]) =>
+        new xdr.ScMapEntry({
+          key: nativeToScVal(key, { type: "symbol" }),
+          val,
+        }),
+    ),
   );
 }
 
+// ── Struct encoders ───────────────────────────────────────────────────────────
+
 /**
- * Encode a `TierPolicy` struct as a Soroban map ScVal.
- * Field order must match the #[contracttype] declaration in the contract.
+ * Encode a `ComplianceRules` struct as a Soroban ScMap.
+ * Field names must match the #[contracttype] declaration in compliance-engine.
+ */
+function encodeRules(rules: ComplianceRules): xdr.ScVal {
+  return scMap([
+    ["allowlist_mode",            nativeToScVal(rules.allowlist_mode, { type: "bool" })],
+    ["max_holding_period",        nativeToScVal(BigInt(rules.max_holding_period), { type: "u64" })],
+    ["max_holders",               nativeToScVal(rules.max_holders, { type: "u32" })],
+    ["max_transfer_amount",       nativeToScVal(rules.max_transfer_amount, { type: "i128" })],
+    ["min_holding_period",        nativeToScVal(BigInt(rules.min_holding_period), { type: "u64" })],
+    ["paused",                    nativeToScVal(rules.paused, { type: "bool" })],
+    ["require_same_jurisdiction", nativeToScVal(rules.require_same_jurisdiction, { type: "bool" })],
+  ]);
+}
+
+/**
+ * Encode a `TierPolicy` struct as a Soroban ScMap.
+ * Field names must match the #[contracttype] declaration in compliance-engine.
  */
 function encodeTierPolicy(policy: TierPolicy): xdr.ScVal {
-  return nativeToScVal(
-    {
-      blocked: policy.blocked,
-      max_transfer_amount: policy.max_transfer_amount,
-      min_from_tier: policy.min_from_tier,
-      min_to_tier: policy.min_to_tier,
-    },
-    {
-      type: {
-        blocked: ["bool"],
-        max_transfer_amount: ["i128"],
-        min_from_tier: ["u32"],
-        min_to_tier: ["u32"],
-      },
-    }
-  );
+  return scMap([
+    ["blocked",             nativeToScVal(policy.blocked, { type: "bool" })],
+    ["max_transfer_amount", nativeToScVal(policy.max_transfer_amount, { type: "i128" })],
+    ["min_from_tier",       nativeToScVal(policy.min_from_tier, { type: "u32" })],
+    ["min_to_tier",         nativeToScVal(policy.min_to_tier, { type: "u32" })],
+  ]);
 }
 
 export class ComplianceEngineClient {
@@ -115,6 +113,46 @@ export class ComplianceEngineClient {
     return readCall<number>(this.server, this.contractId, "holder_count", []);
   }
 
+  /**
+   * Returns pending rules and the Unix timestamp at which they can be
+   * activated, or null when no rules are currently pending.
+   */
+  async getPendingRules(): Promise<{ rules: ComplianceRules; activateAt: number } | null> {
+    try {
+      const rules = await readCall<ComplianceRules>(
+        this.server,
+        this.contractId,
+        "get_pending_rules",
+        []
+      );
+      const activateAt = await readCall<number>(
+        this.server,
+        this.contractId,
+        "get_pending_activate_at",
+        []
+      );
+      return { rules, activateAt };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Returns the configured rule-change delay in seconds (0 = immediate).
+   */
+  async getRuleChangeDelay(): Promise<number> {
+    try {
+      return await readCall<number>(
+        this.server,
+        this.contractId,
+        "get_rule_change_delay",
+        []
+      );
+    } catch {
+      return 0;
+    }
+  }
+
   /** Returns the number of addresses currently on the blocklist. */
   async blocklistCount(): Promise<number> {
     return readCall<number>(this.server, this.contractId, "blocklist_count", []);
@@ -142,6 +180,45 @@ export class ComplianceEngineClient {
       this.contractId,
       "set_rules",
       [encodeRules(rules)],
+      adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /**
+   * Propose a new rule set subject to the configured time-lock delay.
+   * Rules will not take effect until `activateRules` is called after
+   * the delay has elapsed.  Admin-only on-chain.
+   */
+  async proposeRules(
+    adminAddress: string,
+    rules: ComplianceRules,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    await writeCall(
+      this.server,
+      this.contractId,
+      "propose_rules",
+      [encodeRules(rules)],
+      adminAddress,
+      seq,
+      signTx
+    );
+  }
+
+  /**
+   * Activate previously proposed rules once the time-lock delay has elapsed.
+   * Admin-only on-chain.
+   */
+  async activateRules(adminAddress: string, signTx: SignTx): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    await writeCall(
+      this.server,
+      this.contractId,
+      "activate_rules",
+      [],
       adminAddress,
       seq,
       signTx
@@ -293,6 +370,16 @@ export class ComplianceEngineClient {
     );
   }
 
+  // ── Attestation (#370) ────────────────────────────────────────────────────
+
+  /**
+   * Record an off-chain attestation reference on-chain.
+   * Stores the attestation id, type, and reference URL linked to a subject.
+   * Admin-only on-chain.
+   */
+  async recordAttestation(
+    adminAddress: string,
+    record: import("../../types").AttestationRecord,
   // ── Tier-based policy ─────────────────────────────────────────────────────
 
   /**
@@ -348,6 +435,15 @@ export class ComplianceEngineClient {
     await writeCall(
       this.server,
       this.contractId,
+      "record_attestation",
+      [
+        toAddress(record.subject),
+        nativeToScVal(record.id, { type: "string" }),
+        nativeToScVal(record.attestation_type, { type: "string" }),
+        nativeToScVal(record.reference_url, { type: "string" }),
+        nativeToScVal(record.issuer, { type: "string" }),
+        nativeToScVal(record.issued_at, { type: "u64" }),
+        nativeToScVal(record.notes ?? "", { type: "string" }),
       "set_tier_policy",
       [toU32(fromTier), toU32(toTier), encodeTierPolicy(policy)],
       adminAddress,
@@ -437,16 +533,15 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
+    const encoded = scMap([
+      ["default_score", nativeToScVal(config.default_score, { type: "u32" })],
+      ["max_score",     nativeToScVal(config.max_score, { type: "u32" })],
+    ]);
     await writeCall(
       this.server,
       this.contractId,
       "set_risk_config",
-      [
-        nativeToScVal(
-          { max_score: config.max_score, default_score: config.default_score },
-          { type: { max_score: ["u32"], default_score: ["u32"] } }
-        ),
-      ],
+      [encoded],
       adminAddress,
       seq,
       signTx
@@ -454,6 +549,23 @@ export class ComplianceEngineClient {
   }
 
   /**
+   * Retrieve attestations recorded for a given subject address.
+   * Returns an empty array when none exist or the contract function is
+   * not yet deployed.
+   */
+  async getAttestations(
+    subject: string
+  ): Promise<import("../../types").AttestationRecord[]> {
+    try {
+      return await readCall<import("../../types").AttestationRecord[]>(
+        this.server,
+        this.contractId,
+        "get_attestations",
+        [toAddress(subject)]
+      );
+    } catch {
+      return [];
+    }
    * Admin-only: assign a risk score (0–100) to a jurisdiction.
    * `jurisdiction` must be a 2-letter ISO-3166-1 alpha-2 code.
    *

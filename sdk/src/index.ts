@@ -6,28 +6,7 @@ export { PropertyTokenClient } from "./clients/PropertyTokenClient.js";
 export { CarbonTokenClient } from "./clients/CarbonTokenClient.js";
 export { RwaTokenClient } from "./clients/RwaTokenClient.js";
 
-// ── Transaction pipeline ──────────────────────────────────────────────────────
-export {
-  TxPipeline,
-  SequenceCache,
-  isTransientError,
-  // Error hierarchy
-  TxError,
-  SequenceError,
-  SimulationError,
-  SigningError,
-  SubmissionError,
-  ConfirmError,
-  TimeoutError,
-  TransientError,
-} from "./pipeline.js";
-export type {
-  PipelineOptions,
-  ReadResult,
-  WriteResult,
-} from "./pipeline.js";
-
-// ── Shared client base ────────────────────────────────────────────────────────
+// Core transaction builder and read/write primitives
 export {
   buildContractTx,
   simulateRead,
@@ -39,19 +18,31 @@ export {
 } from "./clients/base.js";
 export type { SignTx, BuildTxOptions } from "./clients/base.js";
 
-// ── Codec ─────────────────────────────────────────────────────────────────────
+// Scalar and struct ScVal encoders
 export {
-  encodeAddress, encodeU32, encodeU64, encodeI128,
-  encodeString, encodeBool, encodeSymbol,
-  encodeComplianceRules, encodeTierPolicy, encodeRiskConfig,
-  encodeInvoiceMeta, encodePropertyMeta, encodeProjectMeta,
+  encodeAddress,
+  encodeU32,
+  encodeU64,
+  encodeI128,
+  encodeString,
+  encodeBool,
+  encodeSymbol,
+  encodeComplianceRules,
+  encodeTierPolicy,
+  encodeRiskConfig,
+  encodeInvoiceMeta,
+  encodePropertyMeta,
+  encodeProjectMeta,
 } from "./codec.js";
 
-// ── Error model ───────────────────────────────────────────────────────────────
-export { lookupError, parseContractError, formatContractError } from "./errors.js";
+// Typed error model
+export {
+  lookupError,
+  parseContractError,
+  formatContractError,
+} from "./errors.js";
 export type { ContractError, ContractName } from "./errors.js";
 
-// ── Network ───────────────────────────────────────────────────────────────────
 export { createServer, RPC_URLS, NETWORK_PASSPHRASES } from "./network.js";
 
 // ── Domain types ──────────────────────────────────────────────────────────────

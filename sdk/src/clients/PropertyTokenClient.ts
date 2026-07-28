@@ -1,11 +1,34 @@
-import { rpc } from "@stellar/stellar-sdk";
+import type { rpc } from "@stellar/stellar-sdk";
 import { BaseContractClient, type SignTx } from "./base.js";
-import { encodeAddress, encodeI128, encodeU32 } from "../codec.js";
 import type { PropertyMeta } from "../types.js";
+import {
+  encodeAddress,
+  encodeI128,
+  encodeU32,
+  encodePropertyMeta,
+} from "../codec.js";
 
 export class PropertyTokenClient extends BaseContractClient {
-  constructor(contractId: string, server: rpc.Server, networkPassphrase: string) {
+  constructor(
+    contractId: string,
+    server: rpc.Server,
+    networkPassphrase: string,
+  ) {
     super(contractId, server, networkPassphrase, "property");
+  }
+
+  // ── Read API ──────────────────────────────────────────────────────────────
+
+  async getMeta(): Promise<PropertyMeta> {
+    return this.read<PropertyMeta>("get_meta", []);
+  }
+
+  async balance(addr: string): Promise<bigint> {
+    return this.read<bigint>("balance", [encodeAddress(addr)]);
+  }
+
+  async totalShares(): Promise<bigint> {
+    return this.read<bigint>("total_shares", []);
   }
 
   async getMeta(): Promise<PropertyMeta> { return this.read<PropertyMeta>("get_meta", []); }
@@ -18,33 +41,106 @@ export class PropertyTokenClient extends BaseContractClient {
   async symbol(): Promise<string> { return this.read<string>("symbol", []); }
   async decimals(): Promise<number> { return this.read<number>("decimals", []); }
 
-  async mint(adminAddress: string, to: string, shares: bigint, signTx: SignTx): Promise<void> {
-    await this.write("mint", [encodeAddress(to), encodeI128(shares)], adminAddress, signTx);
-  }
-  async transfer(fromAddress: string, to: string, shares: bigint, signTx: SignTx): Promise<void> {
-    await this.write("transfer", [encodeAddress(fromAddress), encodeAddress(to), encodeI128(shares)], fromAddress, signTx);
-  }
-  async depositDividend(adminAddress: string, amount: bigint, distributionType: number, signTx: SignTx): Promise<void> {
-    await this.write("deposit_dividend", [encodeI128(amount), encodeU32(distributionType)], adminAddress, signTx);
-  }
-  async claimDividend(holderAddress: string, signTx: SignTx): Promise<void> {
-    await this.write("claim_dividend", [encodeAddress(holderAddress)], holderAddress, signTx);
+  async name(): Promise<string> {
+    return this.read<string>("name", []);
   }
 
-  /** @deprecated Use mint() instead */
+  async symbol(): Promise<string> {
+    return this.read<string>("symbol", []);
+  }
+
+  async decimals(): Promise<number> {
+    return this.read<number>("decimals", []);
+  }
+
+  // ── Write API ─────────────────────────────────────────────────────────────
+
+  async mint(
+    adminAddress: string,
+    to: string,
+    shares: bigint,
+    signTx: SignTx,
+  ): Promise<void> {
+    await this.write(
+      "mint",
+      [encodeAddress(to), encodeI128(shares)],
+      adminAddress,
+      signTx,
+    );
+  }
+
+  async transfer(
+    fromAddress: string,
+    to: string,
+    shares: bigint,
+    signTx: SignTx,
+  ): Promise<void> {
+    await this.write(
+      "transfer",
+      [encodeAddress(fromAddress), encodeAddress(to), encodeI128(shares)],
+      fromAddress,
+      signTx,
+    );
+  }
+
+  async depositDividend(
+    adminAddress: string,
+    amount: bigint,
+    distributionType: number,
+    signTx: SignTx,
+  ): Promise<void> {
+    await this.write(
+      "deposit_dividend",
+      [encodeI128(amount), encodeU32(distributionType)],
+      adminAddress,
+      signTx,
+    );
+  }
+
+  async claimDividend(
+    holderAddress: string,
+    signTx: SignTx,
+  ): Promise<void> {
+    await this.write(
+      "claim_dividend",
+      [encodeAddress(holderAddress)],
+      holderAddress,
+      signTx,
+    );
+  }
+
+  // ── Legacy XDR builders ───────────────────────────────────────────────────
+
+  /** @deprecated Use `mint()` instead */
   buildMintXdr(to: string, shares: bigint): string {
-    return this.contract.call("mint", encodeAddress(to), encodeI128(shares)).toXDR("base64");
+    return this.contract
+      .call("mint", encodeAddress(to), encodeI128(shares))
+      .toXDR("base64");
   }
-  /** @deprecated Use transfer() instead */
+
+  /** @deprecated Use `transfer()` instead */
   buildTransferXdr(from: string, to: string, shares: bigint): string {
-    return this.contract.call("transfer", encodeAddress(from), encodeAddress(to), encodeI128(shares)).toXDR("base64");
+    return this.contract
+      .call(
+        "transfer",
+        encodeAddress(from),
+        encodeAddress(to),
+        encodeI128(shares),
+      )
+      .toXDR("base64");
   }
-  /** @deprecated Use depositDividend() instead */
+
+  /** @deprecated Use `depositDividend()` instead */
   buildDepositDividendXdr(amount: bigint): string {
-    return this.contract.call("deposit_dividend", encodeI128(amount)).toXDR("base64");
+    return this.contract
+      .call("deposit_dividend", encodeI128(amount))
+      .toXDR("base64");
   }
-  /** @deprecated Use claimDividend() instead */
+
+  /** @deprecated Use `claimDividend()` instead */
   buildClaimDividendXdr(holder: string): string {
-    return this.contract.call("claim_dividend", encodeAddress(holder)).toXDR("base64");
+    return this.contract
+      .call("claim_dividend", encodeAddress(holder))
+      .toXDR("base64");
   }
 }

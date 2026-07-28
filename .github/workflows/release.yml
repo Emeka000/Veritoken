@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write   # needed to create the GitHub release
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the changelog extractor can read all tags
+
+      # ── Extract the changelog entry for this version ──────────────────────
+      - name: Extract changelog entry
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"  # strip the leading 'v'
+
+          # Pull out the section for this version from CHANGELOG.md.
+          # Captures everything between ## [VERSION] and the next ## [ heading.
+          NOTES=$(awk \
+            -v ver="$VERSION" \
+            'BEGIN{found=0}
+             /^## \[/{if(found) exit; if(index($0,"["ver"]")>0) found=1; next}
+             found{print}' \
+            CHANGELOG.md)
+
+          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+            echo "WARNING: No changelog entry found for $VERSION — using a generic message."
+            NOTES="Release $GITHUB_REF_NAME. See CHANGELOG.md for details."
+          fi
+
+          # Write to a temp file so multi-line content survives the env export
+          echo "$NOTES" > /tmp/release-notes.md
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # ── Build WASM artifacts ──────────────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      - name: Build WASM (release)
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Install Stellar CLI (for wasm-opt)
+        shell: bash
+        run: |
+          STELLAR_CLI_VERSION=21.3.1
+          curl -sSfL \
+            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin stellar
+
+      - name: Optimise WASM binaries
+        shell: bash
+        run: |
+          WASM_DIR="target/wasm32-unknown-unknown/release"
+          for contract in kyc_registry compliance_engine invoice_token property_token carbon_credit_token; do
+            stellar contract optimize --wasm "$WASM_DIR/${contract}.wasm"
+          done
+
+      - name: Collect release artifacts
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          WASM_DIR="target/wasm32-unknown-unknown/release"
+          VERSION="${{ steps.changelog.outputs.version }}"
+          for contract in kyc_registry compliance_engine invoice_token property_token carbon_credit_token; do
+            # Prefer the optimised binary if it exists
+            src="$WASM_DIR/${contract}.optimized.wasm"
+            [ -f "$src" ] || src="$WASM_DIR/${contract}.wasm"
+            cp "$src" "release-artifacts/${contract}-${VERSION}.wasm"
+          done
+
+      # ── Create the GitHub release ─────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          body_path: /tmp/release-notes.md
+          files: release-artifacts/*.wasm
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
