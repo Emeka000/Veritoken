@@ -8,6 +8,9 @@ members = [
     "contracts/property-token",
     "contracts/carbon-credit-token",
     "tests/smoke",
+    "tests/fuzz",
+    "tests/dividend-regression",
+    "tests/integration-suite",
 ]
 resolver = "2"
 

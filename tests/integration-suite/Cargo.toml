@@ -1,0 +1,38 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Cross-contract integration test suite for Veritoken.
+#
+# These tests instantiate the full contract stack (KYC registry,
+# compliance engine, and one or more asset contracts) together and exercise
+# realistic end-to-end workflows: onboarding, transfer, pause, settlement,
+# and retirement.  They complement the per-contract unit tests by catching
+# regressions that only appear when the contracts interact.
+#
+# Running:
+#   cargo test -p integration-tests --features testutils
+#
+# Also picked up by `cargo test --all`.
+
+[lib]
+name = "integration_tests"
+path = "src/lib.rs"
+
+[dev-dependencies]
+soroban-sdk           = { workspace = true, features = ["testutils"] }
+kyc-registry          = { path = "../../contracts/kyc-registry",          features = ["testutils"] }
+compliance-engine     = { path = "../../contracts/compliance-engine",     features = ["testutils"] }
+rwa-token             = { path = "../../contracts/rwa-token",             features = ["testutils"] }
+property-token        = { path = "../../contracts/property-token",        features = ["testutils"] }
+invoice-token         = { path = "../../contracts/invoice-token",         features = ["testutils"] }
+carbon-credit-token   = { path = "../../contracts/carbon-credit-token",   features = ["testutils"] }
+
+[features]
+testutils = []
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
