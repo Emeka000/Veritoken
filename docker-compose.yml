@@ -1,4 +1,5 @@
 services:
+  # ── Stellar local node ─────────────────────────────────────────────────────
   stellar:
     image: stellar/quickstart:latest
     command: --standalone --enable-soroban-rpc
@@ -12,3 +13,79 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+
+  # ── Contract toolchain ─────────────────────────────────────────────────────
+  # Runs cargo check to confirm the build environment is healthy on startup.
+  # For a full build + deploy, exec into this container:
+  #   docker compose exec contracts bash
+  #   bash scripts/deploy.sh veritoken-dev
+  contracts:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    volumes:
+      # Mount source so edits on the host are visible inside the container.
+      # Cargo build artifacts stay inside the container volume for speed.
+      - .:/workspace
+      - cargo-cache:/workspace/target
+    working_dir: /workspace
+    environment:
+      # Secrets must be injected via environment variables, not hard-coded.
+      # Copy .env.docker.example to .env.docker and fill in the values.
+      - STELLAR_NETWORK=${STELLAR_NETWORK:-standalone}
+      - STELLAR_RPC_URL=${STELLAR_RPC_URL:-http://stellar:8000/soroban/rpc}
+      - STELLAR_HORIZON_URL=${STELLAR_HORIZON_URL:-http://stellar:8000}
+      - ADMIN_SECRET_KEY=${ADMIN_SECRET_KEY:-}
+    depends_on:
+      stellar:
+        condition: service_healthy
+    # Run a quick compile check on startup to confirm the toolchain is working.
+    command: >
+      bash -c "
+        echo '==> Veritoken contract toolchain ready' &&
+        cargo check --target wasm32-unknown-unknown --quiet &&
+        echo '==> cargo check passed — container is healthy' &&
+        tail -f /dev/null
+      "
+    healthcheck:
+      test: ["CMD", "cargo", "check", "--target", "wasm32-unknown-unknown", "--quiet"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+
+  # ── Frontend dev server ────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    volumes:
+      - .:/workspace
+      - node-modules:/workspace/frontend/node_modules
+    working_dir: /workspace/frontend
+    ports:
+      - "5173:5173"
+    environment:
+      # Contract IDs — set these after running scripts/deploy.sh
+      - VITE_STELLAR_NETWORK=${STELLAR_NETWORK:-standalone}
+      - VITE_KYC_REGISTRY_ID=${VITE_KYC_REGISTRY_ID:-}
+      - VITE_COMPLIANCE_ENGINE_ID=${VITE_COMPLIANCE_ENGINE_ID:-}
+      - VITE_INVOICE_TOKEN_ID=${VITE_INVOICE_TOKEN_ID:-}
+      - VITE_PROPERTY_TOKEN_ID=${VITE_PROPERTY_TOKEN_ID:-}
+      - VITE_CARBON_TOKEN_ID=${VITE_CARBON_TOKEN_ID:-}
+    depends_on:
+      stellar:
+        condition: service_healthy
+    command: npm run dev -- --host 0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5173"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  cargo-cache:
+  node-modules:
