@@ -5,7 +5,11 @@ import InvoicePage from "./pages/InvoicePage";
 import PropertyPage from "./pages/PropertyPage";
 import CarbonPage from "./pages/CarbonPage";
 import KycPage from "./pages/KycPage";
+import KycTimelinePage from "./pages/KycTimelinePage";
 import AdminPage from "./pages/AdminPage";
+import ComplianceExceptionPage from "./pages/ComplianceExceptionPage";
+import OnboardingPage from "./pages/OnboardingPage";
+import BatchPage from "./pages/BatchPage";
 import DeployPage from "./pages/DeployPage";
 import DocsPage from "./pages/DocsPage";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -21,7 +25,11 @@ export default function App() {
           <Route path="/property" element={<ErrorBoundary><PropertyPage /></ErrorBoundary>} />
           <Route path="/carbon" element={<ErrorBoundary><CarbonPage /></ErrorBoundary>} />
           <Route path="/kyc" element={<ErrorBoundary><KycPage /></ErrorBoundary>} />
+          <Route path="/kyc/timeline" element={<ErrorBoundary><KycTimelinePage /></ErrorBoundary>} />
           <Route path="/admin" element={<ErrorBoundary><AdminPage /></ErrorBoundary>} />
+          <Route path="/admin/exceptions" element={<ErrorBoundary><ComplianceExceptionPage /></ErrorBoundary>} />
+          <Route path="/batch" element={<ErrorBoundary><BatchPage /></ErrorBoundary>} />
+          <Route path="/onboarding" element={<ErrorBoundary><OnboardingPage /></ErrorBoundary>} />
           <Route path="/deploy" element={<ErrorBoundary><DeployPage /></ErrorBoundary>} />
           <Route path="/docs" element={<ErrorBoundary><DocsPage /></ErrorBoundary>} />
         </Routes>
