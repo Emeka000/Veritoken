@@ -15,6 +15,15 @@ For the versioning policy that governs when each version number is bumped, see t
 - `docs/mainnet-deployment.md` — production deployment guide with pre-deployment checklist, admin key management, deployment command sequence, compliance configuration, KYC verifier onboarding, post-deployment verification, and operational runbook
 - `SECURITY.md` — vulnerability disclosure policy with response timeline and safe harbour language
 - `CHANGELOG.md` and versioning strategy documented in CONTRIBUTING.md
+- `Dockerfile` and `docker-compose.yml` — multi-stage dev image providing Rust/WASM toolchain, Stellar CLI, and Node.js; Compose stack wires together a Stellar standalone node, contract toolchain, and Vite frontend dev server
+- `scripts/docker-health.sh` — health check script that confirms the Stellar RPC endpoint, contracts container, and frontend dev server are all responding
+- `.env.docker.example` — template for the Docker environment file; `.env.docker` added to `.gitignore`
+- `docs/docker-environment.md` — full guide for the Docker local stack: prerequisites, quick start, service reference, build and deploy workflow, health check, environment variables, CI usage, and troubleshooting
+- `scripts/release.sh` — release automation script: validates version, bumps `contracts/*/Cargo.toml`, regenerates `Cargo.lock`, promotes `[Unreleased]` changelog section to a dated version block, creates release commit and annotated git tag
+- `.github/workflows/release.yml` — CI release workflow triggered on `v*.*.*` tags; builds and optimises WASM artifacts, extracts the changelog entry, and creates a GitHub release with binaries attached
+- `docs/release-process.md` — maintainer guide covering versioning policy, release branches, step-by-step release procedure, changelog format, pre-release tagging, and CI workflow reference
+- `docs/secret-safe-deployment.md` — documents which values are safe to share and which must stay private; covers environment variable injection patterns for local, Docker, and CI environments; guidance on shell history hygiene and detecting accidental leaks
+- `docs/rollback-and-recovery.md` — rollback and recovery guide covering frontend config revert, compliance rule correction, full contract code rollback (pause → snapshot → redeploy → replay state → update frontend → unpause), environment switch recovery, and emergency stop procedure; includes a decision tree and escalation guidance
 
 ---
 

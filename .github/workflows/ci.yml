@@ -9,19 +9,48 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-jobs:
-  # ── Rust checks ────────────────────────────────────────────────────────────
-  rust:
-    name: Rust (fmt / clippy / test / wasm)
-    runs-on: ubuntu-latest
+# ── Job overview ───────────────────────────────────────────────────────────────
+#
+#  rust-fmt        — cargo fmt check
+#  rust-clippy     — cargo clippy (all targets, all features)
+#  rust-test       — cargo test (unit + integration, features=testutils)
+#  rust-wasm       — release WASM build + size check + artifact verification
+#  frontend-lint   — ESLint
+#  frontend-build  — TypeScript type-check + Vite build
+#  frontend-test   — Vitest unit tests
+#  drift-check     — env drift detection (requires deployed manifest)
+#
+#  All rust-* jobs share a single Cargo cache keyed on Cargo.lock.
+#  frontend-* jobs share a Node module cache keyed on package-lock.json.
 
+jobs:
+  # ── Rust: format ────────────────────────────────────────────────────────────
+  rust-fmt:
+    name: "Rust · fmt"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+
+      - name: cargo fmt --check
+        working-directory: Veritoken
+        run: cargo fmt --all -- --check
+
+  # ── Rust: clippy ────────────────────────────────────────────────────────────
+  rust-clippy:
+    name: "Rust · clippy"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
           targets: wasm32-unknown-unknown
 
       - name: Cache Cargo registry & build
@@ -34,17 +63,55 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Veritoken/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: cargo fmt
-        working-directory: Veritoken
-        run: cargo fmt --all -- --check
-
       - name: cargo clippy
         working-directory: Veritoken
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # ── Rust: tests ─────────────────────────────────────────────────────────────
+  rust-test:
+    name: "Rust · test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Veritoken/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Veritoken/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
       - name: cargo test
         working-directory: Veritoken
-        run: cargo test --all
+        run: cargo test --all --features testutils
+
+  # ── Rust: WASM build + artifact verification ────────────────────────────────
+  rust-wasm:
+    name: "Rust · wasm build + artifact verification"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Veritoken/target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('Veritoken/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-wasm-
 
       - name: Fuzz / property-based tests
         working-directory: Veritoken
@@ -62,21 +129,70 @@ jobs:
         working-directory: Veritoken
         run: cargo build --release --target wasm32-unknown-unknown
 
-      - name: Check WASM sizes
+      - name: Verify artifacts (existence, magic bytes, size bounds)
         working-directory: Veritoken
         shell: bash
-        # Per-contract budgets are documented in docs/contract-size-budget.md.
-        # To update a budget: edit scripts/check-wasm-size.sh and that doc, then PR.
-        run: bash scripts/check-wasm-size.sh
+        run: bash scripts/verify-artifacts.sh
 
-  # ── Frontend checks ────────────────────────────────────────────────────────
-  frontend:
-    name: Frontend (lint / build / test)
+      - name: Check WASM sizes against CI threshold
+        working-directory: Veritoken
+        shell: bash
+        run: |
+          # ── Configurable threshold ─────────────────────────────────────────
+          THRESHOLD_BYTES=131072   # 128 KB
+
+          WASM_DIR="target/wasm32-unknown-unknown/release"
+          EXIT_CODE=0
+
+          echo "──────────────────────────────────────────────"
+          echo " WASM binary size report (threshold: $((THRESHOLD_BYTES / 1024)) KB)"
+          echo "──────────────────────────────────────────────"
+          printf "%-52s %10s  %s\n" "File" "Size (bytes)" "Status"
+          echo "──────────────────────────────────────────────"
+
+          for wasm in "$WASM_DIR"/*.wasm; do
+            [ -f "$wasm" ] || continue
+            SIZE=$(wc -c < "$wasm")
+            NAME=$(basename "$wasm")
+            SIZE_KB=$(echo "scale=1; $SIZE / 1024" | bc)
+
+            if [ "$SIZE" -gt "$THRESHOLD_BYTES" ]; then
+              STATUS="❌ EXCEEDS LIMIT (${SIZE_KB} KB > $((THRESHOLD_BYTES / 1024)) KB)"
+              EXIT_CODE=1
+            else
+              STATUS="✅ OK (${SIZE_KB} KB)"
+            fi
+
+            printf "%-52s %10d  %s\n" "$NAME" "$SIZE" "$STATUS"
+          done
+
+          echo "──────────────────────────────────────────────"
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo ""
+            echo "ERROR: One or more WASM binaries exceed the ${THRESHOLD_BYTES}-byte ($(( THRESHOLD_BYTES / 1024 )) KB) size limit."
+            echo "Consider:"
+            echo "  • Removing unused dependencies"
+            echo "  • Ensuring opt-level = 'z' and lto = true in [profile.release]"
+            echo "  • Running: wasm-opt -Oz <file>.wasm -o <file>.wasm"
+          fi
+
+          exit "$EXIT_CODE"
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-release
+          path: Veritoken/target/wasm32-unknown-unknown/release/*.wasm
+          retention-days: 7
+
+  # ── Frontend: lint ───────────────────────────────────────────────────────────
+  frontend-lint:
+    name: "Frontend · lint"
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: Veritoken/frontend
-
     steps:
       - uses: actions/checkout@v4
 
@@ -93,8 +209,73 @@ jobs:
       - name: Lint
         run: npm run lint
 
+  # ── Frontend: build (type-check + Vite) ─────────────────────────────────────
+  frontend-build:
+    name: "Frontend · type-check & build"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Veritoken/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: Veritoken/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Type-check & build
         run: npm run build
 
+  # ── Frontend: tests ──────────────────────────────────────────────────────────
+  frontend-test:
+    name: "Frontend · test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Veritoken/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: Veritoken/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Test
         run: npm test
+
+  # ── Drift detection ──────────────────────────────────────────────────────────
+  # Compares frontend/.env against the committed deploy-manifest.json.
+  # This job is advisory on PRs (continue-on-error: true) but must pass on
+  # pushes to main/master where a manifest is expected to exist.
+  drift-check:
+    name: "Config · drift detection"
+    runs-on: ubuntu-latest
+    # Run after the WASM build so that any manifest written by CI is available.
+    needs: [rust-wasm]
+    # Allow this job to fail on PRs where no manifest has been committed yet.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for env / contract ID drift
+        working-directory: Veritoken
+        shell: bash
+        run: |
+          if [[ ! -f "deploy-manifest.json" ]]; then
+            echo "No deploy-manifest.json found — skipping drift check."
+            echo "Commit a manifest by running: bash scripts/deploy.sh <identity>"
+            exit 0
+          fi
+          bash scripts/check-drift.sh --check-only

@@ -1,6 +1,23 @@
 import { useState } from "react";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
 import { CopyButton } from "../components/CopyButton";
+import {
+  validateIsin,
+  validateIpfsHash,
+  validateLegalEntity,
+  validateGoverningLaw,
+  validateVintageYear,
+  type ValidationResult,
+} from "../lib/metadataValidation";
+import {
+  DEPLOY_PRESETS,
+  buildRwaDeployCommand,
+  buildCarbonDeployCommand,
+  isDeployReady,
+  type RwaDeployParams,
+  type CarbonDeployParams,
+} from "../lib/contractFactory";
+import { validateStellarAddress, isValidContractId } from "../lib/stellar";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -54,6 +71,41 @@ const EMPTY_CARBON: CarbonFields = {
   project_id: "",
 };
 
+// ── address/contract-id validators (issue #426) ───────────────────────────────
+
+function validateAdminAddress(value: string): ValidationResult {
+  if (!value) return { isValid: false, error: "Admin address is required" };
+  if (!validateStellarAddress(value))
+    return { isValid: false, error: "Must be a valid Stellar address (G…, 56 chars)" };
+  return { isValid: true, error: null };
+}
+
+function validateContractAddress(label: string) {
+  return (value: string): ValidationResult => {
+    if (!value) return { isValid: false, error: `${label} is required` };
+    if (!isValidContractId(value))
+      return { isValid: false, error: `Must be a valid Soroban contract ID (C…, 56 chars)` };
+    return { isValid: true, error: null };
+  };
+}
+
+const validateKycRegistry = validateContractAddress("KYC registry");
+const validateComplianceEngine = validateContractAddress("Compliance engine");
+
+function validateTokenName(value: string): ValidationResult {
+  if (!value?.trim()) return { isValid: false, error: "Token name is required" };
+  if (value.trim().length > 32)
+    return { isValid: false, error: "Token name must be 32 characters or fewer" };
+  return { isValid: true, error: null };
+}
+
+function validateTokenSymbol(value: string): ValidationResult {
+  if (!value?.trim()) return { isValid: false, error: "Symbol is required" };
+  if (!/^[A-Z0-9]{1,12}$/.test(value.trim()))
+    return { isValid: false, error: "Symbol must be 1–12 uppercase letters/digits" };
+  return { isValid: true, error: null };
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function FieldError({ result }: { result: ValidationResult }) {
@@ -84,12 +136,20 @@ function InvoiceTab() {
   const set = (k: keyof InvoiceFields) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
 
+  const adminResult = validateAdminAddress(f.admin);
+  const nameResult = validateTokenName(f.name);
+  const symbolResult = validateTokenSymbol(f.symbol);
+  const kycResult = validateKycRegistry(f.kyc_registry);
+  const ceResult = validateComplianceEngine(f.compliance_engine);
   const isinResult = validateIsin(f.isin);
   const ipfsResult = validateIpfsHash(f.prospectus_hash);
   const legalResult = validateLegalEntity(f.legal_entity);
   const govResult = validateGoverningLaw(f.governing_law);
 
-  const hasErrors = !isinResult.isValid || !ipfsResult.isValid || !legalResult.isValid || !govResult.isValid;
+  const hasErrors =
+    !adminResult.isValid || !nameResult.isValid || !symbolResult.isValid ||
+    !kycResult.isValid || !ceResult.isValid ||
+    !isinResult.isValid || !ipfsResult.isValid || !legalResult.isValid || !govResult.isValid;
   const preset = DEPLOY_PRESETS.invoice;
   const ready = !hasErrors && isDeployReady(f as unknown as Record<string, string>, preset);
   const params: RwaDeployParams = f;
@@ -101,11 +161,26 @@ function InvoiceTab() {
         {preset.description}
       </p>
       <div style={styles.grid}>
-        <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
-        <Field label="Token name *" value={f.name} onChange={set("name")} placeholder="Acme Invoice Token" />
-        <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="IVTK" />
-        <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
-        <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
+        <div>
+          <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
+          <FieldError result={adminResult} />
+        </div>
+        <div>
+          <Field label="Token name *" value={f.name} onChange={set("name")} placeholder="Acme Invoice Token" />
+          <FieldError result={nameResult} />
+        </div>
+        <div>
+          <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="IVTK" />
+          <FieldError result={symbolResult} />
+        </div>
+        <div>
+          <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
+          <FieldError result={kycResult} />
+        </div>
+        <div>
+          <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
+          <FieldError result={ceResult} />
+        </div>
         <div>
           <Field label="Legal entity" value={f.legal_entity} onChange={set("legal_entity")} placeholder="Acme Corp LLC" />
           <FieldError result={legalResult} />
@@ -133,12 +208,20 @@ function PropertyTab() {
   const set = (k: keyof InvoiceFields) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
 
+  const adminResult = validateAdminAddress(f.admin);
+  const nameResult = validateTokenName(f.name);
+  const symbolResult = validateTokenSymbol(f.symbol);
+  const kycResult = validateKycRegistry(f.kyc_registry);
+  const ceResult = validateComplianceEngine(f.compliance_engine);
   const isinResult = validateIsin(f.isin);
   const ipfsResult = validateIpfsHash(f.prospectus_hash);
   const legalResult = validateLegalEntity(f.legal_entity);
   const govResult = validateGoverningLaw(f.governing_law);
 
-  const hasErrors = !isinResult.isValid || !ipfsResult.isValid || !legalResult.isValid || !govResult.isValid;
+  const hasErrors =
+    !adminResult.isValid || !nameResult.isValid || !symbolResult.isValid ||
+    !kycResult.isValid || !ceResult.isValid ||
+    !isinResult.isValid || !ipfsResult.isValid || !legalResult.isValid || !govResult.isValid;
   const preset = DEPLOY_PRESETS.property;
   const ready = !hasErrors && isDeployReady(f as unknown as Record<string, string>, preset);
   const params: RwaDeployParams = f;
@@ -150,11 +233,26 @@ function PropertyTab() {
         {preset.description}
       </p>
       <div style={styles.grid}>
-        <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
-        <Field label="Token name *" value={f.name} onChange={set("name")} placeholder="123 Main St Token" />
-        <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="PROP" />
-        <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
-        <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
+        <div>
+          <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
+          <FieldError result={adminResult} />
+        </div>
+        <div>
+          <Field label="Token name *" value={f.name} onChange={set("name")} placeholder="123 Main St Token" />
+          <FieldError result={nameResult} />
+        </div>
+        <div>
+          <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="PROP" />
+          <FieldError result={symbolResult} />
+        </div>
+        <div>
+          <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
+          <FieldError result={kycResult} />
+        </div>
+        <div>
+          <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
+          <FieldError result={ceResult} />
+        </div>
         <div>
           <Field label="Legal entity" value={f.legal_entity} onChange={set("legal_entity")} placeholder="Realty Partners LLC" />
           <FieldError result={legalResult} />
@@ -182,9 +280,16 @@ function CarbonTab() {
   const set = (k: keyof CarbonFields) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
 
+  const adminResult = validateAdminAddress(f.admin);
+  const nameResult = validateTokenName(f.name);
+  const symbolResult = validateTokenSymbol(f.symbol);
+  const kycResult = validateKycRegistry(f.kyc_registry);
+  const ceResult = validateComplianceEngine(f.compliance_engine);
   const vintageResult = validateVintageYear(f.vintage_year);
 
-  const hasErrors = !vintageResult.isValid;
+  const hasErrors =
+    !adminResult.isValid || !nameResult.isValid || !symbolResult.isValid ||
+    !kycResult.isValid || !ceResult.isValid || !vintageResult.isValid;
   const preset = DEPLOY_PRESETS.carbon;
   const ready = !hasErrors && isDeployReady(f as unknown as Record<string, string>, preset);
   const params: CarbonDeployParams = f;
@@ -196,11 +301,26 @@ function CarbonTab() {
         {preset.description}
       </p>
       <div style={styles.grid}>
-        <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
-        <Field label="Token name *" value={f.name} onChange={set("name")} placeholder="Acme Carbon Credit" />
-        <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="ACC" />
-        <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
-        <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
+        <div>
+          <Field label="Admin address *" value={f.admin} onChange={set("admin")} placeholder="G…" />
+          <FieldError result={adminResult} />
+        </div>
+        <div>
+          <Field label="Token name *" value={f.name} onChange={set("name")} placeholder="Acme Carbon Credit" />
+          <FieldError result={nameResult} />
+        </div>
+        <div>
+          <Field label="Token symbol *" value={f.symbol} onChange={set("symbol")} placeholder="ACC" />
+          <FieldError result={symbolResult} />
+        </div>
+        <div>
+          <Field label="KYC registry address *" value={f.kyc_registry} onChange={set("kyc_registry")} placeholder="C…" />
+          <FieldError result={kycResult} />
+        </div>
+        <div>
+          <Field label="Compliance engine address *" value={f.compliance_engine} onChange={set("compliance_engine")} placeholder="C…" />
+          <FieldError result={ceResult} />
+        </div>
         <div>
           <Field label="Vintage year" value={f.vintage_year} onChange={set("vintage_year")} placeholder="2024" />
           <FieldError result={vintageResult} />

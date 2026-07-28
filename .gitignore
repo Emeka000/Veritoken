@@ -9,6 +9,10 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.env
+frontend/.env.bak
+
+# Docker local environment — contains secrets, never commit
+.env.docker
 
 # Stellar
 .stellar/
@@ -17,6 +21,11 @@ frontend/.env
 
 # Soroban test execution snapshots (regenerated on every `cargo test`)
 **/test_snapshots/
+
+# Deployment manifest — contains network-specific contract IDs.
+# Commit this file only when you want CI drift detection to run against it.
+# Do not commit mainnet contract IDs here.
+# deploy-manifest.json
 
 # OS
 .DS_Store
