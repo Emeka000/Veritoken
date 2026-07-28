@@ -15,6 +15,11 @@ export type {
   ProjectMeta,
   RetirementReceipt,
   ComplianceRules,
+  TokenExportMetadata,
+  TierPolicy,
+  RiskConfig,
+  KycStatusMirror,
+  KycSyncStatus,
   Network,
 } from "./types.js";
 

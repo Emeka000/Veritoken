@@ -23,6 +23,30 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   const closeMenu = () => setMenuOpen(false);
 
+  const handleDrawerKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      closeMenu();
+      (document.querySelector(".hamburger") as HTMLElement)?.focus();
+    }
+    if (e.key === "Tab") {
+      const drawer = document.getElementById("mobile-nav");
+      if (!drawer) return;
+      const focusable = drawer.querySelectorAll<HTMLElement>(
+        'a:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  };
+
   const handleNetworkChange = (newNetwork: Network) => {
     setNetwork(newNetwork);
     // Clear wallet connection state
@@ -106,12 +130,13 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {menuOpen && <div style={styles.overlay} onClick={closeMenu} aria-hidden="true" />}
+      {menuOpen &&       <div style={styles.overlay} onClick={closeMenu} aria-hidden="true" />}
 
       <nav
         id="mobile-nav"
         aria-label="Mobile navigation"
         aria-hidden={!menuOpen}
+        onKeyDown={handleDrawerKeyDown}
         style={{ ...styles.drawer, ...(menuOpen ? styles.drawerOpen : {}) }}
       >
         {NAV.map((n) => {

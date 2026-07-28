@@ -9,7 +9,7 @@
 
 import type { rpc } from "@stellar/stellar-sdk";
 import { scValToNative } from "@stellar/stellar-sdk";
-import type { ProjectMeta, RetirementReceipt } from "../../types";
+import type { ProjectMeta, RetirementReceipt, ReceiptVerification } from "../../types";
 import {
   readCall,
   writeCall,
@@ -123,6 +123,37 @@ export class CarbonTokenClient {
       this.contractId,
       "get_registry_link",
       []
+    );
+  }
+
+  /**
+   * Verify a retirement receipt by its zero-based index.
+   * Returns { index, valid, retiree, amount, timestamp, project_id, serial }.
+   * `valid` is false when the index is out of range or the record is malformed.
+   */
+  async verifyReceipt(index: number): Promise<ReceiptVerification> {
+    return readCall<ReceiptVerification>(
+      this.server,
+      this.contractId,
+      "verify_receipt",
+      [toU32(index)]
+    );
+  }
+
+  /**
+   * Returns all receipts for a specific retiree address, paginated.
+   * `start` is the global receipt index to scan from; `limit` caps results.
+   */
+  async getReceiptsByRetiree(
+    retireeAddress: string,
+    start: number,
+    limit: number
+  ): Promise<RetirementReceipt[]> {
+    return readCall<RetirementReceipt[]>(
+      this.server,
+      this.contractId,
+      "get_receipts_by_retiree",
+      [toAddress(retireeAddress), toU32(start), toU32(limit)]
     );
   }
 

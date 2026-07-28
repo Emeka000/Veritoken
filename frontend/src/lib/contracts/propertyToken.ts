@@ -7,13 +7,14 @@
  */
 
 import type { rpc } from "@stellar/stellar-sdk";
-import type { PropertyMeta } from "../../types";
+import type { PropertyMeta, DividendEvent } from "../../types";
 import {
   readCall,
   writeCall,
   fetchSequence,
   toAddress,
   toI128,
+  toU32,
   type SignTx,
 } from "./base";
 
@@ -98,6 +99,30 @@ export class PropertyTokenClient {
     );
   }
 
+  /** Returns the total number of dividend deposit events recorded on-chain. */
+  async dividendDepositCount(): Promise<number> {
+    return readCall<number>(
+      this.server,
+      this.contractId,
+      "dividend_deposit_count",
+      []
+    );
+  }
+
+  /**
+   * Returns up to `limit` DividendEvent entries starting at `start`.
+   * Each entry: { amount, timestamp, running_total_dps, distribution_type }.
+   * Limit is capped at 50 on-chain.
+   */
+  async getDividendHistory(start: number, limit: number): Promise<DividendEvent[]> {
+    return readCall<DividendEvent[]>(
+      this.server,
+      this.contractId,
+      "get_dividend_history",
+      [toU32(start), toU32(limit)]
+    );
+  }
+
   // ── Write methods ─────────────────────────────────────────────────────────
 
   /** Mint `shares` to `to`. Admin-only on-chain; subject to KYC and tier checks. */
@@ -141,18 +166,20 @@ export class PropertyTokenClient {
   /**
    * Deposit a dividend amount (in stroops) to be distributed pro-rata.
    * Admin-only on-chain.
+   * `distributionType`: 0 = Rent, 1 = Capital, 2 = Other (default 2).
    */
   async depositDividend(
     adminAddress: string,
     amount: bigint,
-    signTx: SignTx
+    signTx: SignTx,
+    distributionType: number = 2
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
     await writeCall(
       this.server,
       this.contractId,
       "deposit_dividend",
-      [toI128(amount)],
+      [toI128(amount), toU32(distributionType)],
       adminAddress,
       seq,
       signTx

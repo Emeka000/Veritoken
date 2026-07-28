@@ -4,10 +4,11 @@ import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
+import { EventFeed } from "../components/EventFeed";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
-import type { InvoiceMeta, ContractEvent } from "../types";
+import type { InvoiceMeta, ContractEvent, JournalEntry } from "../types";
 
 function Spinner() {
   return (
@@ -33,7 +34,7 @@ export default function InvoicePage() {
   const { connected, address, signTx } = useWallet();
   const { addToast } = useToast();
 
-  const [tab, setTab] = useState<"issue" | "redeem">("issue");
+  const [tab, setTab] = useState<"issue" | "redeem" | "timeline">("issue");
 
   // ── On-chain state ───────────────────────────────────────────────────────
   const [meta, setMeta] = useState<InvoiceMeta | null>(null);
@@ -59,6 +60,12 @@ export default function InvoicePage() {
   // ── Events ───────────────────────────────────────────────────────────────
   const [events, setEvents] = useState<ContractEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+
+  // ── Timeline ─────────────────────────────────────────────────────────────
+  const [journal, setJournal] = useState<JournalEntry[] | null>(null);
+  const [journalLoading, setJournalLoading] = useState(false);
+  const [journalError, setJournalError] = useState<string | null>(null);
+
   const [confirm, setConfirm] = useState<{
     title: string;
     description: string;
@@ -96,13 +103,19 @@ export default function InvoicePage() {
     loadChainState();
   }, [loadChainState]);
 
-  useEffect(() => {
+  const fetchEvents = async () => {
     if (!CONTRACT_IDS.invoiceToken) return;
+    try {
+      const fetched = await fetchContractEvents(CONTRACT_IDS.invoiceToken, 10);
+      setEvents(fetched);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
     setEventsLoading(true);
-    fetchContractEvents(CONTRACT_IDS.invoiceToken, 10)
-      .then(setEvents)
-      .catch(() => {})
-      .finally(() => setEventsLoading(false));
+    fetchEvents().finally(() => setEventsLoading(false));
   }, []);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -171,6 +184,25 @@ export default function InvoicePage() {
     issueAmount.length > 0 && !issueAmountValidation.isValid;
   const hasRedeemAmountError =
     redeemAmount.length > 0 && !redeemAmountValidation.isValid;
+
+  const loadJournal = useCallback(async () => {
+    if (!CONTRACT_IDS.invoiceToken || !meta) return;
+    setJournalLoading(true);
+    setJournalError(null);
+    try {
+      const entries = await contracts.invoice.getJournal(meta.invoice_id);
+      setJournal(entries);
+    } catch (err) {
+      setJournalError(err instanceof Error ? err.message : "Failed to load timeline.");
+    } finally {
+      setJournalLoading(false);
+    }
+  }, [meta]);
+
+  const handleTabTimeline = () => {
+    setTab("timeline");
+    if (!journal && !journalLoading) loadJournal();
+  };
 
   const handleToggleLifecyclePause = async () => {
     if (!connected || !address) return;
@@ -299,6 +331,26 @@ export default function InvoicePage() {
                   </dd>
                 </>
               )}
+
+              {meta.transfer_fee_bps !== undefined && meta.transfer_fee_bps !== null && (
+                <>
+                  <dt style={styles.dt}>Transfer Fee</dt>
+                  <dd style={styles.dd}>
+                    {meta.transfer_fee_bps > 0
+                      ? `${meta.transfer_fee_bps} bps (${(meta.transfer_fee_bps / 100).toFixed(2)}%)`
+                      : "No fee"}
+                  </dd>
+                </>
+              )}
+
+              {meta.fee_recipient && (
+                <>
+                  <dt style={styles.dt}>Fee Recipient</dt>
+                  <dd style={{ ...styles.dd, fontFamily: "monospace", fontSize: "0.78rem", wordBreak: "break-all" }}>
+                    {meta.fee_recipient}
+                  </dd>
+                </>
+              )}
             </dl>
 
             {/* Admin: settle button, visible only when not yet settled */}
@@ -359,6 +411,13 @@ export default function InvoicePage() {
           style={styles.tab}
         >
           Redeem
+        </button>
+        <button
+          onClick={handleTabTimeline}
+          className={tab === "timeline" ? "" : "btn-ghost"}
+          style={styles.tab}
+        >
+          Timeline
         </button>
       </div>
 
@@ -432,7 +491,13 @@ export default function InvoicePage() {
         </WalletGuard>
       )}
 
-      <RecentTransactions events={events} loading={eventsLoading} />
+      <EventFeed
+        events={events}
+        loading={eventsLoading}
+        onRefresh={fetchEvents}
+        title="Recent Invoice Activity"
+        autoRefreshInterval={30000}
+      />
 
       {confirm && (
         <ConfirmDialog
@@ -445,78 +510,6 @@ export default function InvoicePage() {
     </div>
   );
 }
-
-function RecentTransactions({
-  events,
-  loading,
-}: {
-  events: ContractEvent[];
-  loading: boolean;
-}) {
-  return (
-    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
-      {loading ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          Loading…
-        </p>
-      ) : events.length === 0 ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>
-          No recent events found.
-        </p>
-      ) : (
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: "0.82rem",
-          }}
-        >
-          <thead>
-            <tr
-              style={{
-                borderBottom: "1px solid var(--border)",
-                textAlign: "left",
-              }}
-            >
-              <th style={th}>Type</th>
-              <th style={th}>Amount</th>
-              <th style={th}>Counterparty</th>
-              <th style={th}>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={td}>{ev.type}</td>
-                <td style={td}>{ev.amount}</td>
-                <td
-                  style={{
-                    ...td,
-                    fontFamily: "monospace",
-                    maxWidth: 140,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {ev.counterparty}
-                </td>
-                <td style={td}>{ev.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
-  );
-}
-
-const th: React.CSSProperties = {
-  padding: "0.4rem 0.5rem",
-  fontWeight: 600,
-  color: "var(--muted)",
-};
-const td: React.CSSProperties = { padding: "0.4rem 0.5rem" };
 
 const styles: Record<string, React.CSSProperties> = {
   tabs: {

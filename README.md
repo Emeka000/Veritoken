@@ -122,6 +122,8 @@ The kit is designed to be forked and customised:
 - **Multi-verifier KYC** — the verifier list in `kyc-registry` supports any number of approved verifiers
 - **Off-chain anchoring** — every asset contract has an IPFS hash field for linking to legal documents
 
+Before writing storage code in a fork, read [docs/storage-patterns.md](docs/storage-patterns.md). It maps every `DataKey` in every contract to its storage tier, explains the rationale, and documents where TTL bumps occur — giving you the context needed to make correct decisions for your own asset type.
+
 ---
 
 ## Roadmap
@@ -134,6 +136,7 @@ The kit is designed to be forked and customised:
 - [ ] Stellar CLI task runner for common admin operations
 - [ ] Audit by an independent Soroban security reviewer
 - [x] Mainnet deployment guide with production checklist — see [docs/mainnet-deployment.md](docs/mainnet-deployment.md)
+- [x] Storage patterns reference — see [docs/storage-patterns.md](docs/storage-patterns.md)
 - [ ] TypeScript SDK wrapping contract clients for frontend developers
 
 ---
