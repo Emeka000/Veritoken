@@ -15,6 +15,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    setupFiles: ["./src/test-setup.ts"],
   },
   build: {
     // The Stellar SDK vendor chunk is unavoidably large; raise the budget so it

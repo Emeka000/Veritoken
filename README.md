@@ -124,6 +124,8 @@ The kit is designed to be forked and customised:
 
 Before writing storage code in a fork, read [docs/storage-patterns.md](docs/storage-patterns.md). It maps every `DataKey` in every contract to its storage tier, explains the rationale, and documents where TTL bumps occur — giving you the context needed to make correct decisions for your own asset type.
 
+For a full reference of every public method, data structure, and error code across all six contracts, see [docs/contract-api-reference.md](docs/contract-api-reference.md).
+
 ---
 
 ## Roadmap

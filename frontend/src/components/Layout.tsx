@@ -10,6 +10,7 @@ const NAV = [
   { to: "/carbon", label: "Carbon" },
   { to: "/kyc", label: "KYC" },
   { to: "/admin", label: "Admin" },
+  { to: "/operator", label: "Operator" },
   { to: "/deploy", label: "Deploy" },
   { to: "/docs", label: "Docs" },
 ];
