@@ -96,6 +96,9 @@ pub struct DistributionCheckpoint {
     pub remainder: i128,
     pub per_share: i128,
     pub cumulative_per_share: i128,
+    pub rent_cumulative_per_share: i128,
+    pub capital_cumulative_per_share: i128,
+    pub other_cumulative_per_share: i128,
     pub type_cumulative_per_share: i128,
     pub total_shares: i128,
     pub timestamp: u64,
@@ -545,24 +548,33 @@ impl PropertyToken {
 
         let dps_rent = Self::rent_dps(&env);
         let dps_capital = Self::capital_dps(&env);
+        let (rent_cumulative_per_share, capital_cumulative_per_share) =
+            if distribution_type == DistributionType::Rent as u32 {
+                let next = Self::checked_add(&env, dps_rent, per_share);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DividendPerShareRent, &next);
+                (next, dps_capital)
+            } else if distribution_type == DistributionType::Capital as u32 {
+                let next = Self::checked_add(&env, dps_capital, per_share);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DividendPerShareCapital, &next);
+                (dps_rent, next)
+            } else {
+                (dps_rent, dps_capital)
+            };
+        let other_cumulative_per_share = Self::checked_sub(
+            &env,
+            Self::checked_sub(&env, new_dps, rent_cumulative_per_share),
+            capital_cumulative_per_share,
+        );
         let type_cumulative_per_share = if distribution_type == DistributionType::Rent as u32 {
-            let next = Self::checked_add(&env, dps_rent, per_share);
-            env.storage()
-                .instance()
-                .set(&DataKey::DividendPerShareRent, &next);
-            next
+            rent_cumulative_per_share
         } else if distribution_type == DistributionType::Capital as u32 {
-            let next = Self::checked_add(&env, dps_capital, per_share);
-            env.storage()
-                .instance()
-                .set(&DataKey::DividendPerShareCapital, &next);
-            next
+            capital_cumulative_per_share
         } else {
-            Self::checked_sub(
-                &env,
-                Self::checked_sub(&env, new_dps, dps_rent),
-                dps_capital,
-            )
+            other_cumulative_per_share
         };
 
         let pool: i128 = env
@@ -588,6 +600,9 @@ impl PropertyToken {
             remainder: Self::checked_sub(&env, amount, allocated_amount),
             per_share,
             cumulative_per_share: new_dps,
+            rent_cumulative_per_share,
+            capital_cumulative_per_share,
+            other_cumulative_per_share,
             type_cumulative_per_share,
             total_shares: total,
             timestamp: env.ledger().timestamp(),
@@ -1080,9 +1095,8 @@ impl PropertyToken {
 
     fn preview_holder_checkpoint(env: &Env, holder: Address) -> HolderDividendCheckpoint {
         let mut checkpoint = Self::load_holder_checkpoint(env, &holder);
-        let total_index = Self::dps(env);
-        let rent_index = Self::rent_dps(env);
-        let capital_index = Self::capital_dps(env);
+        let (distribution_count, total_index, rent_index, capital_index) =
+            Self::latest_distribution_indexes(env);
 
         let total_delta = Self::positive_difference(env, total_index, checkpoint.total_index);
         let rent_delta = Self::positive_difference(env, rent_index, checkpoint.rent_index);
@@ -1106,8 +1120,39 @@ impl PropertyToken {
         checkpoint.total_index = total_index;
         checkpoint.rent_index = rent_index;
         checkpoint.capital_index = capital_index;
-        checkpoint.distribution_count = Self::distribution_count(env);
+        checkpoint.distribution_count = distribution_count;
         checkpoint
+    }
+
+    fn latest_distribution_indexes(env: &Env) -> (u32, i128, i128, i128) {
+        let distribution_count = Self::distribution_count(env);
+        if distribution_count > 0 {
+            let key = DataKey::DistributionCheckpoint(distribution_count - 1);
+            if let Some(checkpoint) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, DistributionCheckpoint>(&key)
+            {
+                env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+                return (
+                    distribution_count,
+                    checkpoint.cumulative_per_share,
+                    checkpoint.rent_cumulative_per_share,
+                    checkpoint.capital_cumulative_per_share,
+                );
+            }
+        }
+
+        // Pre-upgrade distributions have only the legacy cumulative keys.
+        // New distributions persist the journal entry atomically with the
+        // cumulative keys, so this fallback is limited to legacy state or an
+        // expired audit record.
+        (
+            distribution_count,
+            Self::dps(env),
+            Self::rent_dps(env),
+            Self::capital_dps(env),
+        )
     }
 
     fn settle_holder(env: &Env, holder: Address) -> HolderDividendCheckpoint {

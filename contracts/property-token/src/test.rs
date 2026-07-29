@@ -702,6 +702,9 @@ fn test_distribution_checkpoint_reconciles_rounding() {
     assert_eq!(checkpoint.allocated_amount, 1_000);
     assert_eq!(checkpoint.remainder, 250);
     assert_eq!(checkpoint.cumulative_per_share, 1);
+    assert_eq!(checkpoint.rent_cumulative_per_share, 1);
+    assert_eq!(checkpoint.capital_cumulative_per_share, 0);
+    assert_eq!(checkpoint.other_cumulative_per_share, 0);
     assert_eq!(checkpoint.type_cumulative_per_share, 1);
     assert_eq!(checkpoint.distribution_type, 0);
 
@@ -733,6 +736,41 @@ fn test_claim_all_clears_typed_claims_and_cannot_overdraw_pool() {
     assert_eq!(h.token.pending_dividend(&alice), 0);
     assert_eq!(h.token.claim_rent_yield(&alice), 0);
     assert_eq!(h.token.claim_capital_return(&alice), 0);
+    assert_eq!(h.token.dividend_pool(), 0);
+}
+
+#[test]
+fn test_claims_derive_indexes_from_distribution_journal() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+    h.token.deposit_dividend(&1_000, &0);
+    h.token.deposit_dividend(&2_000, &1);
+
+    // The immutable latest distribution checkpoint is the source of truth for
+    // post-upgrade accrual. Legacy mutable index keys are only a migration
+    // fallback and cannot alter a checkpoint-backed claim.
+    h.env.as_contract(&h.token.address, || {
+        h.env
+            .storage()
+            .instance()
+            .set(&DataKey::DividendPerShare, &0i128);
+        h.env
+            .storage()
+            .instance()
+            .set(&DataKey::DividendPerShareRent, &0i128);
+        h.env
+            .storage()
+            .instance()
+            .set(&DataKey::DividendPerShareCapital, &0i128);
+    });
+
+    let unclaimed = h.token.unclaimed_balance(&alice);
+    assert_eq!(unclaimed.total, 3_000);
+    assert_eq!(unclaimed.rent, 1_000);
+    assert_eq!(unclaimed.capital, 2_000);
+    assert_eq!(h.token.claim_dividend(&alice), 3_000);
     assert_eq!(h.token.dividend_pool(), 0);
 }
 
