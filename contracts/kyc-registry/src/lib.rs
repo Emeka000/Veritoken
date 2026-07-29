@@ -26,6 +26,10 @@ pub enum KycError {
     EmptyAdminList = 7,
     /// Caller is neither the subject nor an admin.
     NotAuthorized = 8,
+    /// Migration target version equals the current schema version.
+    AlreadyAtSchemaVersion = 9,
+    /// Migration must increment schema version by exactly one.
+    MigrationVersionNotSequential = 10,
 }
 
 /// Composite key for per-subject lifecycle history entries.
@@ -55,6 +59,25 @@ pub enum DataKey {
     LifecycleEntry(HistoryKey),
     /// Monotonically increasing count of transitions recorded for a subject.
     LifecycleCount(Address),
+    // ── Storage versioning ────────────────────────────────────────────────────
+    /// Current schema version number.  Set to 1 on initialize; incremented by
+    /// each successful `migrate_schema` call.  Missing = legacy pre-versioned
+    /// deployment (treated as version 0 inside `migrate_schema`).
+    StorageVersion,
+    /// How many migrations have been applied (length of the migration log).
+    MigrationCount,
+    /// Indexed migration history; key is the zero-based migration index.
+    Migration(u32),
+}
+
+/// On-chain record of a single admin-initiated schema migration.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct KycMigrationRecord {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub timestamp: u64,
+    pub description: String,
 }
 
 // ── Lifecycle model ───────────────────────────────────────────────────────────
@@ -196,6 +219,9 @@ impl KycRegistry {
         let mut list: Vec<Address> = Vec::new(&env);
         list.push_back(admin);
         env.storage().instance().set(&DataKey::AdminList, &list);
+        // Set the initial schema version so new deployments start at v1.
+        env.storage().instance().set(&DataKey::StorageVersion, &1u32);
+        env.storage().instance().set(&DataKey::MigrationCount, &0u32);
     }
 
     // ── Admin management ─────────────────────────────────────────────────────
@@ -850,6 +876,114 @@ impl KycRegistry {
 
     pub fn version(env: Env) -> String {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
+    }
+
+    // ── Storage versioning / migration ────────────────────────────────────────
+
+    /// Returns the current numeric schema version.
+    ///
+    /// Returns `0` for legacy deployments that were initialized before schema
+    /// versioning was introduced (i.e. where the `StorageVersion` key is absent).
+    /// New deployments set this to `1` during `initialize`.
+    pub fn schema_version(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0)
+    }
+
+    /// Returns the number of migrations that have been applied.
+    pub fn migration_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::MigrationCount)
+            .unwrap_or(0)
+    }
+
+    /// Returns the migration record at `index`, or panics if out of range.
+    pub fn get_migration_record(env: Env, index: u32) -> KycMigrationRecord {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::Migration(index))
+            .expect("migration record not found")
+    }
+
+    /// Admin-only upgrade hook.  Advances the schema from `current + 1` to
+    /// `to_version` and appends an immutable migration record.
+    ///
+    /// Rules:
+    /// - Caller must be a registered admin.
+    /// - `to_version` must equal `current_schema_version + 1` (no skipping,
+    ///   no repeating).
+    /// - For legacy deployments where no `StorageVersion` key exists, the
+    ///   current version is treated as `0`, so the first valid call is
+    ///   `migrate_schema(caller, 1, ...)` (the bootstrap migration).
+    ///
+    /// After all data-structure changes for this version have been applied in
+    /// the body below, add the new schema number to this function's match arm.
+    pub fn migrate_schema(
+        env: Env,
+        caller: Address,
+        to_version: u32,
+        description: String,
+    ) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let current: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0);
+
+        if to_version == current {
+            panic_with_error!(env, KycError::AlreadyAtSchemaVersion);
+        }
+        if to_version != current + 1 {
+            panic_with_error!(env, KycError::MigrationVersionNotSequential);
+        }
+
+        // ── Per-version migration hooks ────────────────────────────────────
+        // Add a new `to_version =>` arm here when the storage schema changes.
+        // Keep completed arms for auditability; they will never re-execute.
+        match to_version {
+            1 => {
+                // Bootstrap: record that this deployment is now at schema v1.
+                // No data transformation needed — v0 layout == v1 layout.
+            }
+            _ => {
+                // Future versions: implement data migrations here.
+            }
+        }
+
+        // Record the migration.
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationCount)
+            .unwrap_or(0);
+        let record = KycMigrationRecord {
+            from_version: current,
+            to_version,
+            timestamp: env.ledger().timestamp(),
+            description,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::Migration(count), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationCount, &(count + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &to_version);
+
+        env.events()
+            .publish((symbol_short!("migrated"),), (current, to_version));
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

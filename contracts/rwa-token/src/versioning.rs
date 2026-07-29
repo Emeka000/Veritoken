@@ -12,6 +12,21 @@ pub fn write_initial_version(env: &Env) {
     let v = String::from_str(env, env!("CARGO_PKG_VERSION"));
     env.storage().instance().set(&DataKey::ContractSemver, &v);
     env.storage().instance().set(&DataKey::MigrationCount, &0u32);
+    // Numeric schema version — new deployments start at 1.
+    env.storage().instance().set(&DataKey::SchemaVersion, &1u32);
+    env.storage()
+        .instance()
+        .set(&DataKey::SchemaMigrationCount, &0u32);
+}
+
+pub fn read_schema_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    env.storage()
+        .instance()
+        .get(&DataKey::SchemaVersion)
+        .unwrap_or(0)
 }
 
 pub fn read_version(env: &Env) -> String {

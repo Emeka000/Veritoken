@@ -65,6 +65,10 @@ pub enum RwaError {
     KycRegistryUnavailable = 19,
     /// Caller is neither the admin nor the holder of the required role.
     UnauthorizedRole = 20,
+    /// Migration was submitted with the same semver/schema version already stored.
+    MigrationVersionConflict = 21,
+    /// Schema migration must increment the schema version by exactly one.
+    MigrationVersionNotSequential = 22,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -75,6 +79,16 @@ pub enum RwaError {
 pub struct MigrationRecord {
     pub from_version: String,
     pub to_version: String,
+    pub timestamp: u64,
+    pub description: String,
+}
+
+/// On-chain record of a single numeric schema version migration.
+#[contracttype]
+#[derive(Clone)]
+pub struct SchemaVersionRecord {
+    pub from_version: u32,
+    pub to_version: u32,
     pub timestamp: u64,
     pub description: String,
 }
@@ -747,10 +761,16 @@ impl RwaToken {
 
     /// Admin-only migration entry point. Records the version bump on-chain.
     /// Nonce-protected (#349) to prevent accidental re-submission.
+    /// Panics with `MigrationVersionConflict` if `new_version` equals the
+    /// currently stored semver (idempotency guard).
     pub fn migrate(env: Env, new_version: String, description: String, nonce: u64) {
         let current_admin = admin::read_admin(&env);
         current_admin.require_auth();
         admin::consume_nonce(&env, nonce);
+        let current = versioning::read_version(&env);
+        if new_version == current {
+            panic_with_error!(env, RwaError::MigrationVersionConflict);
+        }
         versioning::apply_migration(&env, new_version.clone(), description);
         env.events()
             .publish((symbol_short!("migrated"),), (new_version, nonce));
@@ -760,6 +780,73 @@ impl RwaToken {
     pub fn get_migration_record(env: Env, index: u32) -> MigrationRecord {
         versioning::get_migration_record(&env, index)
             .expect("migration record not found")
+    }
+
+    /// Returns the current numeric schema version.
+    ///
+    /// Returns `0` for legacy deployments initialized before schema versioning
+    /// was introduced.  New deployments start at `1` via `initialize`.
+    pub fn schema_version(env: Env) -> u32 {
+        versioning::read_schema_version(&env)
+    }
+
+    /// Admin-only numeric schema upgrade hook.
+    /// Nonce-protected to prevent accidental re-submission.
+    /// `to_version` must equal `current_schema_version + 1`.
+    pub fn migrate_schema(env: Env, to_version: u32, description: String, nonce: u64) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        admin::consume_nonce(&env, nonce);
+
+        let current = versioning::read_schema_version(&env);
+        if to_version == current {
+            panic_with_error!(env, RwaError::MigrationVersionConflict);
+        }
+        if to_version != current + 1 {
+            panic_with_error!(env, RwaError::MigrationVersionNotSequential);
+        }
+
+        // ── Per-version migration hooks ────────────────────────────────────
+        match to_version {
+            1 => {
+                // Bootstrap: v0 layout == v1 layout, no data transformation.
+            }
+            _ => {
+                // Future versions: implement data migrations here.
+            }
+        }
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&storage_types::DataKey::SchemaMigrationCount)
+            .unwrap_or(0);
+        let record = SchemaVersionRecord {
+            from_version: current,
+            to_version,
+            timestamp: env.ledger().timestamp(),
+            description,
+        };
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::SchemaMigration(count), &record);
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::SchemaMigrationCount, &(count + 1));
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::SchemaVersion, &to_version);
+
+        env.events()
+            .publish((symbol_short!("migrated"),), (current, to_version));
+    }
+
+    /// Returns the schema migration record at `index`, or panics if out of range.
+    pub fn get_schema_migration_record(env: Env, index: u32) -> SchemaVersionRecord {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::SchemaMigration(index))
+            .expect("schema migration record not found")
     }
 
     // ── Replay-protection nonce (#349) ────────────────────────────────────────
