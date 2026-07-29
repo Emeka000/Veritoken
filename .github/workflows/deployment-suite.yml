@@ -13,9 +13,6 @@ on:
       - "docs/deployment-automation.md"
       - ".github/workflows/deployment-suite.yml"
   push:
-    branches:
-      - main
-      - master
     paths:
       - "deployment/**"
       - "scripts/deploy.sh"
