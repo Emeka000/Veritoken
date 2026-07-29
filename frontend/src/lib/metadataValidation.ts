@@ -1,3 +1,5 @@
+import { validateStellarAddress, isValidContractId } from "./stellar";
+
 export interface ValidationResult {
   isValid: boolean;
   error: string | null;
@@ -5,6 +7,42 @@ export interface ValidationResult {
 
 const OK: ValidationResult = { isValid: true, error: null };
 const fail = (error: string): ValidationResult => ({ isValid: false, error });
+
+// ── Address / identity validators (moved from DeployPage.tsx, issue #426 /
+// generalised for issue #447's contract-driven form schemas) ────────────────
+
+export function validateAdminAddress(value: string): ValidationResult {
+  if (!value) return fail("Admin address is required");
+  if (!validateStellarAddress(value))
+    return fail("Must be a valid Stellar address (G…, 56 chars)");
+  return OK;
+}
+
+export function validateContractAddress(label: string) {
+  return (value: string): ValidationResult => {
+    if (!value) return fail(`${label} is required`);
+    if (!isValidContractId(value))
+      return fail("Must be a valid Soroban contract ID (C…, 56 chars)");
+    return OK;
+  };
+}
+
+export const validateKycRegistry = validateContractAddress("KYC registry");
+export const validateComplianceEngine = validateContractAddress("Compliance engine");
+
+export function validateTokenName(value: string): ValidationResult {
+  if (!value?.trim()) return fail("Token name is required");
+  if (value.trim().length > 32)
+    return fail("Token name must be 32 characters or fewer");
+  return OK;
+}
+
+export function validateTokenSymbol(value: string): ValidationResult {
+  if (!value?.trim()) return fail("Symbol is required");
+  if (!/^[A-Z0-9]{1,12}$/.test(value.trim()))
+    return fail("Symbol must be 1–12 uppercase letters/digits");
+  return OK;
+}
 
 /** ISIN: exactly 12 chars, 2-letter uppercase country code + 10 uppercase alphanumeric. */
 export function validateIsin(value: string): ValidationResult {
