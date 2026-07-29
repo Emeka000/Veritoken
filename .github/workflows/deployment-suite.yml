@@ -1,6 +1,7 @@
 name: Deployment automation suite
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "deployment/**"
