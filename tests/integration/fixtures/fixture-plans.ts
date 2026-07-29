@@ -21,7 +21,7 @@ const QUICKSTART_ADMIN_SECRET =
 
 export const WASM_DIR = path.resolve(
   import.meta.dirname,
-  "../../../target/wasm32-unknown-unknown/release",
+  "../../../target/wasm32v1-none/release",
 );
 
 export const wasmPath = (filename: string): string =>
