@@ -1,0 +1,60 @@
+name: Deployment automation suite
+
+on:
+  pull_request:
+    paths:
+      - "deployment/**"
+      - "scripts/deploy.sh"
+      - "scripts/verify-deployment.sh"
+      - "scripts/check-drift.sh"
+      - "scripts/deployment/**"
+      - "scripts/deployment_cli.py"
+      - "docs/deployment-automation.md"
+      - ".github/workflows/deployment-suite.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "deployment/**"
+      - "scripts/deploy.sh"
+      - "scripts/verify-deployment.sh"
+      - "scripts/check-drift.sh"
+      - "scripts/deployment/**"
+      - "scripts/deployment_cli.py"
+      - "docs/deployment-automation.md"
+      - ".github/workflows/deployment-suite.yml"
+
+jobs:
+  fixture-tests:
+    name: Fixture deployment lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run deployment unit and integration fixtures
+        env:
+          PYTHONPATH: scripts
+        run: python -m unittest discover -s scripts/deployment/tests -v
+
+      - name: Validate the testnet operation plan
+        run: |
+          python scripts/deployment_cli.py plan \
+            --config deployment/config.testnet.json \
+            --network testnet
+
+      - name: Parse committed JSON configurations
+        run: |
+          python -m json.tool deployment/config.testnet.json >/dev/null
+          python -m json.tool deployment/config.mainnet.example.json >/dev/null
+
+      - name: Parse compatibility shell entry points
+        shell: bash
+        run: |
+          bash -n scripts/deploy.sh
+          bash -n scripts/verify-deployment.sh
+          bash -n scripts/check-drift.sh

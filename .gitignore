@@ -11,6 +11,10 @@ frontend/dist/
 frontend/.env
 frontend/.env.bak
 
+# Python deployment tooling
+__pycache__/
+*.py[cod]
+
 # Docker local environment — contains secrets, never commit
 .env.docker
 
@@ -26,6 +30,8 @@ frontend/.env.bak
 # Commit this file only when you want CI drift detection to run against it.
 # Do not commit mainnet contract IDs here.
 # deploy-manifest.json
+deploy-manifest.partial.json
+deployment-verification-report.json
 
 # OS
 .DS_Store

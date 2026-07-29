@@ -243,16 +243,25 @@ bash scripts/deploy.sh veritoken-dev
 
 ---
 
-### `deploy.sh` fails mid-way, leaving `frontend/.env` incomplete
+### `deploy.sh` stops after an upload, deployment, or initializer
 
 **Symptom**
-The script exits after one or two contracts. `frontend/.env` is absent or has
-empty values.
+The script exits after one or more remote operations and reports an incomplete
+checkpoint at `deploy-manifest.partial.json`.
 
 **Fix**
-The script uses `set -euo pipefail` and stops at the first error. Fix the
-underlying error and re-run the full script. Each run creates new contract
-instances; old testnet instances are simply abandoned.
+Inspect the reported error and checkpoint, fix the underlying problem, then
+resume the exact run:
+
+```bash
+DEPLOY_RESUME=1 bash scripts/deploy.sh veritoken-dev
+```
+
+The resume path requires the same identity, network, config hash, and artifacts.
+It verifies any already-deployed code hash before continuing and does not
+redeploy completed stages. The previous canonical `deploy-manifest.json` and
+`frontend/.env` remain unchanged until the new deployment passes every
+verification check.
 
 ---
 

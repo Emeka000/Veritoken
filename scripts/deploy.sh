@@ -1,134 +1,73 @@
 #!/usr/bin/env bash
-# Veritoken deployment script — Stellar Testnet
-# Usage: bash scripts/deploy.sh [identity-name]
-# Requires: stellar CLI, cargo, wasm32 target
+# Veritoken deployment compatibility entry point.
 #
-# SECURITY: All asset tokens use Soroban constructors (__constructor) so that
-# admin, kyc_registry, and compliance_engine are set atomically at deploy time.
-# There is no window between deploy and initialization — front-running is not
-# possible. Do NOT revert to a two-step deploy-then-initialize pattern.
+# Usage:
+#   bash scripts/deploy.sh [identity-name]
+#
+# Existing operator inputs remain supported:
+#   STELLAR_NETWORK, WASM_DIR, DEPLOY_CONFIG, DEPLOY_MANIFEST,
+#   DEPLOY_VERIFICATION_REPORT, FRONTEND_ENV_FILE, STELLAR_BIN.
+#
+# Set DEPLOY_SKIP_BUILD=1 to deploy artifacts that were already built and
+# validated. Set DEPLOY_RESUME=1 to continue the exact partial checkpoint
+# written by an interrupted run.
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+IDENTITY="${1:-${STELLAR_IDENTITY:-alice}}"
 NETWORK="${STELLAR_NETWORK:-testnet}"
-IDENTITY="${1:-alice}"
-SOURCE="--source-account $IDENTITY --network $NETWORK"
-ADMIN_ADDR="$(stellar keys address $IDENTITY)"
+WASM_DIR="${WASM_DIR:-target/wasm32-unknown-unknown/release}"
+DEPLOY_CONFIG="${DEPLOY_CONFIG:-deployment/config.testnet.json}"
+DEPLOY_MANIFEST="${DEPLOY_MANIFEST:-deploy-manifest.json}"
+DEPLOY_VERIFICATION_REPORT="${DEPLOY_VERIFICATION_REPORT:-deployment-verification-report.json}"
+FRONTEND_ENV_FILE="${FRONTEND_ENV_FILE:-frontend/.env}"
 
-echo "==> Building all contracts..."
-cargo build --release --target wasm32-unknown-unknown
-
-WASM_DIR="target/wasm32-unknown-unknown/release"
-
-echo ""
-echo "==> Verifying build artifacts..."
-bash "$(dirname "$0")/verify-artifacts.sh"
-echo ""
-
-build_wasm() {
-  local name="$1"
-  local wasm_path="$WASM_DIR/${name//-/_}.wasm"
-  local size_before
-  size_before=$(wc -c < "$wasm_path")
-  echo "--- Optimizing $name.wasm (before: ${size_before} bytes)"
-  stellar contract optimize --wasm "$wasm_path"
-  local size_after
-  size_after=$(wc -c < "$wasm_path")
-  echo "    After: ${size_after} bytes (saved $((size_before - size_after)) bytes)"
+find_python() {
+  if [[ -n "${PYTHON_BIN:-}" ]]; then
+    printf '%s\n' "$PYTHON_BIN"
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "python3"
+  elif command -v python >/dev/null 2>&1; then
+    printf '%s\n' "python"
+  else
+    echo "ERROR: Python 3.10 or newer is required." >&2
+    exit 1
+  fi
 }
 
-build_wasm kyc_registry
-build_wasm compliance_engine
-build_wasm invoice_token
-build_wasm property_token
-build_wasm carbon_credit_token
+PYTHON_EXECUTABLE="$(find_python)"
+cd "$REPO_ROOT"
+
+if [[ "${DEPLOY_SKIP_BUILD:-0}" != "1" ]]; then
+  echo "==> Building release WASM artifacts..."
+  cargo build --release --target wasm32-unknown-unknown
+fi
+
+echo "==> Validating release WASM artifacts..."
+WASM_DIR="$WASM_DIR" bash "$SCRIPT_DIR/verify-artifacts.sh"
+
+ARGS=(
+  "$SCRIPT_DIR/deployment_cli.py"
+  deploy
+  --identity "$IDENTITY"
+  --network "$NETWORK"
+  --wasm-dir "$WASM_DIR"
+  --config "$DEPLOY_CONFIG"
+  --manifest "$DEPLOY_MANIFEST"
+  --report "$DEPLOY_VERIFICATION_REPORT"
+  --frontend-env "$FRONTEND_ENV_FILE"
+)
+
+if [[ "${DEPLOY_RESUME:-0}" == "1" ]]; then
+  ARGS+=(--resume)
+fi
+
+echo "==> Deploying and verifying contracts on $NETWORK..."
+"$PYTHON_EXECUTABLE" "${ARGS[@]}"
 
 echo ""
-echo "==> Deploying KYC Registry..."
-KYC_ID=$(stellar contract deploy \
-  $SOURCE \
-  --wasm "$WASM_DIR/kyc_registry.wasm" \
-  -- \
-  --admin "$ADMIN_ADDR")
-echo "    KYC_REGISTRY_ID=$KYC_ID"
-
-echo "==> Deploying Compliance Engine..."
-CE_ID=$(stellar contract deploy \
-  $SOURCE \
-  --wasm "$WASM_DIR/compliance_engine.wasm" \
-  -- \
-  --admin "$ADMIN_ADDR" \
-  --kyc-registry "$KYC_ID")
-echo "    COMPLIANCE_ENGINE_ID=$CE_ID"
-
-# Asset tokens pass all constructor args atomically — no separate initialize call needed or possible.
-# The '--' separator passes arguments directly to the contract constructor (__constructor).
-
-echo "==> Deploying Invoice Token..."
-INV_ID=$(stellar contract deploy \
-  $SOURCE \
-  --wasm "$WASM_DIR/invoice_token.wasm" \
-  -- \
-  --admin "$ADMIN_ADDR" \
-  --kyc-registry "$KYC_ID" \
-  --compliance-engine "$CE_ID" \
-  --meta '{"invoice_id":"PLACEHOLDER","issuer":"","debtor":"","face_value_usd":0,"discount_rate_bps":0,"due_date":0,"currency":"USD","ipfs_doc_hash":"","transfer_fee_bps":0,"fee_recipient":null,"notification_webhook":""}')
-echo "    INVOICE_TOKEN_ID=$INV_ID"
-
-echo "==> Deploying Property Token..."
-PROP_ID=$(stellar contract deploy \
-  $SOURCE \
-  --wasm "$WASM_DIR/property_token.wasm" \
-  -- \
-  --admin "$ADMIN_ADDR" \
-  --kyc-registry "$KYC_ID" \
-  --compliance-engine "$CE_ID" \
-  --meta '{"property_id":"PLACEHOLDER","legal_name":"","jurisdiction":"","address":"","total_valuation_usd":0,"total_shares":1000000,"property_type":"residential","ipfs_title_hash":"","kyc_tier_required":1}')
-echo "    PROPERTY_TOKEN_ID=$PROP_ID"
-
-echo "==> Deploying Carbon Credit Token..."
-CARBON_ID=$(stellar contract deploy \
-  $SOURCE \
-  --wasm "$WASM_DIR/carbon_credit_token.wasm" \
-  -- \
-  --admin "$ADMIN_ADDR" \
-  --kyc-registry "$KYC_ID" \
-  --compliance-engine "$CE_ID" \
-  --meta '{"project_id":"PLACEHOLDER","standard":"VCS","vintage_year":2024,"project_name":"","project_type":"forestry","country":"","verifier":"","ipfs_cert_hash":"","registry_url":"","registry_project_id":""}')
-echo "    CARBON_TOKEN_ID=$CARBON_ID"
-
-echo ""
-echo "==> Writing .env to frontend..."
-cat > frontend/.env <<EOF
-VITE_STELLAR_NETWORK=$NETWORK
-VITE_STELLAR_RPC_URL=https://soroban-testnet.stellar.org
-VITE_KYC_REGISTRY_ID=$KYC_ID
-VITE_COMPLIANCE_ENGINE_ID=$CE_ID
-VITE_INVOICE_TOKEN_ID=$INV_ID
-VITE_PROPERTY_TOKEN_ID=$PROP_ID
-VITE_CARBON_TOKEN_ID=$CARBON_ID
-EOF
-
-echo "==> Writing deploy manifest..."
-DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-cat > deploy-manifest.json <<EOF
-{
-  "network": "$NETWORK",
-  "deployed_at": "$DEPLOYED_AT",
-  "identity": "$IDENTITY",
-  "kyc_registry_id": "$KYC_ID",
-  "compliance_engine_id": "$CE_ID",
-  "invoice_token_id": "$INV_ID",
-  "property_token_id": "$PROP_ID",
-  "carbon_token_id": "$CARBON_ID"
-}
-EOF
-echo "    deploy-manifest.json written"
-
-echo ""
-echo "Done! Contract IDs written to frontend/.env"
-echo "IMPORTANT: Update the placeholder --meta values above with real asset metadata before production deployment."
-echo "Next: cd frontend && npm install && npm run dev"
-echo ""
-echo "==> Running post-deployment verification..."
-bash "$(dirname "$0")/verify-deployment.sh" "$IDENTITY"
+echo "Deployment verified."
+echo "Canonical contract IDs: $DEPLOY_MANIFEST"
+echo "Auditable verification report: $DEPLOY_VERIFICATION_REPORT"
