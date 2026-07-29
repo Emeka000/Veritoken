@@ -19,6 +19,7 @@ export interface InvoiceMeta {
   ipfs_doc_hash: string;
   transfer_fee_bps: number;
   fee_recipient: string | null;
+  notification_webhook: string;
 }
 
 export interface PropertyMeta {
@@ -42,6 +43,8 @@ export interface ProjectMeta {
   country: string;
   verifier: string;
   ipfs_cert_hash: string;
+  registry_url: string;
+  registry_project_id: string;
 }
 
 export interface RetirementReceipt {
@@ -50,6 +53,7 @@ export interface RetirementReceipt {
   timestamp: bigint;
   beneficiary: string;
   retirement_reason: string;
+  beneficiary_address: string | null;
 }
 
 export interface ComplianceRules {

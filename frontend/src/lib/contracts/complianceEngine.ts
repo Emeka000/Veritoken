@@ -19,57 +19,16 @@ import {
   toU32,
   type SignTx,
 } from "./base";
-import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
+import { nativeToScVal } from "@stellar/stellar-sdk";
+import {
+  encodeComplianceRules,
+  encodeRiskConfig,
+  encodeTierPolicy,
+} from "@veritoken/sdk";
 
 // ── Internal map builder ──────────────────────────────────────────────────────
 
-/**
- * Build an ScMap ScVal from an array of [symbolKey, scVal] pairs.
- * Entries are sorted lexicographically — required by the XDR spec.
- */
-function scMap(entries: [string, xdr.ScVal][]): xdr.ScVal {
-  const sorted = [...entries].sort(([a], [b]) => a.localeCompare(b));
-  return xdr.ScVal.scvMap(
-    sorted.map(
-      ([key, val]) =>
-        new xdr.ScMapEntry({
-          key: nativeToScVal(key, { type: "symbol" }),
-          val,
-        }),
-    ),
-  );
-}
-
 // ── Struct encoders ───────────────────────────────────────────────────────────
-
-/**
- * Encode a `ComplianceRules` struct as a Soroban ScMap.
- * Field names must match the #[contracttype] declaration in compliance-engine.
- */
-function encodeRules(rules: ComplianceRules): xdr.ScVal {
-  return scMap([
-    ["allowlist_mode",            nativeToScVal(rules.allowlist_mode, { type: "bool" })],
-    ["max_holding_period",        nativeToScVal(BigInt(rules.max_holding_period), { type: "u64" })],
-    ["max_holders",               nativeToScVal(rules.max_holders, { type: "u32" })],
-    ["max_transfer_amount",       nativeToScVal(rules.max_transfer_amount, { type: "i128" })],
-    ["min_holding_period",        nativeToScVal(BigInt(rules.min_holding_period), { type: "u64" })],
-    ["paused",                    nativeToScVal(rules.paused, { type: "bool" })],
-    ["require_same_jurisdiction", nativeToScVal(rules.require_same_jurisdiction, { type: "bool" })],
-  ]);
-}
-
-/**
- * Encode a `TierPolicy` struct as a Soroban ScMap.
- * Field names must match the #[contracttype] declaration in compliance-engine.
- */
-function encodeTierPolicy(policy: TierPolicy): xdr.ScVal {
-  return scMap([
-    ["blocked",             nativeToScVal(policy.blocked, { type: "bool" })],
-    ["max_transfer_amount", nativeToScVal(policy.max_transfer_amount, { type: "i128" })],
-    ["min_from_tier",       nativeToScVal(policy.min_from_tier, { type: "u32" })],
-    ["min_to_tier",         nativeToScVal(policy.min_to_tier, { type: "u32" })],
-  ]);
-}
 
 export class ComplianceEngineClient {
   constructor(
@@ -179,7 +138,7 @@ export class ComplianceEngineClient {
       this.server,
       this.contractId,
       "set_rules",
-      [encodeRules(rules)],
+      [encodeComplianceRules(rules)],
       adminAddress,
       seq,
       signTx
@@ -201,7 +160,7 @@ export class ComplianceEngineClient {
       this.server,
       this.contractId,
       "propose_rules",
-      [encodeRules(rules)],
+      [encodeComplianceRules(rules)],
       adminAddress,
       seq,
       signTx
@@ -546,15 +505,11 @@ export class ComplianceEngineClient {
     signTx: SignTx
   ): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    const encoded = scMap([
-      ["default_score", nativeToScVal(config.default_score, { type: "u32" })],
-      ["max_score",     nativeToScVal(config.max_score, { type: "u32" })],
-    ]);
     await writeCall(
       this.server,
       this.contractId,
       "set_risk_config",
-      [encoded],
+      [encodeRiskConfig(config)],
       adminAddress,
       seq,
       signTx

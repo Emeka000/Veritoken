@@ -124,12 +124,13 @@ export default function StatusCard() {
                 <span style={{ fontSize: "0.85rem" }}>
                   <strong>Jurisdiction:</strong> {status.record.jurisdiction}
                 </span>
-                {status.record.expiry > 0 && (() => {
+                {status.record.expiry > 0n && (() => {
                   const nowS = Math.floor(Date.now() / 1000);
-                  const secondsLeft = status.record!.expiry - nowS;
+                  const expiry = Number(status.record!.expiry);
+                  const secondsLeft = expiry - nowS;
                   const expiring = secondsLeft > 0 && secondsLeft < THIRTY_DAYS_S;
                   const expired = secondsLeft <= 0;
-                  const expiryDate = new Date(status.record!.expiry * 1000).toLocaleDateString();
+                  const expiryDate = new Date(expiry * 1000).toLocaleDateString();
                   return (
                     <span style={{ fontSize: "0.85rem", color: expired || expiring ? "#f59e0b" : undefined }}>
                       <strong>Expires:</strong> {expiryDate}

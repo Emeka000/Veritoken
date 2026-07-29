@@ -98,13 +98,13 @@ export class InvoiceTokenClient {
   /** Pause settlement and redemption (lifecycle pause). Admin-only on-chain. */
   async pauseLifecycle(adminAddress: string, signTx: SignTx): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(this.server, this.contractId, "pause_lifecycle", [], adminAddress, seq, signTx);
+    await writeCall(this.server, this.contractId, "pause_lifecycle", [], adminAddress, seq, signTx);
   }
 
   /** Resume settlement and redemption. Admin-only on-chain. */
   async unpauseLifecycle(adminAddress: string, signTx: SignTx): Promise<void> {
     const seq = await fetchSequence(this.server, adminAddress);
-    return writeCall(this.server, this.contractId, "unpause_lifecycle", [], adminAddress, seq, signTx);
+    await writeCall(this.server, this.contractId, "unpause_lifecycle", [], adminAddress, seq, signTx);
   }
 
   /** Returns the current allowance granted by `from` to `spender`. */
