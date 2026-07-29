@@ -46,7 +46,7 @@ import { InvoiceTokenClient } from "./clients/InvoiceTokenClient.js";
 import { PropertyTokenClient } from "./clients/PropertyTokenClient.js";
 import { CarbonTokenClient } from "./clients/CarbonTokenClient.js";
 import { RwaTokenClient } from "./clients/RwaTokenClient.js";
-import { createServer, NETWORK_PASSPHRASES } from "./network.js";
+import { createServer, resolveNetworkConfig } from "./network.js";
 import type { Network } from "./types.js";
 
 /** Every contract client the factory knows how to build, keyed by a short name. */
@@ -77,12 +77,20 @@ const CTORS: { [K in ClientKey]: ClientCtor<K> } = {
 };
 
 export interface CreateClientsConfig {
-  /** Used to pick a default RPC URL + passphrase when `server`/`networkPassphrase` are omitted. @default "testnet" */
+  /**
+   * Network to target when `server` is not injected. Falls back to
+   * `VERITOKEN_NETWORK` / `STELLAR_NETWORK` / `VITE_STELLAR_NETWORK`, then
+   * "testnet" — see `resolveNetworkConfig` in network.ts. @default "testnet"
+   */
   network?: Network;
   /** Inject a pre-built (or mock) RPC server instead of letting the factory create one. */
   server?: rpc.Server;
   /** Overrides the passphrase implied by `network` — needed when pairing a custom `server` with a non-standard network. */
   networkPassphrase?: string;
+  /** Overrides the RPC URL implied by `network`. Ignored when `server` is injected. */
+  rpcUrl?: string;
+  /** Allow plaintext HTTP to the RPC endpoint (e.g. a local standalone node). Ignored when `server` is injected. */
+  allowHttp?: boolean;
   /** Contract IDs to build clients for. A client is only built when its ID is present. */
   contractIds: Partial<Record<ClientKey, string>>;
   /**
@@ -100,9 +108,14 @@ export interface CreateClientsConfig {
  * result.
  */
 export function createClients(config: CreateClientsConfig): Partial<ClientMap> {
-  const network = config.network ?? "testnet";
-  const server = config.server ?? createServer(network);
-  const networkPassphrase = config.networkPassphrase ?? NETWORK_PASSPHRASES[network];
+  const resolved = resolveNetworkConfig({
+    network: config.network,
+    rpcUrl: config.rpcUrl,
+    networkPassphrase: config.networkPassphrase,
+    allowHttp: config.allowHttp,
+  });
+  const server = config.server ?? createServer(resolved);
+  const networkPassphrase = resolved.networkPassphrase;
 
   const clients: Partial<ClientMap> = {};
 

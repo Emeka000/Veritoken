@@ -160,7 +160,10 @@ For a full reference of every public method, data structure, and error code acro
 - [x] Language-specific integration examples (Python, JavaScript) — see [docs/examples/](docs/examples/)
 - [x] Gas and performance report with profiling script — see [docs/gas-report.md](docs/gas-report.md)
 - [x] Security review checklist and hardening playbook — see [docs/security-checklist.md](docs/security-checklist.md)
-- [ ] TypeScript SDK wrapping contract clients for frontend developers
+- [x] TypeScript SDK wrapping contract clients for frontend developers — see [sdk/README.md](sdk/README.md)
+- [x] Multi-network SDK configuration (testnet/mainnet/futurenet/standalone, env-var driven) — see [sdk/README.md#network-configuration](sdk/README.md#network-configuration)
+- [x] Contract client generator/scaffold for adding new SDK clients — see [sdk/README.md#adding-a-new-contract-client](sdk/README.md#adding-a-new-contract-client)
+- [x] Session action history for support/audit review in the Admin Panel
 - [x] Dockerized local environment — see [docs/docker-environment.md](docs/docker-environment.md)
 - [x] Release automation and changelog generation — see [docs/release-process.md](docs/release-process.md)
 - [x] Secret-safe deployment documentation — see [docs/secret-safe-deployment.md](docs/secret-safe-deployment.md)
@@ -184,6 +187,10 @@ Veritoken/
 │       ├── lib/                # Stellar SDK + wallet bindings
 │       ├── pages/              # One page per asset type
 │       └── types/              # Shared TypeScript types
+├── sdk/                        # @veritoken/sdk — TypeScript client library
+│   ├── src/clients/            # One typed client per contract
+│   ├── scripts/                # Contract client generator
+│   └── README.md                # Getting started + usage reference
 ├── docs/
 │   ├── docker-environment.md   # Docker local stack guide
 │   ├── mainnet-deployment.md   # Production deployment checklist
@@ -220,6 +227,7 @@ Veritoken/
 | [docs/examples/](docs/examples/) | Language-specific integration examples (Python, JavaScript) |
 | [docs/gas-report.md](docs/gas-report.md) | Baseline gas and performance measurements |
 | [docs/security-checklist.md](docs/security-checklist.md) | Security review checklist and hardening playbook |
+| [sdk/README.md](sdk/README.md) | TypeScript SDK guide: getting started, multi-network configuration, per-contract reference, error/event handling, adding a new contract client |
 
 ---
 

@@ -155,4 +155,4 @@ export interface KycSyncStatus {
   checked_at: bigint;
 }
 
-export type Network = "testnet" | "mainnet";
+export type Network = "testnet" | "mainnet" | "futurenet" | "standalone";

@@ -427,6 +427,9 @@ select {
     .container {
       padding: 0 0.75rem;
     }
+  }
+}
+
 /* ── Focus management ───────────────────────────────────────────────────── */
 
 button:focus-visible,

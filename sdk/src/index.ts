@@ -43,7 +43,12 @@ export {
 } from "./errors.js";
 export type { ContractError, ContractName } from "./errors.js";
 
-export { createServer, RPC_URLS, NETWORK_PASSPHRASES } from "./network.js";
+// ── Multi-network configuration (#394) ──────────────────────────────────────────
+export {
+  createServer, RPC_URLS, NETWORK_PASSPHRASES, KNOWN_NETWORKS,
+  isValidNetwork, resolveNetworkConfig, InvalidNetworkConfigError,
+} from "./network.js";
+export type { NetworkConfig, NetworkOverrides } from "./network.js";
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 export type {

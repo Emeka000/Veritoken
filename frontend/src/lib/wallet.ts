@@ -7,6 +7,7 @@ import { create } from "zustand";
 import type { WalletState } from "../types";
 import { NETWORK_PASSPHRASE } from "./stellar";
 import { buildSep7Uri, isFreighterAvailable, isMobile, openSep7Link } from "./sep7";
+import { recordSessionAction } from "./sessionHistory";
 
 interface WalletStore extends WalletState {
   connect: () => Promise<void>;
@@ -48,10 +49,13 @@ export const useWallet = create<WalletStore>((set, get) => ({
     await setAllowed();
     const address = await getPublicKey();
     set({ address, connected: true });
+    recordSessionAction("wallet", "Wallet connected", undefined, address);
   },
 
   disconnect: () => {
+    const { address } = get();
     set({ address: null, connected: false });
+    recordSessionAction("wallet", "Wallet disconnected", undefined, address ?? undefined);
   },
 
   signTx: async (xdr: string) => {

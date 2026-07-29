@@ -12,6 +12,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import { contracts } from "../lib/contracts/index";
 import { GovernanceLog, recordGovernanceAction } from "../components/GovernanceLog";
+import { SessionHistory } from "../components/SessionHistory";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -88,17 +89,6 @@ export default function AdminPage() {
   const [removeLoading, setRemoveLoading] = useState<string | null>(null);
 
   const fetchRules = useCallback(async () => {
-  const fetchEvents = useCallback(async () => {
-    if (!CONTRACT_IDS.complianceEngine) return;
-    try {
-      const fetched = await fetchContractEvents(CONTRACT_IDS.complianceEngine, 10);
-      setEvents(fetched);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
     if (!CONTRACT_IDS.complianceEngine) return;
     setLoading(true);
     setFetchError(null);
@@ -135,6 +125,16 @@ export default function AdminPage() {
       setFetchError(err instanceof Error ? err.message : "Failed to fetch compliance rules.");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const fetchEvents = useCallback(async () => {
+    if (!CONTRACT_IDS.complianceEngine) return;
+    try {
+      const fetched = await fetchContractEvents(CONTRACT_IDS.complianceEngine, 10);
+      setEvents(fetched);
+    } catch {
+      // ignore
     }
   }, []);
 
@@ -213,14 +213,17 @@ export default function AdminPage() {
             require_same_jurisdiction: rules.require_same_jurisdiction,
             paused: rules.paused,
             allowlist_mode: false,
+            max_holding_period: 0,
           };
           if (proposeMode && ruleChangeDelay > 0 && address) {
             await contracts.compliance.proposeRules(address, newRules, signTx);
+            recordGovernanceAction("rules_updated", address, `Proposed rule change: max transfer ${rules.max_transfer_amount}, min holding ${rules.min_holding_period}s, max holders ${rules.max_holders}.`);
             addToast(`Rule change proposed. Activates in ${formatDelay(ruleChangeDelay)}.`, "info");
             const pending = await contracts.compliance.getPendingRules();
             setPendingRules(pending);
           } else if (address) {
             await contracts.compliance.setRules(address, newRules, signTx);
+            recordGovernanceAction("rules_updated", address, `Saved rules: max transfer ${rules.max_transfer_amount}, min holding ${rules.min_holding_period}s, max holders ${rules.max_holders}.`);
             addToast("Compliance rules saved successfully.", "success");
             await fetchRules();
           }
@@ -260,7 +263,10 @@ export default function AdminPage() {
         setConfirm(null);
         setPauseLoading(true);
         try {
-          if (address) await contracts.compliance.pause(address, signTx);
+          if (address) {
+            await contracts.compliance.pause(address, signTx);
+            recordGovernanceAction("pause", address, "All transfers paused across every asset contract.");
+          }
           setIsPaused(true);
           addToast("All transfers paused.", "info");
           await fetchRules();
@@ -280,7 +286,10 @@ export default function AdminPage() {
         setConfirm(null);
         setPauseLoading(true);
         try {
-          if (address) await contracts.compliance.unpause(address, signTx);
+          if (address) {
+            await contracts.compliance.unpause(address, signTx);
+            recordGovernanceAction("unpause", address, "Transfers re-enabled across every asset contract.");
+          }
           setIsPaused(false);
           addToast("Transfers unpaused.", "success");
           await fetchRules();
@@ -608,6 +617,8 @@ export default function AdminPage() {
 
       <GovernanceLog />
 
+      <SessionHistory />
+
       <EventFeed
         events={events}
         loading={eventsLoading}
@@ -625,44 +636,6 @@ export default function AdminPage() {
         />
       )}
     </div>
-  );
-}
-function RecentTransactions({ events, loading }: { events: ContractEvent[]; loading: boolean }) {
-  return (
-    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
-      {loading ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {[1, 2, 3].map((i) => (
-            <div key={i} style={{ display: "flex", gap: "1rem", padding: "0.75rem 0" }}>
-              <Skeleton width="80px" height="1.25rem" />
-              <Skeleton width="100px" height="1.25rem" />
-              <Skeleton width="150px" height="1.25rem" />
-              <Skeleton width="120px" height="1.25rem" />
-            </div>
-          ))}
-        </div>
-      ) : events.length === 0 ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>No recent events found.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
-              <th style={th}>Type</th><th style={th}>Amount</th><th style={th}>Counterparty</th><th style={th}>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={td}>{ev.type}</td>
-                <td style={td}>{ev.amount}</td>
-                <td style={{ ...td, fontFamily: "monospace", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.counterparty}</td>
-                <td style={td}>{ev.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
   );
 }
 

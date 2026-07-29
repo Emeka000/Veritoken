@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { recordSessionAction } from "./sessionHistory";
 
 export interface AddressEntry {
   address: string;
@@ -36,11 +37,13 @@ export const useAddressBook = create<AddressBookStore>()(
             entries: [...state.entries, { address, label }],
           };
         });
+        recordSessionAction("address_management", "Address book entry added", label, address);
       },
       removeEntry: (address: string) => {
         set((state) => ({
           entries: state.entries.filter((e) => e.address !== address),
         }));
+        recordSessionAction("address_management", "Address book entry removed", undefined, address);
       },
       updateEntry: (address: string, label: string) => {
         set((state) => ({
@@ -48,6 +51,7 @@ export const useAddressBook = create<AddressBookStore>()(
             e.address === address ? { address, label } : e
           ),
         }));
+        recordSessionAction("address_management", "Address book entry updated", label, address);
       },
       getEntry: (address: string) => {
         return get().entries.find((e) => e.address === address);

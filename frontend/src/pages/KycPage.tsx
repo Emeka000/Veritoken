@@ -7,6 +7,7 @@ import { EventFeed } from "../components/EventFeed";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
+import { recordSessionAction } from "../lib/sessionHistory";
 import type { ContractEvent } from "../types";
 
 export default function KycPage() {
@@ -58,6 +59,7 @@ export default function KycPage() {
       addToast("Please enter a valid Stellar address", "error");
       return;
     }
+    recordSessionAction("form_submission", "KYC status lookup submitted", lookup, lookup);
     addToast(`Querying KYC status for ${lookup}`, "info");
   };
 
@@ -72,6 +74,12 @@ export default function KycPage() {
       title: "Approve KYC",
       description: `You are about to approve KYC for ${approveForm.subject.slice(0, 8)}…${approveForm.subject.slice(-4)} at tier ${tierLabel} (${approveForm.jurisdiction}).`,
       onConfirm: () => {
+        recordSessionAction(
+          "form_submission",
+          "KYC approval submitted",
+          `Tier ${tierLabel}, jurisdiction ${approveForm.jurisdiction}`,
+          approveForm.subject,
+        );
         addToast(`KYC approved for ${approveForm.subject} at tier ${approveForm.tier}`, "success");
         setApproveForm({ subject: "", tier: "0", jurisdiction: "", expiry_days: "365" });
         setConfirm(null);
