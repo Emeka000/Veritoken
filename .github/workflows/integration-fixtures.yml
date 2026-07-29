@@ -1,0 +1,123 @@
+name: Integration fixtures
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/integration-fixtures.yml"
+      - "contracts/**"
+      - "tests/integration/**"
+  push:
+    paths:
+      - ".github/workflows/integration-fixtures.yml"
+      - "contracts/**"
+      - "tests/integration/**"
+  workflow_dispatch:
+
+concurrency:
+  group: integration-fixtures-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixture-unit-tests:
+    name: Fixture unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/integration/package-lock.json
+
+      - name: Install integration dependencies
+        run: npm ci
+
+      - name: Type-check fixture harness
+        run: npm run typecheck
+
+      - name: Run fixture and failure-path tests
+        run: npm run test:unit
+
+  lifecycle-tests:
+    name: Local-network lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-fixture-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-fixture-cargo-
+
+      - name: Build contract WASMs
+        run: >-
+          cargo build --release --target wasm32v1-none
+          -p kyc-registry
+          -p compliance-engine
+          -p rwa-token
+          -p invoice-token
+
+      - name: Start Stellar Quickstart
+        run: >-
+          docker run --detach
+          --name stellar-fixtures
+          --publish 8000:8000
+          stellar/quickstart:latest
+          --local
+          --limits unlimited
+
+      - name: Wait for Stellar RPC
+        shell: bash
+        run: |
+          for attempt in {1..60}; do
+            response="$(
+              curl --silent --show-error \
+                --header 'Content-Type: application/json' \
+                --data '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' \
+                http://localhost:8000/soroban/rpc || true
+            )"
+            if grep --quiet '"status":"healthy"' <<<"$response"; then
+              exit 0
+            fi
+            sleep 3
+          done
+          docker logs stellar-fixtures
+          exit 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/integration/package-lock.json
+
+      - name: Install integration dependencies
+        working-directory: tests/integration
+        run: npm ci
+
+      - name: Run isolated lifecycle tests
+        working-directory: tests/integration
+        run: npm run test:lifecycle
+
+      - name: Print Quickstart logs after a failure
+        if: failure()
+        run: docker logs stellar-fixtures
+
+      - name: Stop Quickstart
+        if: always()
+        run: docker rm --force --volumes stellar-fixtures

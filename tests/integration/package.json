@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "test:unit": "vitest run fixture-runner.unit.test.ts fixture-plans.unit.test.ts soroban-transport.unit.test.ts",
+    "test:lifecycle": "vitest run lifecycle.test.ts",
+    "typecheck": "tsc --noEmit",
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@stellar/stellar-sdk": "^13.0.0",
+    "@stellar/stellar-sdk": "^16.1.0",
     "vitest": "^2.0.0",
     "typescript": "^5.0.0",
     "@types/node": "^20.0.0"
