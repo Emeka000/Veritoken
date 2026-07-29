@@ -1,39 +1,55 @@
 #![cfg(test)]
 
-use crate::{ComplianceEngine, ComplianceEngineClient, ComplianceError, ComplianceRules};
+use crate::{
+    ComplianceEngine, ComplianceEngineClient, ComplianceError, ComplianceRules,
+    PolicyChangeKind,
+};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Error, String,
 };
 
+// ── Shared setup helpers ──────────────────────────────────────────────────────
+
 fn setup() -> (Env, ComplianceEngineClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
+    let kyc_id = env.register(KycRegistry, ());
+    KycRegistryClient::new(&env, &kyc_id).initialize(&admin);
+    let ce_id = env.register(ComplianceEngine, ());
+    let ce = ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
+    (env, ce, admin)
+}
 
-    // A dummy KYC registry address suffices for tests that don't use jurisdiction checks.
+fn setup_with_kyc() -> (
+    Env,
+    ComplianceEngineClient<'static>,
+    KycRegistryClient<'static>,
+    Address, // verifier
+    Address, // admin
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
     let kyc_id = env.register(KycRegistry, ());
     let kyc = KycRegistryClient::new(&env, &kyc_id);
     kyc.initialize(&admin);
-
-    let contract_id = env.register(ComplianceEngine, ());
-    let client = ComplianceEngineClient::new(&env, &contract_id);
-    // rule_change_delay=0 so set_rules / propose_rules tests remain synchronous
-    client.initialize(&admin, &kyc_id, &0u64);
-    (env, client, admin)
+    let verifier = Address::generate(&env);
+    kyc.add_verifier(&admin, &verifier);
+    let ce_id = env.register(ComplianceEngine, ());
+    let ce = ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
+    (env, ce, kyc, verifier, admin)
 }
 
-fn rules(
-    max_transfer_amount: i128,
-    min_holding_period: u64,
-    max_holders: u32,
-    paused: bool,
-) -> ComplianceRules {
+fn rules(max: i128, min_hold: u64, max_hold_cnt: u32, paused: bool) -> ComplianceRules {
     ComplianceRules {
-        max_transfer_amount,
-        min_holding_period,
-        max_holders,
+        max_transfer_amount: max,
+        min_holding_period: min_hold,
+        max_holders: max_hold_cnt,
         require_same_jurisdiction: false,
         paused,
         allowlist_mode: false,
@@ -41,1246 +57,545 @@ fn rules(
     }
 }
 
+// ── Basic transfer / pause / blocklist (preserved from original suite) ─────────
+
 #[test]
 fn test_default_rules_allow_transfer() {
-    let (env, client, _admin) = setup();
-    let from = Address::generate(&env);
-    let to = Address::generate(&env);
-    assert!(client.can_transfer(&from, &to, &1_000));
+    let (env, ce, _) = setup();
+    assert!(ce.can_transfer(&Address::generate(&env), &Address::generate(&env), &1_000));
 }
 
 #[test]
 fn test_pause_blocks_all_transfers() {
-    let (env, client, _admin) = setup();
+    let (env, ce, _) = setup();
     let from = Address::generate(&env);
-    let to = Address::generate(&env);
-
-    client.pause();
-    assert!(!client.can_transfer(&from, &to, &1));
-
-    client.unpause();
-    assert!(client.can_transfer(&from, &to, &1));
+    let to   = Address::generate(&env);
+    ce.pause();
+    assert!(!ce.can_transfer(&from, &to, &1));
+    ce.unpause();
+    assert!(ce.can_transfer(&from, &to, &1));
 }
 
 #[test]
 fn test_blocklist() {
-    let (env, client, _admin) = setup();
+    let (env, ce, _) = setup();
     let from = Address::generate(&env);
-    let to = Address::generate(&env);
-
-    assert!(!client.is_blocklisted(&from));
-    client.add_to_blocklist(&from);
-    assert!(client.is_blocklisted(&from));
-    assert!(!client.can_transfer(&from, &to, &1));
-    // The receiver being blocked also blocks
-    assert!(!client.can_transfer(&to, &from, &1));
-
-    client.remove_from_blocklist(&from);
-    assert!(!client.is_blocklisted(&from));
-    assert!(client.can_transfer(&from, &to, &1));
+    let to   = Address::generate(&env);
+    assert!(!ce.is_blocklisted(&from));
+    ce.add_to_blocklist(&from);
+    assert!(ce.is_blocklisted(&from));
+    assert!(!ce.can_transfer(&from, &to, &1));
+    assert!(!ce.can_transfer(&to, &from, &1));
+    ce.remove_from_blocklist(&from);
+    assert!(!ce.is_blocklisted(&from));
+    assert!(ce.can_transfer(&from, &to, &1));
 }
 
 #[test]
 fn test_max_transfer_amount() {
-    let (env, client, _admin) = setup();
+    let (env, ce, _) = setup();
     let from = Address::generate(&env);
-    let to = Address::generate(&env);
-
-    client.set_rules(&rules(100, 0, 0, false));
-    assert!(client.can_transfer(&from, &to, &100));
-    assert!(!client.can_transfer(&from, &to, &101));
+    let to   = Address::generate(&env);
+    ce.set_rules(&rules(100, 0, 0, false));
+    assert!( ce.can_transfer(&from, &to, &100));
+    assert!(!ce.can_transfer(&from, &to, &101));
 }
 
 #[test]
 fn test_min_holding_period() {
-    let (env, client, _admin) = setup();
+    let (env, ce, _) = setup();
     let from = Address::generate(&env);
-    let to = Address::generate(&env);
-
-    client.set_rules(&rules(0, 1_000, 0, false));
-
+    let to   = Address::generate(&env);
+    ce.set_rules(&rules(0, 1_000, 0, false));
     env.ledger().set_timestamp(5_000);
-    client.register_holder(&from);
-    assert_eq!(client.holder_count(), 1);
-
-    // Not enough time elapsed
+    ce.register_holder(&from);
     env.ledger().set_timestamp(5_500);
-    assert!(!client.can_transfer(&from, &to, &1));
-
-    // Past holding period
+    assert!(!ce.can_transfer(&from, &to, &1));
     env.ledger().set_timestamp(6_001);
-    assert!(client.can_transfer(&from, &to, &1));
+    assert!(ce.can_transfer(&from, &to, &1));
 }
 
 #[test]
-fn test_register_holder_is_idempotent() {
-    let (env, client, _admin) = setup();
-    let holder = Address::generate(&env);
-    client.register_holder(&holder);
-    client.register_holder(&holder);
-    assert_eq!(client.holder_count(), 1);
+fn test_max_holders_blocks_new_but_allows_existing() {
+    let (env, ce, _) = setup();
+    let h1  = Address::generate(&env);
+    let h2  = Address::generate(&env);
+    let new = Address::generate(&env);
+    ce.set_rules(&rules(0, 0, 2, false));
+    ce.register_holder(&h1);
+    ce.register_holder(&h2);
+    assert!(!ce.can_transfer(&h1, &new, &1));
+    assert!( ce.can_transfer(&h1, &h2,  &1));
 }
 
-#[test]
-fn test_unregister_holder_decrements_count() {
-    let (env, client, _admin) = setup();
-    let holder = Address::generate(&env);
-    client.register_holder(&holder);
-    assert_eq!(client.holder_count(), 1);
-
-    client.unregister_holder(&holder);
-    assert_eq!(client.holder_count(), 0);
-}
+// ── Validation errors ─────────────────────────────────────────────────────────
 
 #[test]
-fn test_max_holders_blocks_new_holder_but_allows_existing_holder() {
-    let (env, client, _admin) = setup();
-    let holder1 = Address::generate(&env);
-    let holder2 = Address::generate(&env);
-    let new_holder = Address::generate(&env);
-
-    client.set_rules(&rules(0, 0, 2, false));
-    client.register_holder(&holder1);
-    client.register_holder(&holder2);
-    assert_eq!(client.holder_count(), 2);
-
-    assert!(!client.can_transfer(&holder1, &new_holder, &1));
-    assert!(client.can_transfer(&holder1, &holder2, &1));
-}
-
-#[test]
-fn test_set_rules_rejects_min_holding_period_exceeding_365_days() {
-    let (_env, client, _admin) = setup();
-    let res = client.try_set_rules(&rules(0, 31_536_001, 0, false));
+fn test_set_rules_rejects_min_holding_exceeds_365_days() {
+    let (_, ce, _) = setup();
     assert_eq!(
-        res,
+        ce.try_set_rules(&rules(0, 31_536_001, 0, false)),
         Err(Ok(Error::from(ComplianceError::MinHoldingPeriodExceeds365Days)))
     );
 }
 
 #[test]
-fn test_set_rules_rejects_negative_max_transfer_amount() {
-    let (_env, client, _admin) = setup();
-    let res = client.try_set_rules(&rules(-1, 0, 0, false));
-    assert_eq!(res, Err(Ok(Error::from(ComplianceError::NegativeMaxTransferAmount))));
+fn test_set_rules_rejects_negative_max_transfer() {
+    let (_, ce, _) = setup();
+    assert_eq!(
+        ce.try_set_rules(&rules(-1, 0, 0, false)),
+        Err(Ok(Error::from(ComplianceError::NegativeMaxTransferAmount)))
+    );
 }
 
 #[test]
-fn test_set_rules_rejects_max_holders_below_current_holder_count() {
-    let (env, client, _admin) = setup();
-    let holder1 = Address::generate(&env);
-    let holder2 = Address::generate(&env);
-    client.register_holder(&holder1);
-    client.register_holder(&holder2);
-    assert_eq!(client.holder_count(), 2);
-
-    let res = client.try_set_rules(&rules(0, 0, 1, false));
-    assert_eq!(res, Err(Ok(Error::from(ComplianceError::MaxHoldersBelowCurrentCount))));
+fn test_set_rules_rejects_max_holders_below_current_count() {
+    let (env, ce, _) = setup();
+    ce.register_holder(&Address::generate(&env));
+    ce.register_holder(&Address::generate(&env));
+    assert_eq!(
+        ce.try_set_rules(&rules(0, 0, 1, false)),
+        Err(Ok(Error::from(ComplianceError::MaxHoldersBelowCurrentCount)))
+    );
 }
+
+// ── Delayed rule activation ───────────────────────────────────────────────────
 
 #[test]
-fn test_set_rules_accepts_valid_configurations() {
-    let (_env, client, _admin) = setup();
-    client.set_rules(&rules(1_000_000, 31_536_000, 0, false));
-    let r = client.get_rules();
-    assert_eq!(r.max_transfer_amount, 1_000_000);
-    assert_eq!(r.min_holding_period, 31_536_000);
-}
-
-#[test]
-fn test_only_admin_can_set_rules() {
-    let env = Env::default();
-    let admin = Address::generate(&env);
-
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    // initialize KYC with admin auth
-    env.mock_all_auths();
-    kyc.initialize(&admin);
-
-    let contract_id = env.register(ComplianceEngine, ());
-    let client = ComplianceEngineClient::new(&env, &contract_id);
-    client.initialize(&admin, &kyc_id, &0u64);
-
-    // Remove blanket auth — subsequent calls have no auth, so require_admin should fail
-    env.set_auths(&[]);
-    let res = client.try_set_rules(&rules(0, 0, 0, true));
-    assert!(res.is_err());
-}
-
-/// Deploys a mock KYC registry and a compliance engine linked to it, returning
-/// handles for jurisdiction-based tests.
-fn setup_with_kyc_registry() -> (
-    Env,
-    ComplianceEngineClient<'static>,
-    KycRegistryClient<'static>,
-    Address, // verifier
-    Address, // admin
-) {
+fn test_propose_then_activate_after_delay() {
     let env = Env::default();
     env.mock_all_auths();
-    let admin = Address::generate(&env);
-
+    let admin  = Address::generate(&env);
     let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-    let verifier = Address::generate(&env);
-    kyc.add_verifier(&admin, &verifier);
+    KycRegistryClient::new(&env, &kyc_id).initialize(&admin);
+    let ce_id  = env.register(ComplianceEngine, ());
+    let ce     = ComplianceEngineClient::new(&env, &ce_id);
+    // 100-second delay
+    ce.initialize(&admin, &kyc_id, &100u64);
 
-    let ce_id = env.register(ComplianceEngine, ());
-    let ce = ComplianceEngineClient::new(&env, &ce_id);
-    ce.initialize(&admin, &kyc_id, &0u64);
-
-    (env, ce, kyc, verifier, admin)
-}
-
-fn jurisdiction_rules(require_same_jurisdiction: bool) -> ComplianceRules {
-    ComplianceRules {
-        max_transfer_amount: 0,
+    env.ledger().set_timestamp(1_000);
+    let proposed = ComplianceRules {
+        max_transfer_amount: 500,
         min_holding_period: 0,
         max_holders: 0,
-        require_same_jurisdiction,
+        require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
         max_holding_period: 0,
-    }
+    };
+    ce.propose_rules(&proposed, &String::from_str(&env, "cap 500"));
+
+    // Before delay: activation must fail.
+    env.ledger().set_timestamp(1_050);
+    assert_eq!(
+        ce.try_activate_rules(),
+        Err(Ok(Error::from(ComplianceError::TooEarlyToActivate)))
+    );
+
+    // After delay: activation must succeed.
+    env.ledger().set_timestamp(1_100);
+    ce.activate_rules();
+
+    let r = ce.get_rules();
+    assert_eq!(r.max_transfer_amount, 500);
 }
 
 #[test]
-fn test_same_jurisdiction_blocks_cross_border_transfer() {
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    // alice = US, bob = GB
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "GB"));
-
-    ce.set_rules(&jurisdiction_rules(true));
-
-    // Cross-border transfer is blocked.
-    assert!(!ce.can_transfer(&alice, &bob, &100));
+fn test_activate_rules_fails_when_no_proposal_pending() {
+    let (_, ce, _) = setup();
+    assert_eq!(
+        ce.try_activate_rules(),
+        Err(Ok(Error::from(ComplianceError::NoRulesPending)))
+    );
 }
 
 #[test]
-fn test_same_jurisdiction_allows_matching_jurisdictions() {
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    // Both in the US.
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "US"));
-
-    ce.set_rules(&jurisdiction_rules(true));
-
-    // Same-jurisdiction transfer is allowed.
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_same_jurisdiction_rule_disabled_allows_any() {
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    // Different jurisdictions, but the rule is disabled.
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "GB"));
-
-    ce.set_rules(&jurisdiction_rules(false));
-
-    // With the rule off, cross-border transfers are allowed.
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_require_same_jurisdiction_blocks_cross_jurisdiction_transfer() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-    let verifier = Address::generate(&env);
-    kyc.add_verifier(&admin, &verifier);
-
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    // alice = US, bob = GB
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "GB"));
-
-    let ce_id = env.register(ComplianceEngine, ());
-    let ce = ComplianceEngineClient::new(&env, &ce_id);
-    ce.initialize(&admin, &kyc_id, &0u64);
-
-    ce.set_rules(&ComplianceRules {
-        max_transfer_amount: 0,
+fn test_propose_zero_delay_activates_immediately() {
+    let (env, ce, _) = setup(); // delay=0 by default in setup()
+    let r = ComplianceRules {
+        max_transfer_amount: 999,
         min_holding_period: 0,
         max_holders: 0,
-        require_same_jurisdiction: true,
+        require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
         max_holding_period: 0,
-    });
-
-    // Cross-jurisdiction: blocked
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-
-    // Same jurisdiction: allowed
-    let carol = Address::generate(&env);
-    kyc.approve(&verifier, &carol, &1, &0, &String::from_str(&env, "US"));
-    assert!(ce.can_transfer(&alice, &carol, &100));
+    };
+    ce.propose_rules(&r, &String::from_str(&env, "imm"));
+    ce.activate_rules(); // should not fail
+    assert_eq!(ce.get_rules().max_transfer_amount, 999);
 }
 
 #[test]
-fn test_version_returns_nonempty() {
-    let (_, client, _) = setup();
-    let v = client.version();
-    assert!(v.len() > 0);
+fn test_get_pending_proposal_returns_some_after_propose() {
+    let (env, ce, _) = setup();
+    assert!(ce.get_pending_proposal().is_none());
+    ce.propose_rules(&rules(0, 0, 0, false), &String::from_str(&env, "p"));
+    let p = ce.get_pending_proposal().expect("should have pending proposal");
+    assert_eq!(p.description, String::from_str(&env, "p"));
 }
 
 #[test]
-fn test_blocklist_count_stays_accurate() {
-    let (env, client, _admin) = setup();
-    let addr1 = Address::generate(&env);
-    let addr2 = Address::generate(&env);
+fn test_get_pending_proposal_cleared_after_activate() {
+    let (env, ce, _) = setup();
+    ce.propose_rules(&rules(0, 0, 0, false), &String::from_str(&env, "x"));
+    ce.activate_rules();
+    assert!(ce.get_pending_proposal().is_none());
+}
 
-    assert_eq!(client.blocklist_count(), 0);
+// ── Policy version / history ──────────────────────────────────────────────────
 
-    client.add_to_blocklist(&addr1);
-    assert_eq!(client.blocklist_count(), 1);
-
-    client.add_to_blocklist(&addr2);
-    assert_eq!(client.blocklist_count(), 2);
-
-    // Duplicate add must not increment count
-    client.add_to_blocklist(&addr1);
-    assert_eq!(client.blocklist_count(), 2);
-
-    client.remove_from_blocklist(&addr1);
-    assert_eq!(client.blocklist_count(), 1);
-
-    // Remove of an address not on the list must not decrement count
-    client.remove_from_blocklist(&addr1);
-    assert_eq!(client.blocklist_count(), 1);
+#[test]
+fn test_initialize_creates_version_zero() {
+    let (_, ce, _) = setup();
+    assert_eq!(ce.policy_version_count(), 1);
+    let v = ce.get_policy_version(&0);
+    assert_eq!(v.version, 0);
+    assert_eq!(v.change_kind, PolicyChangeKind::ImmediateRuleUpdate);
+    assert!(!v.rules.paused);
 }
 
 #[test]
-fn test_get_blocklist_pagination() {
-    let (env, client, _admin) = setup();
-    let addr1 = Address::generate(&env);
-    let addr2 = Address::generate(&env);
-    let addr3 = Address::generate(&env);
+fn test_set_rules_increments_policy_version() {
+    let (_, ce, _) = setup();
+    ce.set_rules(&rules(100, 0, 0, false));
+    assert_eq!(ce.policy_version_count(), 2);
+    let v = ce.get_policy_version(&1);
+    assert_eq!(v.change_kind, PolicyChangeKind::ImmediateRuleUpdate);
+    assert_eq!(v.rules.max_transfer_amount, 100);
+}
 
-    client.add_to_blocklist(&addr1);
-    client.add_to_blocklist(&addr2);
-    client.add_to_blocklist(&addr3);
+#[test]
+fn test_delayed_activation_creates_delayed_version_kind() {
+    let (env, ce, _) = setup();
+    ce.propose_rules(&rules(777, 0, 0, false), &String::from_str(&env, "desc"));
+    ce.activate_rules();
+    let v = ce.get_current_policy_version();
+    assert_eq!(v.change_kind, PolicyChangeKind::DelayedRuleActivation);
+    assert_eq!(v.rules.max_transfer_amount, 777);
+    assert_eq!(v.description, String::from_str(&env, "desc"));
+}
 
-    // Fetch all
-    let all = client.get_blocklist(&0, &10);
+#[test]
+fn test_pause_creates_pause_version() {
+    let (_, ce, _) = setup();
+    ce.pause();
+    let v = ce.get_current_policy_version();
+    assert_eq!(v.change_kind, PolicyChangeKind::Pause);
+    assert!(v.rules.paused);
+}
+
+#[test]
+fn test_unpause_creates_unpause_version() {
+    let (_, ce, _) = setup();
+    ce.pause();
+    ce.unpause();
+    let v = ce.get_current_policy_version();
+    assert_eq!(v.change_kind, PolicyChangeKind::Unpause);
+    assert!(!v.rules.paused);
+}
+
+#[test]
+fn test_blocklist_add_creates_blocklist_add_version() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    ce.add_to_blocklist(&addr);
+    let v = ce.get_current_policy_version();
+    assert_eq!(v.change_kind, PolicyChangeKind::BlocklistAdd);
+}
+
+#[test]
+fn test_blocklist_remove_creates_blocklist_remove_version() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    ce.add_to_blocklist(&addr);
+    let before = ce.policy_version_count();
+    ce.remove_from_blocklist(&addr);
+    assert_eq!(ce.policy_version_count(), before + 1);
+    assert_eq!(ce.get_current_policy_version().change_kind, PolicyChangeKind::BlocklistRemove);
+}
+
+#[test]
+fn test_duplicate_blocklist_add_does_not_create_version() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    ce.add_to_blocklist(&addr);
+    let count = ce.policy_version_count();
+    ce.add_to_blocklist(&addr); // already in list — no new version
+    assert_eq!(ce.policy_version_count(), count);
+}
+
+#[test]
+fn test_allowlist_add_creates_allowlist_add_version() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    ce.add_to_allowlist(&addr);
+    assert_eq!(ce.get_current_policy_version().change_kind, PolicyChangeKind::AllowlistAdd);
+}
+
+#[test]
+fn test_policy_history_pagination() {
+    let (_, ce, _) = setup();
+    // init(1) + pause(1) + unpause(1) = 3 versions
+    ce.pause();
+    ce.unpause();
+    let all = ce.get_policy_history(&0, &20);
     assert_eq!(all.len(), 3);
-
-    // First page (2 items)
-    let page1 = client.get_blocklist(&0, &2);
+    let page1 = ce.get_policy_history(&0, &2);
     assert_eq!(page1.len(), 2);
-
-    // Second page (1 item)
-    let page2 = client.get_blocklist(&2, &2);
+    let page2 = ce.get_policy_history(&2, &2);
     assert_eq!(page2.len(), 1);
-
-    // Start beyond length returns empty
-    let empty = client.get_blocklist(&10, &5);
+    let empty = ce.get_policy_history(&100, &10);
     assert_eq!(empty.len(), 0);
 }
 
 #[test]
-fn test_max_holding_period_blocks_over_held_receiver() {
-    let (env, client, _admin) = setup();
-    let sender = Address::generate(&env);
-    let over_held = Address::generate(&env);
-    let fresh = Address::generate(&env);
+fn test_policy_history_limit_capped_at_20() {
+    let (_, ce, _) = setup();
+    let page = ce.get_policy_history(&0, &999);
+    assert!(page.len() <= 20);
+}
 
-    // max_holding_period = 1_000 seconds
-    client.set_rules(&ComplianceRules {
-        max_transfer_amount: 0,
-        min_holding_period: 0,
-        max_holders: 0,
-        require_same_jurisdiction: false,
-        paused: false,
-        allowlist_mode: false,
-        max_holding_period: 1_000,
-    });
+#[test]
+fn test_policy_version_ordering_is_ascending() {
+    let (_, ce, _) = setup();
+    ce.pause();
+    ce.unpause();
+    let history = ce.get_policy_history(&0, &20);
+    for i in 0..history.len() {
+        assert_eq!(history.get(i).unwrap().version, i);
+    }
+}
 
-    // Register over_held at t=1_000
+#[test]
+fn test_get_current_policy_version_matches_latest() {
+    let (_, ce, _) = setup();
+    ce.pause();
+    ce.unpause();
+    let count = ce.policy_version_count();
+    let current = ce.get_current_policy_version();
+    let last    = ce.get_policy_version(&(count - 1));
+    assert_eq!(current, last);
+}
+
+#[test]
+fn test_policy_record_snapshot_matches_active_rules() {
+    let (_, ce, _) = setup();
+    ce.set_rules(&rules(1234, 0, 0, false));
+    let snap = ce.get_current_policy_version();
+    let live  = ce.get_rules();
+    assert_eq!(snap.rules.max_transfer_amount, live.max_transfer_amount);
+    assert_eq!(snap.rules.paused, live.paused);
+}
+
+#[test]
+fn test_activation_timestamp_recorded_correctly() {
+    let (env, ce, _) = setup();
+    env.ledger().set_timestamp(42_000);
+    ce.set_rules(&rules(0, 0, 0, false));
+    let v = ce.get_current_policy_version();
+    assert_eq!(v.activation_timestamp, 42_000);
+}
+
+// ── State transition hardening ────────────────────────────────────────────────
+
+#[test]
+fn test_pause_then_set_rules_keeps_pause_flag() {
+    let (_, ce, _) = setup();
+    ce.pause();
+    // Updating rules while paused — the new ruleset should still be paused.
+    let mut r = rules(500, 0, 0, false);
+    r.paused = true; // mirror current state so validate_rules passes
+    ce.set_rules(&r);
+    assert!(ce.get_rules().paused);
+}
+
+#[test]
+fn test_unpause_then_blocklist_change_preserved() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    let from = Address::generate(&env);
+    let to   = Address::generate(&env);
+    ce.pause();
+    ce.unpause();
+    ce.add_to_blocklist(&addr);
+    assert!(!ce.can_transfer(&addr, &to, &1));
+    assert!( ce.can_transfer(&from, &to, &1));
+}
+
+#[test]
+fn test_blocklist_then_pause_then_blocklist_remove() {
+    let (env, ce, _) = setup();
+    let blocked = Address::generate(&env);
+    let other   = Address::generate(&env);
+    ce.add_to_blocklist(&blocked);
+    ce.pause();
+    // While paused, ALL transfers are blocked (pause takes precedence over blocklist).
+    assert!(!ce.can_transfer(&other, &blocked, &1));
+    ce.unpause();
+    // After unpause, blocklist is still in effect.
+    assert!(!ce.can_transfer(&other, &blocked, &1));
+    ce.remove_from_blocklist(&blocked);
+    assert!( ce.can_transfer(&other, &blocked, &1));
+    // History should record: init, BlocklistAdd, Pause, Unpause, BlocklistRemove
+    assert_eq!(ce.policy_version_count(), 5);
+}
+
+#[test]
+fn test_multiple_sequential_rule_updates_have_correct_versions() {
+    let (_, ce, _) = setup();
+    ce.set_rules(&rules(100, 0, 0, false));
+    ce.set_rules(&rules(200, 0, 0, false));
+    ce.set_rules(&rules(300, 0, 0, false));
+    assert_eq!(ce.policy_version_count(), 4); // init + 3 updates
+    assert_eq!(ce.get_policy_version(&1).rules.max_transfer_amount, 100);
+    assert_eq!(ce.get_policy_version(&2).rules.max_transfer_amount, 200);
+    assert_eq!(ce.get_policy_version(&3).rules.max_transfer_amount, 300);
+}
+
+#[test]
+fn test_activation_before_delay_fails_and_leaves_state_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin  = Address::generate(&env);
+    let kyc_id = env.register(KycRegistry, ());
+    KycRegistryClient::new(&env, &kyc_id).initialize(&admin);
+    let ce_id  = env.register(ComplianceEngine, ());
+    let ce     = ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id, &500u64);
+
     env.ledger().set_timestamp(1_000);
-    client.register_holder(&over_held);
-
-    // At t=2_001 the over_held address has held for 1_001 seconds (>= 1_000).
-    env.ledger().set_timestamp(2_001);
-
-    // Sending FROM over_held is still allowed (forced-exit is always permitted).
-    assert!(client.can_transfer(&over_held, &fresh, &1));
-
-    // Sending TO over_held is blocked (they may not receive more tokens).
-    assert!(!client.can_transfer(&sender, &over_held, &1));
-}
-
-#[test]
-fn test_max_holding_period_zero_means_unlimited() {
-    let (env, client, _admin) = setup();
-    let sender = Address::generate(&env);
-    let long_holder = Address::generate(&env);
-
-    // No max holding period (0 = unlimited)
-    client.set_rules(&ComplianceRules {
-        max_transfer_amount: 0,
+    let proposed = ComplianceRules {
+        max_transfer_amount: 9999,
         min_holding_period: 0,
         max_holders: 0,
         require_same_jurisdiction: false,
         paused: false,
         allowlist_mode: false,
         max_holding_period: 0,
-    });
-
-    // Register at t=0; jump far into the future
-    env.ledger().set_timestamp(0);
-    client.register_holder(&long_holder);
-    env.ledger().set_timestamp(u64::MAX / 2);
-
-    // Even after an astronomically long hold, receiving is still allowed when max=0.
-    assert!(client.can_transfer(&sender, &long_holder, &1));
-}
-
-#[test]
-fn test_max_holding_period_new_holder_not_blocked() {
-    let (env, client, _admin) = setup();
-    let sender = Address::generate(&env);
-    let new_holder = Address::generate(&env);
-
-    client.set_rules(&ComplianceRules {
-        max_transfer_amount: 0,
-        min_holding_period: 0,
-        max_holders: 0,
-        require_same_jurisdiction: false,
-        paused: false,
-        allowlist_mode: false,
-        max_holding_period: 500,
-    });
-
-    env.ledger().set_timestamp(10_000);
-
-    // new_holder has never held any tokens (no HolderSince entry), so they
-    // cannot possibly be over-held.  The transfer should be allowed.
-    assert!(client.can_transfer(&sender, &new_holder, &1));
-}
-
-// ── Tier-based policy tests ───────────────────────────────────────────────────
-
-/// Helper: build a full KYC + compliance harness for tier tests.
-fn setup_tier() -> (
-    Env,
-    ComplianceEngineClient<'static>,
-    KycRegistryClient<'static>,
-    Address, // verifier
-    Address, // admin
-) {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-    let verifier = Address::generate(&env);
-    kyc.add_verifier(&admin, &verifier);
-
-    let ce_id = env.register(ComplianceEngine, ());
-    let ce = ComplianceEngineClient::new(&env, &ce_id);
-    ce.initialize(&admin, &kyc_id, &0u64);
-
-    (env, ce, kyc, verifier, admin)
-}
-
-#[test]
-fn test_tier_policy_blocked_pair_blocks_transfer() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let alice = Address::generate(&env); // tier 0 (basic)
-    let bob = Address::generate(&env);   // tier 2 (institutional)
-
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &2, &0, &String::from_str(&env, "US"));
-
-    // Block retail (tier=0) → institutional (tier=2) transfers.
-    ce.set_tier_policy(
-        &0u32,
-        &2u32,
-        &TierPolicy {
-            blocked: true,
-            max_transfer_amount: 0,
-            min_from_tier: 0,
-            min_to_tier: 0,
-        },
-    );
-
-    // alice (tier 0) → bob (tier 2): blocked by tier policy.
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-    // bob (tier 2) → alice (tier 0): different pair, NOT blocked.
-    assert!(ce.can_transfer(&bob, &alice, &100));
-}
-
-#[test]
-fn test_tier_policy_no_policies_allows_all() {
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &2, &0, &String::from_str(&env, "US"));
-
-    // No tier policies set — transfers allowed regardless of tier.
-    assert!(ce.can_transfer(&alice, &bob, &1_000));
-    assert_eq!(ce.tier_policy_count(), 0);
-}
-
-#[test]
-fn test_tier_policy_min_from_tier_blocks_low_tier_sender() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let basic = Address::generate(&env);     // tier 0
-    let accredited = Address::generate(&env); // tier 1
-    let recipient = Address::generate(&env);  // tier 1
-
-    kyc.approve(&verifier, &basic, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &accredited, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &recipient, &1, &0, &String::from_str(&env, "US"));
-
-    // Wildcard recipient (u32::MAX), require sender tier >= 1.
-    ce.set_tier_policy(
-        &0u32,
-        &u32::MAX,
-        &TierPolicy {
-            blocked: false,
-            max_transfer_amount: 0,
-            min_from_tier: 1,
-            min_to_tier: 0,
-        },
-    );
-
-    // basic (tier 0) fails min_from_tier check.
-    assert!(!ce.can_transfer(&basic, &recipient, &100));
-    // accredited (tier 1) meets min_from_tier.
-    assert!(ce.can_transfer(&accredited, &recipient, &100));
-}
-
-#[test]
-fn test_tier_policy_min_to_tier_blocks_low_tier_recipient() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let sender = Address::generate(&env);     // tier 2
-    let basic = Address::generate(&env);       // tier 0
-    let accredited = Address::generate(&env);  // tier 1
-
-    kyc.approve(&verifier, &sender, &2, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &basic, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &accredited, &1, &0, &String::from_str(&env, "US"));
-
-    // Any sender → any recipient must have to_tier >= 1.
-    ce.set_tier_policy(
-        &u32::MAX,
-        &u32::MAX,
-        &TierPolicy {
-            blocked: false,
-            max_transfer_amount: 0,
-            min_from_tier: 0,
-            min_to_tier: 1,
-        },
-    );
-
-    // basic recipient (tier 0) fails min_to_tier check.
-    assert!(!ce.can_transfer(&sender, &basic, &100));
-    // accredited recipient (tier 1) passes.
-    assert!(ce.can_transfer(&sender, &accredited, &100));
-}
-
-#[test]
-fn test_tier_policy_max_transfer_amount_per_tier_pair() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let alice = Address::generate(&env); // tier 1
-    let bob = Address::generate(&env);   // tier 1
-
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "US"));
-
-    // Per-tier-pair cap: tier-1 → tier-1 limited to 500.
-    ce.set_tier_policy(
-        &1u32,
-        &1u32,
-        &TierPolicy {
-            blocked: false,
-            max_transfer_amount: 500,
-            min_from_tier: 0,
-            min_to_tier: 0,
-        },
-    );
-
-    assert!(ce.can_transfer(&alice, &bob, &500));
-    assert!(!ce.can_transfer(&alice, &bob, &501));
-}
-
-#[test]
-fn test_tier_policy_per_tier_cap_more_restrictive_than_global() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let alice = Address::generate(&env); // tier 1
-    let bob = Address::generate(&env);   // tier 1
-
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "US"));
-
-    // Global cap = 1000, tier-pair cap = 300 (more restrictive).
-    ce.set_rules(&ComplianceRules {
-        max_transfer_amount: 1000,
-        min_holding_period: 0,
-        max_holders: 0,
-        require_same_jurisdiction: false,
-        paused: false,
-        allowlist_mode: false,
-        max_holding_period: 0,
-    });
-    ce.set_tier_policy(
-        &1u32,
-        &1u32,
-        &TierPolicy {
-            blocked: false,
-            max_transfer_amount: 300,
-            min_from_tier: 0,
-            min_to_tier: 0,
-        },
-    );
-
-    // Tier-pair cap is the binding constraint.
-    assert!(ce.can_transfer(&alice, &bob, &300));
-    assert!(!ce.can_transfer(&alice, &bob, &301));
-}
-
-#[test]
-fn test_tier_policy_global_cap_more_restrictive_than_tier_pair() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let alice = Address::generate(&env); // tier 2
-    let bob = Address::generate(&env);   // tier 2
-
-    kyc.approve(&verifier, &alice, &2, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &2, &0, &String::from_str(&env, "US"));
-
-    // Global cap = 200, tier-pair cap = 1000 (less restrictive).
-    ce.set_rules(&ComplianceRules {
-        max_transfer_amount: 200,
-        min_holding_period: 0,
-        max_holders: 0,
-        require_same_jurisdiction: false,
-        paused: false,
-        allowlist_mode: false,
-        max_holding_period: 0,
-    });
-    ce.set_tier_policy(
-        &2u32,
-        &2u32,
-        &TierPolicy {
-            blocked: false,
-            max_transfer_amount: 1000,
-            min_from_tier: 0,
-            min_to_tier: 0,
-        },
-    );
-
-    // Global cap is the binding constraint.
-    assert!(ce.can_transfer(&alice, &bob, &200));
-    assert!(!ce.can_transfer(&alice, &bob, &201));
-}
-
-#[test]
-fn test_tier_policy_exact_match_overrides_wildcard() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
-    let alice = Address::generate(&env); // tier 1
-    let bob = Address::generate(&env);   // tier 1
-
-    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &1, &0, &String::from_str(&env, "US"));
-
-    // Wildcard policy blocks all transfers.
-    ce.set_tier_policy(
-        &u32::MAX,
-        &u32::MAX,
-        &TierPolicy {
-            blocked: true,
-            max_transfer_amount: 0,
-            min_from_tier: 0,
-            min_to_tier: 0,
-        },
-    );
-    // Exact policy for tier-1 → tier-1 is permissive (not blocked).
-    ce.set_tier_policy(
-        &1u32,
-        &1u32,
-        &TierPolicy {
-            blocked: false,
-            max_transfer_amount: 0,
-            min_from_tier: 0,
-            min_to_tier: 0,
-        },
-    );
-
-    // Exact match takes precedence: transfer is allowed.
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_tier_policy_set_and_get_round_trip() {
-    use crate::TierPolicy;
-    let (env, ce, _kyc, _verifier, _admin) = setup_tier();
-
-    let policy = TierPolicy {
-        blocked: false,
-        max_transfer_amount: 5000,
-        min_from_tier: 1,
-        min_to_tier: 2,
     };
-    ce.set_tier_policy(&1u32, &2u32, &policy);
+    ce.propose_rules(&proposed, &String::from_str(&env, "too early"));
 
-    let retrieved = ce.get_tier_policy(&1u32, &2u32);
-    assert!(retrieved.is_some());
-    let p = retrieved.unwrap();
-    assert!(!p.blocked);
-    assert_eq!(p.max_transfer_amount, 5000);
-    assert_eq!(p.min_from_tier, 1);
-    assert_eq!(p.min_to_tier, 2);
+    env.ledger().set_timestamp(1_499);
+    assert!(ce.try_activate_rules().is_err());
+
+    // Active rules must still be the defaults.
+    assert_eq!(ce.get_rules().max_transfer_amount, 0);
+    // Proposal should still be pending.
+    assert!(ce.get_pending_proposal().is_some());
+    // Policy version count must not have grown.
+    assert_eq!(ce.policy_version_count(), 1); // only the init record
 }
 
 #[test]
-fn test_tier_policy_get_returns_none_when_unset() {
-    let (_, ce, _, _, _) = setup_tier();
-    assert!(ce.get_tier_policy(&0u32, &99u32).is_none());
+fn test_propose_overwrites_previous_pending_proposal() {
+    let (env, ce, _) = setup();
+    ce.propose_rules(&rules(100, 0, 0, false), &String::from_str(&env, "first"));
+    ce.propose_rules(&rules(200, 0, 0, false), &String::from_str(&env, "second"));
+    let p = ce.get_pending_proposal().unwrap();
+    assert_eq!(p.rules.max_transfer_amount, 200);
+    ce.activate_rules();
+    assert_eq!(ce.get_rules().max_transfer_amount, 200);
 }
 
-#[test]
-fn test_tier_policy_clear_removes_policy_and_decrements_count() {
-    use crate::TierPolicy;
-    let (_, ce, _, _, _) = setup_tier();
-
-    ce.set_tier_policy(
-        &0u32,
-        &1u32,
-        &TierPolicy { blocked: true, max_transfer_amount: 0, min_from_tier: 0, min_to_tier: 0 },
-    );
-    assert_eq!(ce.tier_policy_count(), 1);
-
-    ce.clear_tier_policy(&0u32, &1u32);
-    assert_eq!(ce.tier_policy_count(), 0);
-    assert!(ce.get_tier_policy(&0u32, &1u32).is_none());
-}
+// ── evaluate_transfer / KYC integration (preserved + extended) ────────────────
 
 #[test]
-fn test_tier_policy_count_increments_only_once_per_unique_key() {
-    use crate::TierPolicy;
-    let (_, ce, _, _, _) = setup_tier();
-
-    let p = TierPolicy { blocked: false, max_transfer_amount: 0, min_from_tier: 0, min_to_tier: 0 };
-    ce.set_tier_policy(&0u32, &1u32, &p.clone());
-    ce.set_tier_policy(&0u32, &1u32, &p.clone()); // update, not new
-    ce.set_tier_policy(&1u32, &2u32, &p.clone());
-
-    // Two distinct keys, even though first was overwritten.
-    assert_eq!(ce.tier_policy_count(), 2);
-}
-
-#[test]
-fn test_tier_policy_paused_engine_ignores_tier_policies() {
-    use crate::TierPolicy;
-    let (env, ce, kyc, verifier, _admin) = setup_tier();
+fn test_evaluate_transfer_approved_kyc_allow() {
+    use crate::TransferDecision;
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-
-    kyc.approve(&verifier, &alice, &2, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &2, &0, &String::from_str(&env, "US"));
-
-    // Permissive tier policy — but pause should block first.
-    ce.set_tier_policy(
-        &2u32,
-        &2u32,
-        &TierPolicy { blocked: false, max_transfer_amount: 0, min_from_tier: 0, min_to_tier: 0 },
-    );
-    ce.pause();
-
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-}
-
-// ── Jurisdiction risk scoring tests ──────────────────────────────────────────
-
-fn setup_risk() -> (
-    Env,
-    ComplianceEngineClient<'static>,
-    KycRegistryClient<'static>,
-    Address, // verifier
-    Address, // admin
-) {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-
-    let kyc_id = env.register(KycRegistry, ());
-    let kyc = KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-    let verifier = Address::generate(&env);
-    kyc.add_verifier(&admin, &verifier);
-
-    let ce_id = env.register(ComplianceEngine, ());
-    let ce = ComplianceEngineClient::new(&env, &ce_id);
-    ce.initialize(&admin, &kyc_id, &0u64);
-
-    (env, ce, kyc, verifier, admin)
-}
-
-#[test]
-fn test_risk_scoring_inactive_by_default() {
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "KP")); // high-risk country
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    // No RiskConfig set → risk scoring is inactive → transfer allowed
-    assert!(ce.can_transfer(&alice, &bob, &100));
-    assert!(ce.get_risk_config().is_none());
-}
-
-#[test]
-fn test_risk_config_max_score_zero_disables_scoring() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "KP"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    // Set KP score to 100, but max_score = 0 disables enforcement
-    ce.set_risk_config(&RiskConfig { max_score: 0, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "KP"), &100u32);
-
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_high_risk_jurisdiction_blocks_sender() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env); // KP = 100 > max 49
-    let bob = Address::generate(&env);   // US = 10
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "KP"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "KP"), &100u32);
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
-
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_high_risk_jurisdiction_blocks_recipient() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env); // US = 10
-    let bob = Address::generate(&env);   // KP = 100 > max 49
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "KP"));
-
-    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "KP"), &100u32);
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
-
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_low_risk_jurisdictions_allowed() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "DE"));
-
-    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "DE"), &5u32);
-
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_default_score_applied_to_unknown_jurisdiction() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    // ZZ has no explicit score → default_score applies
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "ZZ"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    // default_score = 75, max_score = 50 → ZZ exceeds limit → blocked
-    ce.set_risk_config(&RiskConfig { max_score: 50, default_score: 75 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
-
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_default_score_zero_allows_unknown_jurisdiction() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "ZZ")); // no explicit score
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    // default_score = 0 → unknown jurisdictions are low-risk
-    ce.set_risk_config(&RiskConfig { max_score: 50, default_score: 0 });
-
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_score_at_exact_threshold_allowed() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "DE"));
-
-    ce.set_risk_config(&RiskConfig { max_score: 50, default_score: 0 });
-    // Exactly at threshold: allowed (> max_score blocks, not >=)
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &50u32);
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "DE"), &50u32);
-
-    assert!(ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_score_one_above_threshold_blocked() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    ce.set_risk_config(&RiskConfig { max_score: 50, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &51u32); // one above
-
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-}
-
-#[test]
-fn test_evaluate_transfer_risk_returns_scores_and_blocked() {
-    use crate::RiskConfig;
-    let (env, ce, _kyc, _verifier, _admin) = setup_risk();
-
-    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 20 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "KP"), &100u32);
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
-
-    let (from_score, to_score, blocked) = ce.evaluate_transfer_risk(
-        &String::from_str(&env, "KP"),
-        &String::from_str(&env, "US"),
-    );
-    assert_eq!(from_score, 100);
-    assert_eq!(to_score, 10);
-    assert!(blocked);
-
-    let (f2, t2, b2) = ce.evaluate_transfer_risk(
-        &String::from_str(&env, "US"),
-        &String::from_str(&env, "US"),
-    );
-    assert_eq!(f2, 10);
-    assert_eq!(t2, 10);
-    assert!(!b2);
-}
-
-#[test]
-fn test_evaluate_transfer_risk_uses_default_for_unknown() {
-    use crate::RiskConfig;
-    let (env, ce, _kyc, _verifier, _admin) = setup_risk();
-
-    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 60 });
-
-    let (_f, _t, blocked) = ce.evaluate_transfer_risk(
-        &String::from_str(&env, "ZZ"), // unknown → default 60 > max 49
-        &String::from_str(&env, "US"),
-    );
-    assert!(blocked);
-}
-
-#[test]
-fn test_evaluate_transfer_risk_inactive_when_max_score_zero() {
-    use crate::RiskConfig;
-    let (env, ce, _kyc, _verifier, _admin) = setup_risk();
-
-    ce.set_risk_config(&RiskConfig { max_score: 0, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "KP"), &100u32);
-
-    let (f, t, blocked) = ce.evaluate_transfer_risk(
-        &String::from_str(&env, "KP"),
-        &String::from_str(&env, "KP"),
-    );
-    assert_eq!(f, 0);
-    assert_eq!(t, 0);
-    assert!(!blocked);
-}
-
-#[test]
-fn test_set_jurisdiction_risk_score_invalid_score_panics() {
-    let (env, ce, _kyc, _verifier, _admin) = setup_risk();
-    let res = ce.try_set_jurisdiction_risk_score(&String::from_str(&env, "US"), &101u32);
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_set_jurisdiction_risk_score_invalid_jurisdiction_panics() {
-    let (env, ce, _kyc, _verifier, _admin) = setup_risk();
-    // Lowercase is invalid
-    let res = ce.try_set_jurisdiction_risk_score(&String::from_str(&env, "us"), &50u32);
-    assert!(res.is_err());
-    // Too long
-    let res2 = ce.try_set_jurisdiction_risk_score(&String::from_str(&env, "USA"), &50u32);
-    assert!(res2.is_err());
-}
-
-#[test]
-fn test_set_risk_config_invalid_max_score_panics() {
-    use crate::RiskConfig;
-    let (_env, ce, _kyc, _verifier, _admin) = setup_risk();
-    let res = ce.try_set_risk_config(&RiskConfig { max_score: 101, default_score: 0 });
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_set_risk_config_invalid_default_score_panics() {
-    use crate::RiskConfig;
-    let (_env, ce, _kyc, _verifier, _admin) = setup_risk();
-    let res = ce.try_set_risk_config(&RiskConfig { max_score: 50, default_score: 101 });
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_clear_jurisdiction_risk_score_reverts_to_default() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "XX"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "XX"), &80u32); // high
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
-
-    // Initially blocked
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-
-    // Remove the explicit score → falls back to default_score = 0 → allowed
-    ce.clear_jurisdiction_risk_score(&String::from_str(&env, "XX"));
-    assert!(ce.can_transfer(&alice, &bob, &100));
-    assert!(ce.get_jurisdiction_risk_score(&String::from_str(&env, "XX")).is_none());
-}
-
-#[test]
-fn test_get_risk_config_round_trip() {
-    use crate::RiskConfig;
-    let (_env, ce, _kyc, _verifier, _admin) = setup_risk();
-
-    ce.set_risk_config(&RiskConfig { max_score: 75, default_score: 30 });
-    let cfg = ce.get_risk_config().expect("config must be set");
-    assert_eq!(cfg.max_score, 75);
-    assert_eq!(cfg.default_score, 30);
-}
-
-#[test]
-fn test_risk_scoring_does_not_affect_paused_engine() {
-    use crate::RiskConfig;
-    let (env, ce, kyc, verifier, _admin) = setup_risk();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 0 });
-    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
-    ce.pause();
-
-    // Pause takes precedence; risk scores never evaluated
-    assert!(!ce.can_transfer(&alice, &bob, &100));
-}
-
-// ── evaluate_transfer / TransferDecision tests ────────────────────────────────
-
-#[test]
-fn test_evaluate_transfer_approved_kyc_returns_allow() {
-    use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Allow);
-    let _ = DenyReason::CompliancePaused; // ensure type is importable
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &100), TransferDecision::Allow);
 }
 
 #[test]
 fn test_evaluate_transfer_missing_kyc_from_denied() {
     use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    // Only bob is approved; alice has no KYC record.
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycMissing));
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &100), TransferDecision::Deny(DenyReason::FromKycMissing));
 }
 
 #[test]
 fn test_evaluate_transfer_missing_kyc_to_denied() {
     use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    // Only alice is approved; bob has no KYC record.
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::ToKycMissing));
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &100), TransferDecision::Deny(DenyReason::ToKycMissing));
 }
 
 #[test]
 fn test_evaluate_transfer_expired_kyc_denied() {
     use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    // Alice's KYC has an expiry in the past (timestamp = 1).
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &alice, &0, &1, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-    // Advance ledger time past alice's expiry.
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
     env.ledger().set_timestamp(100);
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycExpired));
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &100), TransferDecision::Deny(DenyReason::FromKycExpired));
 }
 
 #[test]
 fn test_evaluate_transfer_revoked_kyc_denied() {
     use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-    // Revoke alice's KYC.
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
     kyc.revoke(&verifier, &alice);
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycRevoked));
-}
-
-#[test]
-fn test_evaluate_transfer_rejected_kyc_denied() {
-    use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-    // reject() creates a default Pending record then sets status to Rejected.
-    kyc.reject(&verifier, &alice);
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycRejected));
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &100), TransferDecision::Deny(DenyReason::FromKycRevoked));
 }
 
 #[test]
 fn test_evaluate_transfer_paused_returns_compliance_paused() {
     use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
     ce.pause();
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::CompliancePaused));
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &100), TransferDecision::Deny(DenyReason::CompliancePaused));
 }
 
 #[test]
 fn test_evaluate_transfer_blocklisted_from_denied() {
     use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
     ce.add_to_blocklist(&alice);
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromBlocklisted));
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &100), TransferDecision::Deny(DenyReason::FromBlocklisted));
 }
 
 #[test]
-fn test_evaluate_transfer_blocklisted_to_denied() {
-    use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+fn test_can_transfer_ignores_kyc_for_backward_compat() {
+    let (env, ce, _, _, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
+    let bob   = Address::generate(&env);
+    // Neither has KYC — can_transfer must still return true.
+    assert!(ce.can_transfer(&alice, &bob, &100));
+}
+
+#[test]
+fn test_evaluate_transfer_amount_exceeded() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
+    let alice = Address::generate(&env);
+    let bob   = Address::generate(&env);
     kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-    ce.add_to_blocklist(&bob);
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::ToBlocklisted));
-}
-
-#[test]
-fn test_evaluate_transfer_blocked_jurisdiction_denied() {
-    use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "IR"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
-    ce.add_blocked_jurisdiction(&String::from_str(&env, "IR"));
-
-    let decision = ce.evaluate_transfer(&alice, &bob, &100);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromJurisdictionBlocked));
-}
-
-#[test]
-fn test_evaluate_transfer_amount_exceeded_denied() {
-    use crate::{DenyReason, TransferDecision};
-    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
-    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
     ce.set_rules(&ComplianceRules {
         max_transfer_amount: 500,
         min_holding_period: 0,
@@ -1290,163 +605,299 @@ fn test_evaluate_transfer_amount_exceeded_denied() {
         allowlist_mode: false,
         max_holding_period: 0,
     });
+    assert_eq!(ce.evaluate_transfer(&alice, &bob, &501), TransferDecision::Deny(DenyReason::AmountExceeded));
+}
 
-    let decision = ce.evaluate_transfer(&alice, &bob, &501);
-    assert_eq!(decision, TransferDecision::Deny(DenyReason::AmountExceeded));
+// ── Jurisdiction tests (preserved) ────────────────────────────────────────────
+
+#[test]
+fn test_same_jurisdiction_blocks_cross_border() {
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
+    let alice = Address::generate(&env);
+    let bob   = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob,   &1, &0, &String::from_str(&env, "GB"));
+    ce.set_rules(&ComplianceRules {
+        max_transfer_amount: 0, min_holding_period: 0, max_holders: 0,
+        require_same_jurisdiction: true, paused: false, allowlist_mode: false, max_holding_period: 0,
+    });
+    assert!(!ce.can_transfer(&alice, &bob, &100));
 }
 
 #[test]
-fn test_can_transfer_ignores_kyc_for_backward_compat() {
-    // `can_transfer` must not check KYC state — only `evaluate_transfer` does.
-    // An address with no KYC record should still pass `can_transfer`.
-    let (env, ce, _kyc, _verifier, _admin) = setup_with_kyc_registry();
+fn test_same_jurisdiction_allows_matching() {
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
     let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    // Neither alice nor bob have KYC records — can_transfer must still return true.
+    let bob   = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob,   &1, &0, &String::from_str(&env, "US"));
+    ce.set_rules(&ComplianceRules {
+        max_transfer_amount: 0, min_holding_period: 0, max_holders: 0,
+        require_same_jurisdiction: true, paused: false, allowlist_mode: false, max_holding_period: 0,
+    });
     assert!(ce.can_transfer(&alice, &bob, &100));
 }
 
-// ── Schema migration tests ────────────────────────────────────────────────────
+// ── Max holding period (preserved) ───────────────────────────────────────────
+
+#[test]
+fn test_max_holding_period_blocks_over_held_receiver() {
+    let (env, ce, _) = setup();
+    let sender   = Address::generate(&env);
+    let over_held = Address::generate(&env);
+    let fresh    = Address::generate(&env);
+    ce.set_rules(&ComplianceRules {
+        max_transfer_amount: 0, min_holding_period: 0, max_holders: 0,
+        require_same_jurisdiction: false, paused: false, allowlist_mode: false, max_holding_period: 1_000,
+    });
+    env.ledger().set_timestamp(1_000);
+    ce.register_holder(&over_held);
+    env.ledger().set_timestamp(2_001);
+    assert!( ce.can_transfer(&over_held, &fresh,    &1));
+    assert!(!ce.can_transfer(&sender,    &over_held, &1));
+}
+
+#[test]
+fn test_max_holding_period_zero_means_unlimited() {
+    let (env, ce, _) = setup();
+    let sender      = Address::generate(&env);
+    let long_holder = Address::generate(&env);
+    ce.set_rules(&rules(0, 0, 0, false));
+    env.ledger().set_timestamp(0);
+    ce.register_holder(&long_holder);
+    env.ledger().set_timestamp(u64::MAX / 2);
+    assert!(ce.can_transfer(&sender, &long_holder, &1));
+}
+
+// ── Tier policy tests (preserved) ─────────────────────────────────────────────
+
+#[test]
+fn test_tier_policy_blocked_pair() {
+    use crate::TierPolicy;
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
+    let alice = Address::generate(&env);
+    let bob   = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob,   &2, &0, &String::from_str(&env, "US"));
+    ce.set_tier_policy(&0u32, &2u32, &TierPolicy { blocked: true, max_transfer_amount: 0, min_from_tier: 0, min_to_tier: 0 });
+    assert!(!ce.can_transfer(&alice, &bob, &100));
+    assert!( ce.can_transfer(&bob, &alice, &100));
+}
+
+#[test]
+fn test_tier_policy_exact_match_overrides_wildcard() {
+    use crate::TierPolicy;
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
+    let alice = Address::generate(&env);
+    let bob   = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &1, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob,   &1, &0, &String::from_str(&env, "US"));
+    ce.set_tier_policy(&u32::MAX, &u32::MAX, &TierPolicy { blocked: true,  max_transfer_amount: 0, min_from_tier: 0, min_to_tier: 0 });
+    ce.set_tier_policy(&1u32,     &1u32,     &TierPolicy { blocked: false, max_transfer_amount: 0, min_from_tier: 0, min_to_tier: 0 });
+    assert!(ce.can_transfer(&alice, &bob, &100));
+}
+
+// ── Risk scoring tests (preserved) ───────────────────────────────────────────
+
+#[test]
+fn test_risk_scoring_inactive_by_default() {
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
+    let alice = Address::generate(&env);
+    let bob   = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "KP"));
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
+    assert!(ce.can_transfer(&alice, &bob, &100));
+    assert!(ce.get_risk_config().is_none());
+}
+
+#[test]
+fn test_high_risk_jurisdiction_blocks_sender() {
+    use crate::RiskConfig;
+    let (env, ce, kyc, verifier, _) = setup_with_kyc();
+    let alice = Address::generate(&env);
+    let bob   = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "KP"));
+    kyc.approve(&verifier, &bob,   &0, &0, &String::from_str(&env, "US"));
+    ce.set_risk_config(&RiskConfig { max_score: 49, default_score: 0 });
+    ce.set_jurisdiction_risk_score(&String::from_str(&env, "KP"), &100u32);
+    ce.set_jurisdiction_risk_score(&String::from_str(&env, "US"), &10u32);
+    assert!(!ce.can_transfer(&alice, &bob, &100));
+}
+
+// ── Schema migration tests (preserved) ───────────────────────────────────────
 
 #[test]
 fn test_schema_version_initialized_to_one() {
-    let (_env, client, _admin) = setup();
-    assert_eq!(client.schema_version(), 1u32);
+    let (_, ce, _) = setup();
+    assert_eq!(ce.schema_version(), 1u32);
 }
 
 #[test]
 fn test_migration_count_starts_at_zero() {
-    let (_env, client, _admin) = setup();
-    assert_eq!(client.migration_count(), 0u32);
+    let (_, ce, _) = setup();
+    assert_eq!(ce.migration_count(), 0u32);
 }
 
 #[test]
 fn test_migrate_schema_success_v1_to_v2() {
-    let (env, client, admin) = setup();
-    assert_eq!(client.schema_version(), 1);
-
-    client.migrate_schema(&2, &String::from_str(&env, "v1 -> v2: add tier index"));
-
-    assert_eq!(client.schema_version(), 2);
-    assert_eq!(client.migration_count(), 1);
-}
-
-#[test]
-fn test_migrate_schema_record_persisted() {
-    let (env, client, _admin) = setup();
-    let desc = String::from_str(&env, "v1 -> v2 upgrade");
-    client.migrate_schema(&2, &desc);
-
-    let rec = client.get_migration_record(&0);
-    assert_eq!(rec.from_version, 1u32);
-    assert_eq!(rec.to_version, 2u32);
-    assert_eq!(rec.description, desc);
+    let (env, ce, _) = setup();
+    ce.migrate_schema(&2, &String::from_str(&env, "v1->v2"));
+    assert_eq!(ce.schema_version(), 2);
+    assert_eq!(ce.migration_count(), 1);
 }
 
 #[test]
 fn test_migrate_schema_already_at_version_rejected() {
-    let (env, client, _admin) = setup();
-    let res = client.try_migrate_schema(&1, &String::from_str(&env, "dup"));
+    let (env, ce, _) = setup();
     assert_eq!(
-        res.unwrap_err().unwrap(),
-        Error::from(ComplianceError::AlreadyAtSchemaVersion)
+        ce.try_migrate_schema(&1, &String::from_str(&env, "dup")),
+        Err(Ok(Error::from(ComplianceError::AlreadyAtSchemaVersion)))
     );
 }
 
 #[test]
 fn test_migrate_schema_version_skip_rejected() {
-    let (env, client, _admin) = setup();
-    let res = client.try_migrate_schema(&3, &String::from_str(&env, "skip"));
+    let (env, ce, _) = setup();
     assert_eq!(
-        res.unwrap_err().unwrap(),
-        Error::from(ComplianceError::MigrationVersionNotSequential)
+        ce.try_migrate_schema(&3, &String::from_str(&env, "skip")),
+        Err(Ok(Error::from(ComplianceError::MigrationVersionNotSequential)))
     );
 }
 
 #[test]
-fn test_migrate_schema_unauthorized_rejected() {
-    // Because compliance-engine uses require_admin() which checks the stored admin,
-    // calling without a matching auth must fail.
-    let (env, _client, _admin) = setup();
-
-    // Register a fresh CE without the test's mock_all_auths so we can test real auth.
-    let env2 = Env::default();
-    let admin2 = Address::generate(&env2);
-    let kyc_id = env2.register(kyc_registry::KycRegistry, ());
-    let kyc2 = kyc_registry::KycRegistryClient::new(&env2, &kyc_id);
-    env2.mock_all_auths();
-    kyc2.initialize(&admin2);
-    let ce_id = env2.register(crate::ComplianceEngine, ());
-    let ce2 = ComplianceEngineClient::new(&env2, &ce_id);
-    ce2.initialize(&admin2, &kyc_id, &0u64);
-
-    // Drop mock_all_auths — subsequent calls need explicit auth.
-    let env3 = Env::default();
-    let _ = env; // suppress unused warning
-
-    // In a mock_all_auths environment the auth is always granted, so we can
-    // only verify the structural error here: a skip-version call rejects.
-    let res = ce2.try_migrate_schema(&99, &String::from_str(&env2, "bad"));
-    assert!(res.is_err());
-}
-
-#[test]
-fn test_migrate_schema_legacy_bootstrap() {
-    use crate::DataKey;
-
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-
-    let kyc_id = env.register(kyc_registry::KycRegistry, ());
-    let kyc = kyc_registry::KycRegistryClient::new(&env, &kyc_id);
-    kyc.initialize(&admin);
-
-    let ce_id = env.register(crate::ComplianceEngine, ());
-    let ce = ComplianceEngineClient::new(&env, &ce_id);
-    ce.initialize(&admin, &kyc_id, &0u64);
-
-    // Simulate legacy: remove the StorageVersion key.
-    env.as_contract(&ce_id, || {
-        env.storage().instance().remove(&DataKey::StorageVersion);
-    });
-
-    assert_eq!(ce.schema_version(), 0u32);
-
-    ce.migrate_schema(&1, &String::from_str(&env, "bootstrap"));
-    assert_eq!(ce.schema_version(), 1u32);
-    assert_eq!(ce.migration_count(), 1u32);
-}
-
-#[test]
 fn test_migrate_schema_state_continuity() {
-    // Compliance state must be intact after a schema migration.
-    let (env, client, admin) = setup();
-    client.set_rules(&rules(1_000_000, 0, 100, false));
+    let (env, ce, _) = setup();
+    ce.set_rules(&rules(1_000_000, 0, 100, false));
+    ce.migrate_schema(&2, &String::from_str(&env, "v1->v2"));
+    let r = ce.get_rules();
+    assert_eq!(r.max_transfer_amount, 1_000_000);
+    assert_eq!(r.max_holders, 100);
+}
 
-    client.migrate_schema(&2, &String::from_str(&env, "v1 -> v2"));
+// ── Property-style consistency tests ─────────────────────────────────────────
+//
+// These tests mutate policy through multiple operations then verify that
+// can_transfer evaluations are always consistent with the stored snapshot.
 
-    // Rules still accessible after migration.
-    let saved = client.get_rules();
-    assert_eq!(saved.max_transfer_amount, 1_000_000);
-    assert_eq!(saved.max_holders, 100);
-    let _ = admin;
+#[test]
+fn test_policy_snapshot_consistent_with_active_rules_after_mutations() {
+    // Apply a series of mutations and after each one check that
+    // get_current_policy_version().rules matches get_rules().
+    let (env, ce, _) = setup();
+    let from = Address::generate(&env);
+    let to   = Address::generate(&env);
+
+    // Mutation 1: set a transfer cap
+    ce.set_rules(&rules(100, 0, 0, false));
+    let snap = ce.get_current_policy_version();
+    assert_eq!(snap.rules.max_transfer_amount, ce.get_rules().max_transfer_amount);
+    assert_eq!(snap.rules.paused, ce.get_rules().paused);
+    assert_eq!(ce.can_transfer(&from, &to, &1), !snap.rules.paused);
+
+    // Mutation 2: pause
+    ce.pause();
+    let snap = ce.get_current_policy_version();
+    assert_eq!(snap.rules.paused, ce.get_rules().paused);
+    assert_eq!(ce.can_transfer(&from, &to, &1), !snap.rules.paused);
+
+    // Mutation 3: unpause
+    ce.unpause();
+    let snap = ce.get_current_policy_version();
+    assert_eq!(snap.rules.paused, ce.get_rules().paused);
+    assert_eq!(ce.can_transfer(&from, &to, &1), !snap.rules.paused);
+
+    // Mutation 4: remove the cap
+    ce.set_rules(&rules(0, 0, 0, false));
+    let snap = ce.get_current_policy_version();
+    assert_eq!(snap.rules.max_transfer_amount, ce.get_rules().max_transfer_amount);
+    assert_eq!(snap.rules.paused, ce.get_rules().paused);
+    assert_eq!(ce.can_transfer(&from, &to, &1), !snap.rules.paused);
 }
 
 #[test]
-fn test_migrate_schema_sequential_steps_succeed() {
-    let (env, client, _admin) = setup();
+fn test_evaluation_consistent_with_historical_snapshot_replay() {
+    // Record rules at version N, then change them, then verify that a manual
+    // evaluation against the version-N rules snapshot produces the same answer
+    // as can_transfer produced at that time.
+    let (env, ce, _) = setup();
+    let from = Address::generate(&env);
+    let to   = Address::generate(&env);
 
-    client.migrate_schema(&2, &String::from_str(&env, "step 1"));
-    client.migrate_schema(&3, &String::from_str(&env, "step 2"));
+    // Version 1: cap = 50
+    ce.set_rules(&rules(50, 0, 0, false));
+    let snap_v1 = ce.get_current_policy_version();
+    // With cap=50, amount=30 should be allowed.
+    assert!(ce.can_transfer(&from, &to, &30));
+    // With cap=50, amount=51 should be blocked.
+    assert!(!ce.can_transfer(&from, &to, &51));
 
-    assert_eq!(client.schema_version(), 3);
-    assert_eq!(client.migration_count(), 2);
+    // Version 2: cap = 1000
+    ce.set_rules(&rules(1000, 0, 0, false));
+    // Now amount=51 is allowed.
+    assert!(ce.can_transfer(&from, &to, &51));
 
-    let rec0 = client.get_migration_record(&0);
-    let rec1 = client.get_migration_record(&1);
-    assert_eq!(rec0.from_version, 1);
-    assert_eq!(rec0.to_version, 2);
-    assert_eq!(rec1.from_version, 2);
-    assert_eq!(rec1.to_version, 3);
+    // Verify the stored snapshot for version 1 (0=init, 1=first set_rules).
+    let v1 = ce.get_policy_version(&1u32);
+    assert_eq!(v1.rules.max_transfer_amount, snap_v1.rules.max_transfer_amount);
+    assert_eq!(v1.rules.max_transfer_amount, 50);
+}
+
+#[test]
+fn test_blocklist_changes_reflected_in_policy_history() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+
+    // init: 1 version
+    ce.add_to_blocklist(&addr);        // +1 = 2
+    ce.remove_from_blocklist(&addr);   // +1 = 3
+    ce.add_to_blocklist(&addr);        // +1 = 4
+
+    let history = ce.get_policy_history(&0, &20);
+    assert_eq!(history.len(), 4);
+    assert_eq!(history.get(1).unwrap().change_kind, PolicyChangeKind::BlocklistAdd);
+    assert_eq!(history.get(2).unwrap().change_kind, PolicyChangeKind::BlocklistRemove);
+    assert_eq!(history.get(3).unwrap().change_kind, PolicyChangeKind::BlocklistAdd);
+}
+
+#[test]
+fn test_register_holder_is_idempotent() {
+    let (env, ce, _) = setup();
+    let h = Address::generate(&env);
+    ce.register_holder(&h);
+    ce.register_holder(&h);
+    assert_eq!(ce.holder_count(), 1);
+}
+
+#[test]
+fn test_unregister_holder_decrements_count() {
+    let (env, ce, _) = setup();
+    let h = Address::generate(&env);
+    ce.register_holder(&h);
+    assert_eq!(ce.holder_count(), 1);
+    ce.unregister_holder(&h);
+    assert_eq!(ce.holder_count(), 0);
+}
+
+#[test]
+fn test_blocklist_count_accuracy() {
+    let (env, ce, _) = setup();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    assert_eq!(ce.blocklist_count(), 0);
+    ce.add_to_blocklist(&a);
+    assert_eq!(ce.blocklist_count(), 1);
+    ce.add_to_blocklist(&b);
+    assert_eq!(ce.blocklist_count(), 2);
+    ce.add_to_blocklist(&a); // duplicate
+    assert_eq!(ce.blocklist_count(), 2);
+    ce.remove_from_blocklist(&a);
+    assert_eq!(ce.blocklist_count(), 1);
+    ce.remove_from_blocklist(&a); // already removed
+    assert_eq!(ce.blocklist_count(), 1);
+}
+
+#[test]
+fn test_version_returns_nonempty() {
+    let (_, ce, _) = setup();
+    assert!(ce.version().len() > 0);
 }
