@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card } from "./ui";
 import { CopyButton } from "./CopyButton";
+import { recordSessionAction } from "../lib/sessionHistory";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,11 @@ export function recordGovernanceAction(
   saveEntries([entry, ...existing]);
   // Dispatch a storage event so any mounted GovernanceLog re-renders.
   window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
+
+  // Governance actions are also important user actions for the general
+  // session history (#390) — record them there too instead of requiring
+  // every call site to instrument both logs separately.
+  recordSessionAction("rule_change", ACTION_LABELS[action], detail, actor);
 }
 
 // ── Labels ────────────────────────────────────────────────────────────────────

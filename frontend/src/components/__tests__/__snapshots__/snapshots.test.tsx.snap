@@ -1,0 +1,567 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Card snapshots > matches snapshot: no title 1`] = `
+<section
+  class="card"
+  role="region"
+>
+  Plain content
+</section>
+`;
+
+exports[`Card snapshots > matches snapshot: with title 1`] = `
+<section
+  aria-labelledby="card-heading-my-card"
+  class="card"
+  role="region"
+>
+  <div
+    style="margin-bottom: 1.25rem;"
+  >
+    <h2
+      id="card-heading-my-card"
+      style="font-size: 1.05rem; font-weight: 700;"
+    >
+      My Card
+    </h2>
+  </div>
+  Content here
+</section>
+`;
+
+exports[`Card snapshots > matches snapshot: with title and subtitle 1`] = `
+<section
+  aria-labelledby="card-heading-compliance-rules"
+  class="card"
+  role="region"
+>
+  <div
+    style="margin-bottom: 1.25rem;"
+  >
+    <h2
+      id="card-heading-compliance-rules"
+      style="font-size: 1.05rem; font-weight: 700;"
+    >
+      Compliance Rules
+    </h2>
+    <p
+      class="muted"
+      style="font-size: 0.85rem; margin-top: 0.25rem;"
+    >
+      Admin only
+    </p>
+  </div>
+  Body text
+</section>
+`;
+
+exports[`ConfirmDialog snapshots > matches snapshot: custom confirm label 1`] = `
+<div
+  aria-labelledby="confirm-dialog-title"
+  aria-modal="true"
+  role="dialog"
+  style="position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 1rem;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55);"
+  />
+  <div
+    style="position: relative; background: var(--card-bg, #1a1a2e); border: 1px solid var(--border, #2a2a3e); border-radius: 12px; padding: 1.5rem; width: 100%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); outline: none;"
+    tabindex="-1"
+  >
+    <h3
+      id="confirm-dialog-title"
+      style="margin: 0px 0px 0.75rem; font-size: 1.05rem; font-weight: 600;"
+    >
+      Retire Credits
+    </h3>
+    <div
+      style="font-size: 0.9rem; color: var(--muted, #888); margin-bottom: 1.5rem; line-height: 1.55;"
+    >
+      Credits will be permanently burned.
+    </div>
+    <div
+      style="display: flex; gap: 0.75rem; justify-content: flex-end;"
+    >
+      <button
+        style="min-width: 80px;"
+        type="button"
+      >
+        Cancel
+      </button>
+      <button
+        class="btn-success"
+        style="min-width: 100px;"
+        type="button"
+      >
+        Retire (Permanent)
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`ConfirmDialog snapshots > matches snapshot: default state 1`] = `
+<div
+  aria-labelledby="confirm-dialog-title"
+  aria-modal="true"
+  role="dialog"
+  style="position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 1rem;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55);"
+  />
+  <div
+    style="position: relative; background: var(--card-bg, #1a1a2e); border: 1px solid var(--border, #2a2a3e); border-radius: 12px; padding: 1.5rem; width: 100%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); outline: none;"
+    tabindex="-1"
+  >
+    <h3
+      id="confirm-dialog-title"
+      style="margin: 0px 0px 0.75rem; font-size: 1.05rem; font-weight: 600;"
+    >
+      Settle Invoice
+    </h3>
+    <div
+      style="font-size: 0.9rem; color: var(--muted, #888); margin-bottom: 1.5rem; line-height: 1.55;"
+    >
+      This will mark the invoice as settled and open redemption for all holders.
+    </div>
+    <div
+      style="display: flex; gap: 0.75rem; justify-content: flex-end;"
+    >
+      <button
+        style="min-width: 80px;"
+        type="button"
+      >
+        Cancel
+      </button>
+      <button
+        class="btn-success"
+        style="min-width: 100px;"
+        type="button"
+      >
+        Confirm
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`ConfirmDialog snapshots > matches snapshot: loading state 1`] = `
+<div
+  aria-labelledby="confirm-dialog-title"
+  aria-modal="true"
+  role="dialog"
+  style="position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 1rem;"
+>
+  <div
+    aria-hidden="true"
+    style="position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55);"
+  />
+  <div
+    style="position: relative; background: var(--card-bg, #1a1a2e); border: 1px solid var(--border, #2a2a3e); border-radius: 12px; padding: 1.5rem; width: 100%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); outline: none;"
+    tabindex="-1"
+  >
+    <h3
+      id="confirm-dialog-title"
+      style="margin: 0px 0px 0.75rem; font-size: 1.05rem; font-weight: 600;"
+    >
+      Processing
+    </h3>
+    <div
+      style="font-size: 0.9rem; color: var(--muted, #888); margin-bottom: 1.5rem; line-height: 1.55;"
+    >
+      Please wait…
+    </div>
+    <div
+      style="display: flex; gap: 0.75rem; justify-content: flex-end;"
+    >
+      <button
+        disabled=""
+        style="min-width: 80px;"
+        type="button"
+      >
+        Cancel
+      </button>
+      <button
+        class="btn-success"
+        disabled=""
+        style="min-width: 100px;"
+        type="button"
+      >
+        Sending…
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`CopyButton snapshots > matches snapshot: default state 1`] = `
+<button
+  aria-label="Copy GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
+  style="font-size: 0.75rem; padding: 0.3rem 0.75rem; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; transition: color 0.2s ease; flex-shrink: 0;"
+>
+  Copy
+</button>
+`;
+
+exports[`Field snapshots > matches snapshot: basic text field 1`] = `
+<div
+  class="field"
+>
+  <label
+    for="field-1"
+  >
+    Invoice ID
+  </label>
+  <input
+    id="field-1"
+    type="text"
+    value=""
+  />
+</div>
+`;
+
+exports[`Field snapshots > matches snapshot: field with validation error 1`] = `
+<div
+  class="field"
+>
+  <label
+    for="field-3"
+  >
+    Amount
+  </label>
+  <input
+    aria-describedby="field-3-error"
+    aria-invalid="true"
+    id="field-3"
+    style="border-color: rgb(239, 68, 68);"
+    type="text"
+    value="abc"
+  />
+  <div
+    id="field-3-error"
+    role="alert"
+    style="color: rgb(239, 68, 68); font-size: 0.8rem; margin-top: 0.25rem;"
+  >
+    Amount must be a valid number
+  </div>
+</div>
+`;
+
+exports[`Field snapshots > matches snapshot: number field with placeholder 1`] = `
+<div
+  class="field"
+>
+  <label
+    for="field-4"
+  >
+    Shares
+  </label>
+  <input
+    id="field-4"
+    placeholder="Enter number of shares"
+    type="number"
+    value="1000"
+  />
+</div>
+`;
+
+exports[`Field snapshots > matches snapshot: required field 1`] = `
+<div
+  class="field"
+>
+  <label
+    for="field-2"
+  >
+    Amount
+    <span
+      aria-hidden="true"
+      style="color: rgb(239, 68, 68); margin-left: 0.2em;"
+    >
+      *
+    </span>
+  </label>
+  <input
+    aria-required="true"
+    id="field-2"
+    required=""
+    type="text"
+    value=""
+  />
+</div>
+`;
+
+exports[`PageHeader snapshots > matches snapshot: full header with eyebrow, icon, and description 1`] = `
+<header
+  style="margin-bottom: 1.75rem;"
+>
+  <span
+    class="eyebrow"
+    style="margin-bottom: 0.7rem;"
+  >
+    Asset Module
+  </span>
+  <div
+    style="display: flex; align-items: center; gap: 0.9rem; margin-top: 0.6rem;"
+  >
+    <div
+      style="display: grid; place-items: center; width: 46px; height: 46px; border-radius: 13px; background: var(--accent-soft); border: 1px solid var(--border); color: var(--accent-2); flex-shrink: 0;"
+    >
+      <svg
+        data-testid="icon"
+        viewBox="0 0 24 24"
+      />
+    </div>
+    <h1
+      style="font-size: 1.85rem; font-weight: 800;"
+    >
+      Invoice Token
+    </h1>
+  </div>
+  <p
+    class="muted"
+    style="margin-top: 0.7rem; max-width: 620px; font-size: 0.95rem;"
+  >
+    Tokenize accounts-receivable invoices.
+  </p>
+</header>
+`;
+
+exports[`PageHeader snapshots > matches snapshot: title only 1`] = `
+<header
+  style="margin-bottom: 1.75rem;"
+>
+  <div
+    style="display: flex; align-items: center; gap: 0.9rem; margin-top: 0px;"
+  >
+    <h1
+      style="font-size: 1.85rem; font-weight: 800;"
+    >
+      Invoice Token
+    </h1>
+  </div>
+</header>
+`;
+
+exports[`Select snapshots > matches snapshot: default selection 1`] = `
+<div
+  class="field"
+>
+  <label
+    for="field-KYC Tier"
+  >
+    KYC Tier
+  </label>
+  <select
+    id="field-KYC Tier"
+  >
+    <option
+      value="0"
+    >
+      0 — Basic
+    </option>
+    <option
+      value="1"
+    >
+      1 — Accredited Investor
+    </option>
+    <option
+      value="2"
+    >
+      2 — Institutional
+    </option>
+  </select>
+</div>
+`;
+
+exports[`Select snapshots > matches snapshot: non-default selection 1`] = `
+<div
+  class="field"
+>
+  <label
+    for="field-KYC Tier"
+  >
+    KYC Tier
+  </label>
+  <select
+    id="field-KYC Tier"
+  >
+    <option
+      value="0"
+    >
+      0 — Basic
+    </option>
+    <option
+      value="1"
+    >
+      1 — Accredited Investor
+    </option>
+    <option
+      value="2"
+    >
+      2 — Institutional
+    </option>
+  </select>
+</div>
+`;
+
+exports[`Skeleton snapshots > matches snapshot: custom dimensions 1`] = `
+<div
+  style="width: 60%; height: 2rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+/>
+`;
+
+exports[`Skeleton snapshots > matches snapshot: default props 1`] = `
+<div
+  style="width: 100%; height: 1rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+/>
+`;
+
+exports[`SkeletonCard snapshots > matches snapshot: 2 rows 1`] = `
+<div
+  style="display: flex; flex-direction: column; gap: 0.75rem;"
+>
+  <div
+    style="width: 40%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 60%; height: 1rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 75%; height: 1rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+</div>
+`;
+
+exports[`SkeletonCard snapshots > matches snapshot: default rows 1`] = `
+<div
+  style="display: flex; flex-direction: column; gap: 0.75rem;"
+>
+  <div
+    style="width: 40%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 60%; height: 1rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 75%; height: 1rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 90%; height: 1rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 60%; height: 1rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+</div>
+`;
+
+exports[`SkeletonForm snapshots > matches snapshot: 3 fields 1`] = `
+<div
+  style="display: flex; flex-direction: column; gap: 1rem;"
+>
+  <div
+    style="display: flex; flex-direction: column; gap: 0.4rem;"
+  >
+    <div
+      style="width: 30%; height: 0.8rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 100%; height: 2.5rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+  </div>
+  <div
+    style="display: flex; flex-direction: column; gap: 0.4rem;"
+  >
+    <div
+      style="width: 30%; height: 0.8rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 100%; height: 2.5rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+  </div>
+  <div
+    style="display: flex; flex-direction: column; gap: 0.4rem;"
+  >
+    <div
+      style="width: 30%; height: 0.8rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 100%; height: 2.5rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+  </div>
+</div>
+`;
+
+exports[`SkeletonTableRows snapshots > matches snapshot: 3 rows × 4 cols 1`] = `
+<div
+  style="display: flex; flex-direction: column; gap: 0.75rem;"
+>
+  <div
+    style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; padding: 0.75rem 0px;"
+  >
+    <div
+      style="width: 80%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+  </div>
+  <div
+    style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; padding: 0.75rem 0px;"
+  >
+    <div
+      style="width: 80%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+  </div>
+  <div
+    style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; padding: 0.75rem 0px;"
+  >
+    <div
+      style="width: 80%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+    <div
+      style="width: 60%; height: 1.25rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+    />
+  </div>
+</div>
+`;
+
+exports[`SkeletonText snapshots > matches snapshot: 3 lines 1`] = `
+<div
+  style="display: flex; flex-direction: column; gap: 0.5rem;"
+>
+  <div
+    style="width: 70%; height: 0.9rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 80%; height: 0.9rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+  <div
+    style="width: 90%; height: 0.9rem; background: var(--surface-2); border-radius: 0.5rem; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;"
+  />
+</div>
+`;

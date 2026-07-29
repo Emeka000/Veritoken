@@ -11,6 +11,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import { contracts } from "../lib/contracts/index";
 import { GovernanceLog, recordGovernanceAction } from "../components/GovernanceLog";
+import { SessionHistory } from "../components/SessionHistory";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -196,11 +197,13 @@ export default function AdminPage() {
           };
           if (proposeMode && ruleChangeDelay > 0 && address) {
             await contracts.compliance.proposeRules(address, newRules, signTx);
+            recordGovernanceAction("rules_updated", address, `Proposed rule change: max transfer ${rules.max_transfer_amount}, min holding ${rules.min_holding_period}s, max holders ${rules.max_holders}.`);
             addToast(`Rule change proposed. Activates in ${formatDelay(ruleChangeDelay)}.`, "info");
             const pending = await contracts.compliance.getPendingRules();
             setPendingRules(pending);
           } else if (address) {
             await contracts.compliance.setRules(address, newRules, signTx);
+            recordGovernanceAction("rules_updated", address, `Saved rules: max transfer ${rules.max_transfer_amount}, min holding ${rules.min_holding_period}s, max holders ${rules.max_holders}.`);
             addToast("Compliance rules saved successfully.", "success");
             await fetchRules();
           }
@@ -240,7 +243,10 @@ export default function AdminPage() {
         setConfirm(null);
         setPauseLoading(true);
         try {
-          if (address) await contracts.compliance.pause(address, signTx);
+          if (address) {
+            await contracts.compliance.pause(address, signTx);
+            recordGovernanceAction("pause", address, "All transfers paused across every asset contract.");
+          }
           setIsPaused(true);
           addToast("All transfers paused.", "info");
           await fetchRules();
@@ -260,7 +266,10 @@ export default function AdminPage() {
         setConfirm(null);
         setPauseLoading(true);
         try {
-          if (address) await contracts.compliance.unpause(address, signTx);
+          if (address) {
+            await contracts.compliance.unpause(address, signTx);
+            recordGovernanceAction("unpause", address, "Transfers re-enabled across every asset contract.");
+          }
           setIsPaused(false);
           addToast("Transfers unpaused.", "success");
           await fetchRules();
@@ -587,6 +596,8 @@ export default function AdminPage() {
       </Card>
 
       <GovernanceLog />
+
+      <SessionHistory />
 
       <EventFeed
         events={events}

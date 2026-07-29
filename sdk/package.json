@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "homepage": "https://github.com/chidinma000/Veritoken/tree/main/sdk#readme",
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -15,7 +16,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "generate:client": "node scripts/generate-client.mjs"
   },
   "peerDependencies": {
     "@stellar/stellar-sdk": ">=12.0.0"
