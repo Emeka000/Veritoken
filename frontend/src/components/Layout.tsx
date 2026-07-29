@@ -14,15 +14,17 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { to: "/", label: "Dashboard" },
+  { to: "/marketplace", label: "Marketplace" },    // #439
   { to: "/invoices", label: "Invoices" },
   { to: "/property", label: "Property" },
   { to: "/carbon", label: "Carbon" },
   { to: "/kyc", label: "KYC" },
   { to: "/attestations", label: "Attestations" },
-  { to: "/admin", label: "Admin", role: "admin" },
-  { to: "/batch", label: "Batch", role: "verifier" },
-  { to: "/onboarding", label: "Onboarding", role: "verifier" },
-  { to: "/deploy", label: "Deploy", role: "admin" },
+  { to: "/admin", label: "Admin" },
+  { to: "/compliance-config", label: "Config I/O" }, // #436
+  { to: "/batch", label: "Batch" },
+  { to: "/onboarding", label: "Onboarding" },
+  { to: "/deploy", label: "Deploy" },
   { to: "/docs", label: "Docs" },
 ];
 

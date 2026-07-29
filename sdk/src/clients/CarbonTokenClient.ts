@@ -40,11 +40,6 @@ export class CarbonTokenClient extends BaseContractClient {
     return this.read<number>("retirement_count", []);
   }
 
-  async getMeta(): Promise<ProjectMeta> { return this.read<ProjectMeta>("get_meta", []); }
-  async balance(addr: string): Promise<bigint> { return this.read<bigint>("balance", [encodeAddress(addr)]); }
-  async totalSupply(): Promise<bigint> { return this.read<bigint>("total_supply", []); }
-  async totalRetired(): Promise<bigint> { return this.read<bigint>("total_retired", []); }
-  async retirementCount(): Promise<number> { return this.read<number>("retirement_count", []); }
   async getReceipt(index: number): Promise<RetirementReceipt> {
     return this.read<RetirementReceipt>("get_receipt", [encodeU32(index)]);
   }
@@ -58,10 +53,6 @@ export class CarbonTokenClient extends BaseContractClient {
       encodeU32(limit),
     ]);
   }
-  async name(): Promise<string> { return this.read<string>("name", []); }
-  async symbol(): Promise<string> { return this.read<string>("symbol", []); }
-  async decimals(): Promise<number> { return this.read<number>("decimals", []); }
-
   async name(): Promise<string> {
     return this.read<string>("name", []);
   }
@@ -128,26 +119,19 @@ export class CarbonTokenClient extends BaseContractClient {
       signTx,
     );
 
-    // Try to extract the return value from the transaction result metadata.
-    try {
-      const retval = (txResult as any)
-        ?.resultMetaXdr?.v3?.()
-        ?.sorobanMeta?.()
-        ?.returnValue?.();
-      if (retval) return decodeScVal(retval) as RetirementReceipt;
-    } catch {
-      /* fall through to stub */
+    if (txResult.returnValue) {
+      return decodeScVal(txResult.returnValue) as RetirementReceipt;
     }
 
     // Fallback stub when metadata isn't available (e.g. testing).
     return {
       retiree: retireeAddress,
-      amount: Number(amount),
+      amount,
       beneficiary,
       retirement_reason: reason,
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: BigInt(Math.floor(Date.now() / 1000)),
       beneficiary_address: null,
-    } as unknown as RetirementReceipt;
+    };
   }
 
   async updateMeta(

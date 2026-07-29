@@ -224,20 +224,17 @@ export class CarbonTokenClient {
       seq,
       signTx
     );
-    // Try to decode the return value from the transaction result metadata.
-    try {
-      const retval = (txResult as any)
-        ?.resultMetaXdr?.v3?.()?.sorobanMeta?.()?.returnValue?.();
-      if (retval) return scValToNative(retval) as RetirementReceipt;
-    } catch { /* fall through to stub */ }
+    if (txResult.returnValue) {
+      return scValToNative(txResult.returnValue) as RetirementReceipt;
+    }
     // Fallback stub — used when result metadata isn't available (e.g. simulation).
     return {
       retiree: retireeAddress,
-      amount: Number(amount),
+      amount,
       beneficiary,
       retirement_reason: reason,
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: BigInt(Math.floor(Date.now() / 1000)),
       beneficiary_address: null,
-    } as unknown as RetirementReceipt;
+    };
   }
 }

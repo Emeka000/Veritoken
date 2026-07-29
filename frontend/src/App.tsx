@@ -10,9 +10,8 @@ import AdminPage from "./pages/AdminPage";
 import AttestationPage from "./pages/AttestationPage";
 import DeployPage from "./pages/DeployPage";
 import DocsPage from "./pages/DocsPage";
-import OperatorDashboard from "./pages/OperatorDashboard";
-import BatchPage from "./pages/BatchPage";
-import OnboardingPage from "./pages/OnboardingPage";
+import ComplianceConfigIOPage from "./pages/ComplianceConfigIOPage";  // #436
+import MarketplacePage from "./pages/MarketplacePage";                // #439
 import ErrorBoundary from "./components/ErrorBoundary";
 import { AdminOnly, VerifierOnly } from "./components/PermissionGate";
 import { ToastProvider } from "./lib/toast";
@@ -61,27 +60,8 @@ export default function App() {
             }
           />
           <Route path="/docs" element={<ErrorBoundary><DocsPage /></ErrorBoundary>} />
-          <Route path="/operator" element={<ErrorBoundary><OperatorDashboard /></ErrorBoundary>} />
-          <Route
-            path="/batch"
-            element={
-              <ErrorBoundary>
-                <VerifierOnly fallback={<AccessDenied role="verifier" />}>
-                  <BatchPage />
-                </VerifierOnly>
-              </ErrorBoundary>
-            }
-          />
-          <Route
-            path="/onboarding"
-            element={
-              <ErrorBoundary>
-                <VerifierOnly fallback={<AccessDenied role="verifier" />}>
-                  <OnboardingPage />
-                </VerifierOnly>
-              </ErrorBoundary>
-            }
-          />
+          <Route path="/compliance-config" element={<ErrorBoundary><ComplianceConfigIOPage /></ErrorBoundary>} />
+          <Route path="/marketplace" element={<ErrorBoundary><MarketplacePage /></ErrorBoundary>} />
         </Routes>
       </Layout>
     </ToastProvider>

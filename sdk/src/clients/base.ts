@@ -12,9 +12,7 @@
  */
 
 import {
-  Account,
   Contract,
-  Keypair,
   TransactionBuilder,
   rpc,
   xdr,
@@ -28,57 +26,14 @@ import {
 } from "../errors.js";
 import { TxPipeline, type PipelineOptions } from "../pipeline.js";
 import { parseEvents, type ParsedEvent } from "../eventParser.js";
+import {
+  buildContractTx,
+  SIM_SOURCE,
+  type BuildTxOptions,
+} from "../transaction.js";
 
-// ── Simulation dummy account ──────────────────────────────────────────────────
-
-// A stable keypair used only for read-only simulations.  The network never
-// validates its signature because simulations are not submitted.
-const SIM_KEYPAIR = Keypair.random();
-export const SIM_SOURCE = SIM_KEYPAIR.publicKey();
-
-function makeSim(): Account {
-  // Always sequence "0" — simulation doesn't increment the account.
-  return new Account(SIM_SOURCE, "0");
-}
-
-// ── Transaction construction ──────────────────────────────────────────────────
-
-export interface BuildTxOptions {
-  fee?: string;
-  timeoutSeconds?: number;
-}
-
-/**
- * Build a single-operation contract-call transaction and return its XDR string.
- *
- * When `source` + `sequence` are omitted the transaction is built against the
- * simulation dummy account, which is suitable for read-only simulation.
- */
-export function buildContractTx(
-  contractId: string,
-  method: string,
-  args: xdr.ScVal[],
-  networkPassphrase: string,
-  source?: string,
-  sequence?: string,
-  opts: BuildTxOptions = {},
-): string {
-  const account =
-    source && sequence
-      ? new Account(source, sequence)
-      : makeSim();
-
-  const contract = new Contract(contractId);
-  const tx = new TransactionBuilder(account, {
-    fee: opts.fee ?? "100",
-    networkPassphrase,
-  })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(opts.timeoutSeconds ?? 30)
-    .build();
-
-  return tx.toXDR();
-}
+export { buildContractTx, SIM_SOURCE };
+export type { BuildTxOptions };
 
 // ── Read path ─────────────────────────────────────────────────────────────────
 
@@ -222,6 +177,7 @@ export abstract class BaseContractClient {
   protected readonly contract: Contract;
   /** Exposed so tests and subclasses can inject a shared cache. */
   readonly pipeline: TxPipeline;
+  private readonly pipelineOpts: PipelineOptions;
 
   constructor(
     protected readonly contractId: string,
@@ -233,6 +189,7 @@ export abstract class BaseContractClient {
     pipelineOpts: PipelineOptions = {},
   ) {
     this.contract = new Contract(contractId);
+    this.pipelineOpts = { ...pipelineOpts };
     this.pipeline = new TxPipeline(server, networkPassphrase, pipelineOpts);
   }
 
@@ -242,13 +199,13 @@ export abstract class BaseContractClient {
     args: xdr.ScVal[],
   ): Promise<T> {
     try {
-      return await simulateRead<T>(
-        this.server,
+      const { value } = await this.pipeline.read<T>(
         this.contractId,
         method,
         args,
-        this.networkPassphrase,
+        SIM_SOURCE,
       );
+      return value;
     } catch (err) {
       throw this.enrichError(err);
     }
@@ -264,19 +221,28 @@ export abstract class BaseContractClient {
     assemble: typeof rpc.assembleTransaction = rpc.assembleTransaction,
   ): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
     try {
-      const sequence = await fetchAccountSequence(this.server, senderAddress);
-      return await submitContractTx(
-        this.server,
+      const hasCallOverrides =
+        opts !== undefined || assemble !== rpc.assembleTransaction;
+      const pipeline = hasCallOverrides
+        ? new TxPipeline(
+            this.server,
+            this.networkPassphrase,
+            {
+              ...this.pipelineOpts,
+              ...(opts ?? {}),
+              assemble,
+            },
+            this.pipeline.sequenceCache,
+          )
+        : this.pipeline;
+      const { response } = await pipeline.write(
         this.contractId,
         method,
         args,
         senderAddress,
-        sequence,
         signTx,
-        this.networkPassphrase,
-        opts,
-        assemble,
       );
+      return response;
     } catch (err) {
       throw this.enrichError(err);
     }

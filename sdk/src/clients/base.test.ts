@@ -1,5 +1,12 @@
 ﻿import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TransactionBuilder, Networks, nativeToScVal, xdr, rpc } from "@stellar/stellar-sdk";
+import {
+  TransactionBuilder,
+  Networks,
+  nativeToScVal,
+  xdr,
+  rpc,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 import {
   buildContractTx, simulateRead, submitContractTx,
   fetchAccountSequence, BaseContractClient, SIM_SOURCE, type SignTx,
@@ -32,12 +39,14 @@ describe("buildContractTx", () => {
   });
   it("uses SIM_SOURCE by default", () => {
     const x = buildContractTx(CONTRACT_ID, "balance", [encodeAddress(ALICE)], PASSPHRASE);
-    expect(TransactionBuilder.fromXDR(x, PASSPHRASE).source).toBe(SIM_SOURCE);
+    expect(
+      (TransactionBuilder.fromXDR(x, PASSPHRASE) as Transaction).source,
+    ).toBe(SIM_SOURCE);
   });
   it("uses provided source and advances sequence by 1", () => {
     const x = buildContractTx(CONTRACT_ID, "mint",
       [encodeAddress(ALICE), encodeI128(500n)], PASSPHRASE, ALICE, "42");
-    const tx = TransactionBuilder.fromXDR(x, PASSPHRASE);
+    const tx = TransactionBuilder.fromXDR(x, PASSPHRASE) as Transaction;
     expect(tx.source).toBe(ALICE);
     expect(tx.sequence).toBe("43");
   });
@@ -105,7 +114,9 @@ describe("submitContractTx", () => {
     } as unknown as rpc.Server;
   }
 
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   it("returns SUCCESS and calls signTx once", async () => {
     const r = await submitContractTx(mkSrv(), CONTRACT_ID, "transfer",

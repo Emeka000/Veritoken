@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient};
-use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
 
@@ -619,6 +619,40 @@ fn sep41_batch_failure_in_middle_of_list_leaves_no_partial_state() {
     assert_eq!(h.token.balance(&bob), 0);
     assert_eq!(h.token.balance(&eve), 0);
     assert_eq!(h.token.balance(&carol), 0);
+}
+
+#[test]
+fn sep41_batch_holder_cap_failure_preserves_supply_balances_and_count() {
+    let h = setup_sep41();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.mint(&alice, 1_000);
+    h.compliance.set_rules(&ComplianceRules {
+        max_transfer_amount: 0,
+        min_holding_period: 0,
+        max_holders: 2,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+        max_holding_period: 0,
+    });
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 200 },
+        RecipientEntry { to: carol.clone(), amount: 300 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    assert_eq!(h.token.total_supply(), 1_000);
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.compliance.holder_count(), 1);
 }
 
 #[test]

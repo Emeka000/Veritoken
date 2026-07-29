@@ -10,6 +10,67 @@
 
 use soroban_sdk::{contracttype, Address, Env, symbol_short};
 
+// ── KYC state ─────────────────────────────────────────────────────────────────
+
+/// Mirrors `kyc_registry::KycState` — variant names are XDR discriminants and
+/// must be kept identical to those in the KYC registry contract.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum KycState {
+    Missing,
+    Approved,
+    Expired,
+    Revoked,
+    Rejected,
+    Pending,
+}
+
+// ── Compliance decision types ─────────────────────────────────────────────────
+
+/// Mirrors `compliance_engine::DenyReason` — variant names must stay identical
+/// for XDR round-tripping across the cross-contract boundary.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DenyReason {
+    CompliancePaused,
+    FromBlocklisted,
+    ToBlocklisted,
+    FromKycMissing,
+    ToKycMissing,
+    FromKycExpired,
+    ToKycExpired,
+    FromKycRevoked,
+    ToKycRevoked,
+    FromKycRejected,
+    ToKycRejected,
+    FromKycPending,
+    ToKycPending,
+    FromJurisdictionBlocked,
+    ToJurisdictionBlocked,
+    SameJurisdictionRequired,
+    AmountExceeded,
+    HoldingPeriodNotMet,
+    MaxHoldersReached,
+    RecipientHoldingPeriodExceeded,
+    TierPolicyBlocked,
+    TierFromBelowMin,
+    TierToBelowMin,
+    TierAmountExceeded,
+    RiskScoreTooHigh,
+}
+
+/// Mirrors `compliance_engine::TransferDecision` — variant names must stay
+/// identical for XDR round-tripping across the contract boundary.
+///
+/// `Allow` means the transfer may proceed.
+/// `Deny(reason)` carries the specific rule that blocked the transfer.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransferDecision {
+    Allow,
+    Deny(DenyReason),
+}
+
 // ── Shared storage keys ───────────────────────────────────────────────────────
 
 /// Canonical storage keys for state shared across all token contracts.
@@ -46,6 +107,7 @@ mod kyc_iface {
     pub trait KycRegistry {
         fn is_approved(env: soroban_sdk::Env, addr: Address) -> bool;
         fn get_tier(env: soroban_sdk::Env, addr: Address) -> u32;
+        fn get_kyc_state(env: soroban_sdk::Env, addr: Address) -> super::KycState;
     }
 }
 
@@ -57,6 +119,12 @@ mod compliance_iface {
         fn get_rules(env: soroban_sdk::Env) -> super::ComplianceRules;
         fn is_blocklisted(env: soroban_sdk::Env, addr: Address) -> bool;
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
+        fn evaluate_transfer(
+            env: soroban_sdk::Env,
+            from: Address,
+            to: Address,
+            amount: i128,
+        ) -> super::TransferDecision;
         fn register_holder(env: soroban_sdk::Env, addr: Address);
         fn holder_count(env: soroban_sdk::Env) -> u32;
     }
@@ -136,7 +204,13 @@ pub fn is_kyc_approved(env: &Env, addr: &Address) -> bool {
     KycRegistryClient::new(env, &registry).is_approved(addr)
 }
 
-/// Returns the KYC tier of `addr` (0 = unapproved or no tier assigned).
+/// Returns the resolved KYC state for `addr` without panicking.
+pub fn get_kyc_state_of(env: &Env, addr: &Address) -> KycState {
+    let registry = read_kyc_registry(env);
+    KycRegistryClient::new(env, &registry).get_kyc_state(addr)
+}
+
+/// Returns the KYC tier of `addr` (0 when no record exists — never panics).
 pub fn get_kyc_tier(env: &Env, addr: &Address) -> u32 {
     let registry = read_kyc_registry(env);
     KycRegistryClient::new(env, &registry).get_tier(addr)
@@ -186,6 +260,54 @@ pub fn is_compliance_blocklisted(env: &Env, addr: &Address) -> bool {
 pub fn can_transfer_compliance(env: &Env, from: &Address, to: &Address, amount: i128) -> bool {
     let engine = read_compliance_engine(env);
     ComplianceEngineClient::new(env, &engine).can_transfer(from, to, &amount)
+}
+
+/// Calls the compliance engine's `evaluate_transfer` and returns the full decision.
+///
+/// Unlike [`can_transfer_compliance`], this validates KYC state for both
+/// parties inside the compliance engine and returns a [`TransferDecision`]
+/// with an explicit [`DenyReason`] when the transfer is blocked.
+pub fn evaluate_transfer_compliance(
+    env: &Env,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+) -> TransferDecision {
+    let engine = read_compliance_engine(env);
+    ComplianceEngineClient::new(env, &engine).evaluate_transfer(from, to, &amount)
+}
+
+/// Returns `true` when the deny reason corresponds to an invalid KYC state.
+///
+/// Use this helper to distinguish KYC-related denials (which should surface as
+/// `KycNotApproved`) from other compliance rule violations (`TransferBlocked`).
+pub fn is_kyc_deny_reason(reason: &DenyReason) -> bool {
+    matches!(
+        reason,
+        DenyReason::FromKycMissing
+            | DenyReason::ToKycMissing
+            | DenyReason::FromKycExpired
+            | DenyReason::ToKycExpired
+            | DenyReason::FromKycRevoked
+            | DenyReason::ToKycRevoked
+            | DenyReason::FromKycRejected
+            | DenyReason::ToKycRejected
+            | DenyReason::FromKycPending
+            | DenyReason::ToKycPending
+    )
+}
+
+/// Returns `true` when the deny reason is a blocklist entry.
+pub fn is_blocklist_deny_reason(reason: &DenyReason) -> bool {
+    matches!(
+        reason,
+        DenyReason::FromBlocklisted | DenyReason::ToBlocklisted
+    )
+}
+
+/// Returns `true` when the deny reason is a global compliance pause.
+pub fn is_paused_deny_reason(reason: &DenyReason) -> bool {
+    matches!(reason, DenyReason::CompliancePaused)
 }
 
 /// Registers `addr` as a token holder in the compliance engine.

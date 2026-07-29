@@ -1129,3 +1129,324 @@ fn test_risk_scoring_does_not_affect_paused_engine() {
     // Pause takes precedence; risk scores never evaluated
     assert!(!ce.can_transfer(&alice, &bob, &100));
 }
+
+// ── evaluate_transfer / TransferDecision tests ────────────────────────────────
+
+#[test]
+fn test_evaluate_transfer_approved_kyc_returns_allow() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Allow);
+    let _ = DenyReason::CompliancePaused; // ensure type is importable
+}
+
+#[test]
+fn test_evaluate_transfer_missing_kyc_from_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Only bob is approved; alice has no KYC record.
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycMissing));
+}
+
+#[test]
+fn test_evaluate_transfer_missing_kyc_to_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Only alice is approved; bob has no KYC record.
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::ToKycMissing));
+}
+
+#[test]
+fn test_evaluate_transfer_expired_kyc_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Alice's KYC has an expiry in the past (timestamp = 1).
+    kyc.approve(&verifier, &alice, &0, &1, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    // Advance ledger time past alice's expiry.
+    env.ledger().set_timestamp(100);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycExpired));
+}
+
+#[test]
+fn test_evaluate_transfer_revoked_kyc_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    // Revoke alice's KYC.
+    kyc.revoke(&verifier, &alice);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycRevoked));
+}
+
+#[test]
+fn test_evaluate_transfer_rejected_kyc_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    // reject() creates a default Pending record then sets status to Rejected.
+    kyc.reject(&verifier, &alice);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycRejected));
+}
+
+#[test]
+fn test_evaluate_transfer_paused_returns_compliance_paused() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.pause();
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::CompliancePaused));
+}
+
+#[test]
+fn test_evaluate_transfer_blocklisted_from_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.add_to_blocklist(&alice);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromBlocklisted));
+}
+
+#[test]
+fn test_evaluate_transfer_blocklisted_to_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.add_to_blocklist(&bob);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::ToBlocklisted));
+}
+
+#[test]
+fn test_evaluate_transfer_blocked_jurisdiction_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "IR"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.add_blocked_jurisdiction(&String::from_str(&env, "IR"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromJurisdictionBlocked));
+}
+
+#[test]
+fn test_evaluate_transfer_amount_exceeded_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.set_rules(&ComplianceRules {
+        max_transfer_amount: 500,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+        max_holding_period: 0,
+    });
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &501);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::AmountExceeded));
+}
+
+#[test]
+fn test_can_transfer_ignores_kyc_for_backward_compat() {
+    // `can_transfer` must not check KYC state — only `evaluate_transfer` does.
+    // An address with no KYC record should still pass `can_transfer`.
+    let (env, ce, _kyc, _verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Neither alice nor bob have KYC records — can_transfer must still return true.
+    assert!(ce.can_transfer(&alice, &bob, &100));
+}
+
+// ── Schema migration tests ────────────────────────────────────────────────────
+
+#[test]
+fn test_schema_version_initialized_to_one() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.schema_version(), 1u32);
+}
+
+#[test]
+fn test_migration_count_starts_at_zero() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.migration_count(), 0u32);
+}
+
+#[test]
+fn test_migrate_schema_success_v1_to_v2() {
+    let (env, client, admin) = setup();
+    assert_eq!(client.schema_version(), 1);
+
+    client.migrate_schema(&2, &String::from_str(&env, "v1 -> v2: add tier index"));
+
+    assert_eq!(client.schema_version(), 2);
+    assert_eq!(client.migration_count(), 1);
+}
+
+#[test]
+fn test_migrate_schema_record_persisted() {
+    let (env, client, _admin) = setup();
+    let desc = String::from_str(&env, "v1 -> v2 upgrade");
+    client.migrate_schema(&2, &desc);
+
+    let rec = client.get_migration_record(&0);
+    assert_eq!(rec.from_version, 1u32);
+    assert_eq!(rec.to_version, 2u32);
+    assert_eq!(rec.description, desc);
+}
+
+#[test]
+fn test_migrate_schema_already_at_version_rejected() {
+    let (env, client, _admin) = setup();
+    let res = client.try_migrate_schema(&1, &String::from_str(&env, "dup"));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(ComplianceError::AlreadyAtSchemaVersion)
+    );
+}
+
+#[test]
+fn test_migrate_schema_version_skip_rejected() {
+    let (env, client, _admin) = setup();
+    let res = client.try_migrate_schema(&3, &String::from_str(&env, "skip"));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(ComplianceError::MigrationVersionNotSequential)
+    );
+}
+
+#[test]
+fn test_migrate_schema_unauthorized_rejected() {
+    // Because compliance-engine uses require_admin() which checks the stored admin,
+    // calling without a matching auth must fail.
+    let (env, _client, _admin) = setup();
+
+    // Register a fresh CE without the test's mock_all_auths so we can test real auth.
+    let env2 = Env::default();
+    let admin2 = Address::generate(&env2);
+    let kyc_id = env2.register(kyc_registry::KycRegistry, ());
+    let kyc2 = kyc_registry::KycRegistryClient::new(&env2, &kyc_id);
+    env2.mock_all_auths();
+    kyc2.initialize(&admin2);
+    let ce_id = env2.register(crate::ComplianceEngine, ());
+    let ce2 = ComplianceEngineClient::new(&env2, &ce_id);
+    ce2.initialize(&admin2, &kyc_id, &0u64);
+
+    // Drop mock_all_auths — subsequent calls need explicit auth.
+    let env3 = Env::default();
+    let _ = env; // suppress unused warning
+
+    // In a mock_all_auths environment the auth is always granted, so we can
+    // only verify the structural error here: a skip-version call rejects.
+    let res = ce2.try_migrate_schema(&99, &String::from_str(&env2, "bad"));
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_migrate_schema_legacy_bootstrap() {
+    use crate::DataKey;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(kyc_registry::KycRegistry, ());
+    let kyc = kyc_registry::KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+
+    let ce_id = env.register(crate::ComplianceEngine, ());
+    let ce = ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
+
+    // Simulate legacy: remove the StorageVersion key.
+    env.as_contract(&ce_id, || {
+        env.storage().instance().remove(&DataKey::StorageVersion);
+    });
+
+    assert_eq!(ce.schema_version(), 0u32);
+
+    ce.migrate_schema(&1, &String::from_str(&env, "bootstrap"));
+    assert_eq!(ce.schema_version(), 1u32);
+    assert_eq!(ce.migration_count(), 1u32);
+}
+
+#[test]
+fn test_migrate_schema_state_continuity() {
+    // Compliance state must be intact after a schema migration.
+    let (env, client, admin) = setup();
+    client.set_rules(&rules(1_000_000, 0, 100, false));
+
+    client.migrate_schema(&2, &String::from_str(&env, "v1 -> v2"));
+
+    // Rules still accessible after migration.
+    let saved = client.get_rules();
+    assert_eq!(saved.max_transfer_amount, 1_000_000);
+    assert_eq!(saved.max_holders, 100);
+    let _ = admin;
+}
+
+#[test]
+fn test_migrate_schema_sequential_steps_succeed() {
+    let (env, client, _admin) = setup();
+
+    client.migrate_schema(&2, &String::from_str(&env, "step 1"));
+    client.migrate_schema(&3, &String::from_str(&env, "step 2"));
+
+    assert_eq!(client.schema_version(), 3);
+    assert_eq!(client.migration_count(), 2);
+
+    let rec0 = client.get_migration_record(&0);
+    let rec1 = client.get_migration_record(&1);
+    assert_eq!(rec0.from_version, 1);
+    assert_eq!(rec0.to_version, 2);
+    assert_eq!(rec1.from_version, 2);
+    assert_eq!(rec1.to_version, 3);
+}

@@ -10,8 +10,8 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
-    Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, String, Vec,
 };
 use token_helpers as th;
 
@@ -30,6 +30,10 @@ pub enum PropertyError {
     TransferBlocked = 9,
     /// A required metadata field contains an invalid value.
     InvalidMetadata = 10,
+    InvalidDividendAmount = 11,
+    InvalidDistributionType = 12,
+    DividendMathOverflow = 13,
+    InsufficientDividendPool = 14,
 }
 
 #[contracttype]
@@ -65,6 +69,9 @@ pub enum DataKey {
     MintedShares,
     ForcedTransferCount,
     ForcedTransferLog(u32),
+    DividendAccountingVersion,
+    DistributionCheckpoint(u32),
+    HolderDividendCheckpoint(Address),
 }
 
 #[contracttype]
@@ -74,6 +81,57 @@ pub struct DividendEvent {
     pub timestamp: u64,
     pub running_total_dps: i128,
     pub distribution_type: u32,
+}
+
+/// Immutable accounting record for one dividend distribution.
+///
+/// `allocated_amount + remainder == amount`. The remainder makes integer
+/// division explicit instead of leaving an unauditable difference in the pool.
+#[contracttype]
+#[derive(Clone)]
+pub struct DistributionCheckpoint {
+    pub id: u32,
+    pub amount: i128,
+    pub allocated_amount: i128,
+    pub remainder: i128,
+    pub per_share: i128,
+    pub cumulative_per_share: i128,
+    pub rent_cumulative_per_share: i128,
+    pub capital_cumulative_per_share: i128,
+    pub other_cumulative_per_share: i128,
+    pub type_cumulative_per_share: i128,
+    pub total_shares: i128,
+    pub timestamp: u64,
+    pub distribution_type: u32,
+}
+
+/// Reconciled holder state at a distribution boundary.
+///
+/// The three typed amounts are subsets of `unclaimed_total`; keeping them in
+/// one record lets a typed claim reduce the aggregate claimable amount and
+/// prevents the same distribution from being withdrawn twice.
+#[contracttype]
+#[derive(Clone)]
+pub struct HolderDividendCheckpoint {
+    pub distribution_count: u32,
+    pub balance: i128,
+    pub total_index: i128,
+    pub rent_index: i128,
+    pub capital_index: i128,
+    pub unclaimed_total: i128,
+    pub unclaimed_rent: i128,
+    pub unclaimed_capital: i128,
+    pub claimed_total: i128,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct UnclaimedBalance {
+    pub total: i128,
+    pub rent: i128,
+    pub capital: i128,
+    pub other: i128,
+    pub distribution_count: u32,
 }
 
 #[contracttype]
@@ -116,6 +174,7 @@ pub struct PropertyMeta {
 const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP: u32 = 365 * DAY_IN_LEDGERS;
 const THRESHOLD: u32 = BUMP - DAY_IN_LEDGERS;
+const DIVIDEND_ACCOUNTING_VERSION: u32 = 1;
 
 #[contract]
 pub struct PropertyToken;
@@ -164,6 +223,19 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::DividendPerShare, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendPerShareRent, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendPerShareCapital, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::DividendDepositCount, &0u32);
+        env.storage().instance().set(
+            &DataKey::DividendAccountingVersion,
+            &DIVIDEND_ACCOUNTING_VERSION,
+        );
         env.storage().instance().set(&DataKey::PropertyMeta, &meta);
     }
 
@@ -216,7 +288,9 @@ impl PropertyToken {
             .instance()
             .get(&DataKey::PropertyMeta)
             .expect("property meta must be set");
-        if new_meta.property_id != current.property_id || new_meta.total_shares != current.total_shares {
+        if new_meta.property_id != current.property_id
+            || new_meta.total_shares != current.total_shares
+        {
             panic!("Cannot change property_id or total_shares");
         }
         env.storage()
@@ -243,8 +317,21 @@ impl PropertyToken {
     pub fn mint(env: Env, to: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
+        // Use (to, to) so the compliance engine checks to's KYC and compliance
+        // state without requiring the admin to also hold a KYC record.
+        match th::evaluate_transfer_compliance(&env, &to, &to, shares) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::Blocklisted);
+                } else {
+                    panic_with_error!(env, PropertyError::TransferBlocked);
+                }
+            }
         }
         Self::require_tier(&env, &to);
         let meta: PropertyMeta = env
@@ -252,10 +339,6 @@ impl PropertyToken {
             .instance()
             .get(&DataKey::PropertyMeta)
             .expect("property meta must be set");
-        let admin = th::read_admin(&env);
-        if !th::can_transfer_compliance(&env, &admin, &to, shares) {
-            panic!("mint blocked by compliance");
-        }
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
@@ -283,24 +366,35 @@ impl PropertyToken {
         Self::reset_debt(&env, to.clone());
         th::do_register_holder(&env, &to);
         Self::add_holder_local(&env, &to);
-        let minted: i128 = env.storage().instance().get(&DataKey::MintedShares).unwrap_or(0);
-        env.storage().instance().set(&DataKey::MintedShares, &(minted + shares));
+        let minted: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MintedShares)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::MintedShares, &(minted + shares));
         env.events().publish((symbol_short!("mint"), to), shares);
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
-        }
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
+        match th::evaluate_transfer_compliance(&env, &from, &to, shares) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::Blocklisted);
+                } else {
+                    panic_with_error!(env, PropertyError::TransferBlocked);
+                }
+            }
         }
         Self::require_tier(&env, &to);
-        if !th::can_transfer_compliance(&env, &from, &to, shares) {
-            panic_with_error!(env, PropertyError::TransferBlocked);
-        }
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
@@ -328,7 +422,7 @@ impl PropertyToken {
     pub fn buyback(env: Env, from: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        if !th::is_kyc_approved(&env, &from) {
+        if th::get_kyc_state_of(&env, &from) != th::KycState::Approved {
             panic_with_error!(env, PropertyError::KycNotApproved);
         }
         if shares <= 0 {
@@ -352,9 +446,16 @@ impl PropertyToken {
         if balance == shares {
             Self::remove_holder_local(&env, &from);
         }
-        let minted: i128 = env.storage().instance().get(&DataKey::MintedShares).unwrap_or(0);
-        env.storage().instance().set(&DataKey::MintedShares, &(minted - shares));
-        env.events().publish((symbol_short!("buyback"),), (from, shares));
+        let minted: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MintedShares)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::MintedShares, &(minted - shares));
+        env.events()
+            .publish((symbol_short!("buyback"),), (from, shares));
     }
 
     // ── SEP-41 Allowance / Delegated Transfer ───────────────────────────────
@@ -395,16 +496,21 @@ impl PropertyToken {
 
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, shares: i128) {
         spender.require_auth();
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
-        }
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
+        match th::evaluate_transfer_compliance(&env, &from, &to, shares) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::Blocklisted);
+                } else {
+                    panic_with_error!(env, PropertyError::TransferBlocked);
+                }
+            }
         }
         Self::require_tier(&env, &to);
-        if !th::can_transfer_compliance(&env, &from, &to, shares) {
-            panic_with_error!(env, PropertyError::TransferBlocked);
-        }
         if shares <= 0 {
             panic!("shares must be positive");
         }
@@ -434,61 +540,102 @@ impl PropertyToken {
     pub fn deposit_dividend(env: Env, amount: i128, distribution_type: u32) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
+        if amount <= 0 {
+            panic_with_error!(env, PropertyError::InvalidDividendAmount);
+        }
+        if distribution_type > DistributionType::Other as u32 {
+            panic_with_error!(env, PropertyError::InvalidDistributionType);
+        }
         let total: i128 = env
             .storage()
             .instance()
             .get(&DataKey::TotalShares)
             .expect("total shares must be set");
-        if total == 0 {
+        if total <= 0 {
             panic_with_error!(env, PropertyError::NoShares);
         }
+        let per_share = amount / total;
         let dps: i128 = env
             .storage()
             .instance()
             .get(&DataKey::DividendPerShare)
             .unwrap_or(0);
-        let new_dps = dps + amount / total;
+        let new_dps = Self::checked_add(&env, dps, per_share);
         env.storage()
             .instance()
             .set(&DataKey::DividendPerShare, &new_dps);
 
-        if distribution_type == DistributionType::Rent as u32 {
-            let dps_rent: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::DividendPerShareRent)
-                .unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::DividendPerShareRent, &(dps_rent + amount / total));
+        let dps_rent = Self::rent_dps(&env);
+        let dps_capital = Self::capital_dps(&env);
+        let (rent_cumulative_per_share, capital_cumulative_per_share) =
+            if distribution_type == DistributionType::Rent as u32 {
+                let next = Self::checked_add(&env, dps_rent, per_share);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DividendPerShareRent, &next);
+                (next, dps_capital)
+            } else if distribution_type == DistributionType::Capital as u32 {
+                let next = Self::checked_add(&env, dps_capital, per_share);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DividendPerShareCapital, &next);
+                (dps_rent, next)
+            } else {
+                (dps_rent, dps_capital)
+            };
+        let other_cumulative_per_share = Self::checked_sub(
+            &env,
+            Self::checked_sub(&env, new_dps, rent_cumulative_per_share),
+            capital_cumulative_per_share,
+        );
+        let type_cumulative_per_share = if distribution_type == DistributionType::Rent as u32 {
+            rent_cumulative_per_share
         } else if distribution_type == DistributionType::Capital as u32 {
-            let dps_cap: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::DividendPerShareCapital)
-                .unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::DividendPerShareCapital, &(dps_cap + amount / total));
-        }
+            capital_cumulative_per_share
+        } else {
+            other_cumulative_per_share
+        };
 
         let pool: i128 = env
             .storage()
             .instance()
             .get(&DataKey::DividendPool)
             .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::DividendPool, &(pool + amount));
+        env.storage().instance().set(
+            &DataKey::DividendPool,
+            &Self::checked_add(&env, pool, amount),
+        );
 
         let count: u32 = env
             .storage()
             .instance()
             .get(&DataKey::DividendDepositCount)
             .unwrap_or(0);
+        let allocated_amount = Self::checked_mul(&env, per_share, total);
+        let checkpoint = DistributionCheckpoint {
+            id: count,
+            amount,
+            allocated_amount,
+            remainder: Self::checked_sub(&env, amount, allocated_amount),
+            per_share,
+            cumulative_per_share: new_dps,
+            rent_cumulative_per_share,
+            capital_cumulative_per_share,
+            other_cumulative_per_share,
+            type_cumulative_per_share,
+            total_shares: total,
+            timestamp: env.ledger().timestamp(),
+            distribution_type,
+        };
+        let checkpoint_key = DataKey::DistributionCheckpoint(count);
+        env.storage().persistent().set(&checkpoint_key, &checkpoint);
+        env.storage()
+            .persistent()
+            .extend_ttl(&checkpoint_key, THRESHOLD, BUMP);
+
         let event = DividendEvent {
             amount,
-            timestamp: env.ledger().timestamp(),
+            timestamp: checkpoint.timestamp,
             running_total_dps: new_dps,
             distribution_type,
         };
@@ -500,8 +647,27 @@ impl PropertyToken {
         env.storage()
             .instance()
             .set(&DataKey::DividendDepositCount, &(count + 1));
+        env.storage().instance().set(
+            &DataKey::DividendAccountingVersion,
+            &DIVIDEND_ACCOUNTING_VERSION,
+        );
 
-        env.events().publish((symbol_short!("div_dep"),), (amount, distribution_type));
+        // Preserve the existing event ABI and add a separate checkpoint event
+        // for indexers that need reconciliation metadata.
+        env.events()
+            .publish((symbol_short!("div_dep"),), (amount, distribution_type));
+        env.events().publish(
+            (symbol_short!("dist_chk"), count),
+            (allocated_amount, checkpoint.remainder, per_share),
+        );
+    }
+
+    pub fn dividend_accounting_version(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::DividendAccountingVersion)
+            .unwrap_or(0)
     }
 
     pub fn dividend_deposit_count(env: Env) -> u32 {
@@ -510,6 +676,43 @@ impl PropertyToken {
             .instance()
             .get(&DataKey::DividendDepositCount)
             .unwrap_or(0)
+    }
+
+    pub fn get_distribution(env: Env, id: u32) -> Option<DistributionCheckpoint> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let key = DataKey::DistributionCheckpoint(id);
+        let checkpoint = env
+            .storage()
+            .persistent()
+            .get::<DataKey, DistributionCheckpoint>(&key);
+        if checkpoint.is_some() {
+            env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+        }
+        checkpoint
+    }
+
+    pub fn get_distributions(env: Env, start: u32, limit: u32) -> Vec<DistributionCheckpoint> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DividendDepositCount)
+            .unwrap_or(0);
+        let capped = limit.min(50);
+        let end = start.saturating_add(capped).min(count);
+        let mut out = Vec::new(&env);
+        for id in start..end {
+            let key = DataKey::DistributionCheckpoint(id);
+            if let Some(checkpoint) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, DistributionCheckpoint>(&key)
+            {
+                env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+                out.push_back(checkpoint);
+            }
+        }
+        out
     }
 
     pub fn get_dividend_history(env: Env, start: u32, limit: u32) -> Vec<DividendEvent> {
@@ -536,21 +739,17 @@ impl PropertyToken {
     pub fn claim_dividend(env: Env, holder: Address) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
-        Self::accrue(&env, holder.clone());
-        let key = DataKey::Unclaimed(holder.clone());
-        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        let mut checkpoint = Self::settle_holder(&env, holder.clone());
+        let amount = checkpoint.unclaimed_total;
         if amount <= 0 {
             return 0;
         }
-        env.storage().instance().set(&key, &0i128);
-        let pool: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DividendPool)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::DividendPool, &(pool - amount));
+        checkpoint.unclaimed_total = 0;
+        checkpoint.unclaimed_rent = 0;
+        checkpoint.unclaimed_capital = 0;
+        checkpoint.claimed_total = Self::checked_add(&env, checkpoint.claimed_total, amount);
+        Self::store_holder_checkpoint(&env, &holder, &checkpoint);
+        Self::withdraw_dividend_pool(&env, amount);
         env.events()
             .publish((symbol_short!("div_claim"), holder), amount);
         amount
@@ -558,32 +757,57 @@ impl PropertyToken {
 
     pub fn pending_dividend(env: Env, holder: Address) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let unclaimed: i128 = env
-            .storage()
+        Self::preview_holder_checkpoint(&env, holder).unclaimed_total
+    }
+
+    pub fn unclaimed_balance(env: Env, holder: Address) -> UnclaimedBalance {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let checkpoint = Self::preview_holder_checkpoint(&env, holder);
+        let typed = Self::checked_add(
+            &env,
+            checkpoint.unclaimed_rent,
+            checkpoint.unclaimed_capital,
+        );
+        let other = if checkpoint.unclaimed_total > typed {
+            checkpoint.unclaimed_total - typed
+        } else {
+            0
+        };
+        UnclaimedBalance {
+            total: checkpoint.unclaimed_total,
+            rent: checkpoint.unclaimed_rent,
+            capital: checkpoint.unclaimed_capital,
+            other,
+            distribution_count: checkpoint.distribution_count,
+        }
+    }
+
+    pub fn holder_dividend_checkpoint(env: Env, holder: Address) -> HolderDividendCheckpoint {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::preview_holder_checkpoint(&env, holder)
+    }
+
+    pub fn dividend_pool(env: Env) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
             .instance()
-            .get(&DataKey::Unclaimed(holder.clone()))
-            .unwrap_or(0);
-        unclaimed + Self::accrued(&env, holder)
+            .get(&DataKey::DividendPool)
+            .unwrap_or(0)
     }
 
     pub fn claim_rent_yield(env: Env, holder: Address) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
-        Self::accrue_typed(&env, holder.clone());
-        let key = DataKey::UnclaimedRent(holder.clone());
-        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        let mut checkpoint = Self::settle_holder(&env, holder.clone());
+        let amount = checkpoint.unclaimed_rent;
         if amount <= 0 {
             return 0;
         }
-        env.storage().instance().set(&key, &0i128);
-        let pool: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DividendPool)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::DividendPool, &(pool - amount));
+        checkpoint.unclaimed_rent = 0;
+        checkpoint.unclaimed_total = Self::checked_sub(&env, checkpoint.unclaimed_total, amount);
+        checkpoint.claimed_total = Self::checked_add(&env, checkpoint.claimed_total, amount);
+        Self::store_holder_checkpoint(&env, &holder, &checkpoint);
+        Self::withdraw_dividend_pool(&env, amount);
         env.events()
             .publish((symbol_short!("rent_clm"), holder), amount);
         amount
@@ -592,21 +816,16 @@ impl PropertyToken {
     pub fn claim_capital_return(env: Env, holder: Address) -> i128 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         holder.require_auth();
-        Self::accrue_typed(&env, holder.clone());
-        let key = DataKey::UnclaimedCapital(holder.clone());
-        let amount: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        let mut checkpoint = Self::settle_holder(&env, holder.clone());
+        let amount = checkpoint.unclaimed_capital;
         if amount <= 0 {
             return 0;
         }
-        env.storage().instance().set(&key, &0i128);
-        let pool: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DividendPool)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::DividendPool, &(pool - amount));
+        checkpoint.unclaimed_capital = 0;
+        checkpoint.unclaimed_total = Self::checked_sub(&env, checkpoint.unclaimed_total, amount);
+        checkpoint.claimed_total = Self::checked_add(&env, checkpoint.claimed_total, amount);
+        Self::store_holder_checkpoint(&env, &holder, &checkpoint);
+        Self::withdraw_dividend_pool(&env, amount);
         env.events()
             .publish((symbol_short!("cap_clm"), holder), amount);
         amount
@@ -631,7 +850,10 @@ impl PropertyToken {
 
     pub fn holder_count(env: Env) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::HolderCount)
+            .unwrap_or(0)
     }
 
     pub fn holder_slots_remaining(env: Env) -> u32 {
@@ -640,7 +862,11 @@ impl PropertyToken {
         if rules.max_holders == 0 {
             return u32::MAX;
         }
-        let count: u32 = env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::HolderCount)
+            .unwrap_or(0);
         rules.max_holders.saturating_sub(count)
     }
 
@@ -664,10 +890,10 @@ impl PropertyToken {
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
-        if !th::is_kyc_approved(&env, &from) {
+        if th::get_kyc_state_of(&env, &from) != th::KycState::Approved {
             panic_with_error!(env, PropertyError::KycNotApproved);
         }
-        if !th::is_kyc_approved(&env, &to) {
+        if th::get_kyc_state_of(&env, &to) != th::KycState::Approved {
             panic_with_error!(env, PropertyError::KycNotApproved);
         }
         Self::require_tier(&env, &to);
@@ -772,77 +998,277 @@ impl PropertyToken {
             .unwrap_or(0)
     }
 
-    fn accrued(env: &Env, holder: Address) -> i128 {
-        let bal = Self::read_balance(env, holder.clone());
-        let debt: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ClaimedDividend(holder))
-            .unwrap_or(0);
-        bal * Self::dps(env) - debt
-    }
-
-    fn accrue(env: &Env, holder: Address) {
-        let owed = Self::accrued(env, holder.clone());
-        if owed > 0 {
-            let key = DataKey::Unclaimed(holder.clone());
-            let unclaimed: i128 = env.storage().instance().get(&key).unwrap_or(0);
-            env.storage().instance().set(&key, &(unclaimed + owed));
-        }
-        Self::accrue_typed(env, holder.clone());
-        Self::reset_debt(env, holder);
-    }
-
-    fn reset_debt(env: &Env, holder: Address) {
-        let bal = Self::read_balance(env, holder.clone());
-        let debt = bal * Self::dps(env);
+    fn rent_dps(env: &Env) -> i128 {
         env.storage()
             .instance()
-            .set(&DataKey::ClaimedDividend(holder), &debt);
+            .get(&DataKey::DividendPerShareRent)
+            .unwrap_or(0)
     }
 
-    fn accrue_typed(env: &Env, holder: Address) {
-        let bal = Self::read_balance(env, holder.clone());
+    fn capital_dps(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DividendPerShareCapital)
+            .unwrap_or(0)
+    }
 
-        let dps_rent: i128 = env
+    fn distribution_count(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::DividendDepositCount)
+            .unwrap_or(0)
+    }
+
+    fn load_holder_checkpoint(env: &Env, holder: &Address) -> HolderDividendCheckpoint {
+        let key = DataKey::HolderDividendCheckpoint(holder.clone());
+        if let Some(checkpoint) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, HolderDividendCheckpoint>(&key)
+        {
+            env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+            return checkpoint;
+        }
+
+        // Lazy compatibility bridge for state written by the pre-checkpoint
+        // accounting model. Once settled, this holder uses only the reconciled
+        // checkpoint record.
+        let balance = Self::read_balance(env, holder.clone());
+        let total_index = Self::dps(env);
+        let rent_index = Self::rent_dps(env);
+        let capital_index = Self::capital_dps(env);
+
+        let legacy_total: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::DividendPerShareRent)
+            .get(&DataKey::Unclaimed(holder.clone()))
             .unwrap_or(0);
-        let claimed_rent: i128 = env
+        let legacy_total_debt: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimedDividend(holder.clone()))
+            .unwrap_or(0);
+        let legacy_rent: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UnclaimedRent(holder.clone()))
+            .unwrap_or(0);
+        let legacy_rent_debt: i128 = env
             .storage()
             .instance()
             .get(&DataKey::ClaimedDividendRent(holder.clone()))
             .unwrap_or(0);
-        let owed_rent = bal * dps_rent - claimed_rent;
-        if owed_rent > 0 {
-            let key = DataKey::UnclaimedRent(holder.clone());
-            let prev: i128 = env.storage().instance().get(&key).unwrap_or(0);
-            env.storage().instance().set(&key, &(prev + owed_rent));
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::ClaimedDividendRent(holder.clone()), &(bal * dps_rent));
-
-        let dps_cap: i128 = env
+        let legacy_capital: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::DividendPerShareCapital)
+            .get(&DataKey::UnclaimedCapital(holder.clone()))
             .unwrap_or(0);
-        let claimed_cap: i128 = env
+        let legacy_capital_debt: i128 = env
             .storage()
             .instance()
             .get(&DataKey::ClaimedDividendCapital(holder.clone()))
             .unwrap_or(0);
-        let owed_cap = bal * dps_cap - claimed_cap;
-        if owed_cap > 0 {
-            let key = DataKey::UnclaimedCapital(holder.clone());
-            let prev: i128 = env.storage().instance().get(&key).unwrap_or(0);
-            env.storage().instance().set(&key, &(prev + owed_cap));
+
+        let total_entitlement = Self::checked_mul(env, balance, total_index);
+        let rent_entitlement = Self::checked_mul(env, balance, rent_index);
+        let capital_entitlement = Self::checked_mul(env, balance, capital_index);
+
+        let unclaimed_total = Self::checked_add(
+            env,
+            legacy_total,
+            Self::positive_difference(env, total_entitlement, legacy_total_debt),
+        );
+        let unclaimed_rent = Self::checked_add(
+            env,
+            legacy_rent,
+            Self::positive_difference(env, rent_entitlement, legacy_rent_debt),
+        );
+        let unclaimed_capital = Self::checked_add(
+            env,
+            legacy_capital,
+            Self::positive_difference(env, capital_entitlement, legacy_capital_debt),
+        );
+        let typed_total = Self::checked_add(env, unclaimed_rent, unclaimed_capital);
+        let (unclaimed_rent, unclaimed_capital) = if typed_total <= unclaimed_total {
+            (unclaimed_rent, unclaimed_capital)
+        } else {
+            // The legacy claim-all path cleared only the aggregate counter,
+            // leaving stale typed counters behind. The aggregate is
+            // authoritative when those views disagree; preserving either
+            // typed counter would make an already-paid amount claimable again.
+            (0, 0)
+        };
+
+        HolderDividendCheckpoint {
+            distribution_count: Self::distribution_count(env),
+            balance,
+            total_index,
+            rent_index,
+            capital_index,
+            unclaimed_total,
+            unclaimed_rent,
+            unclaimed_capital,
+            claimed_total: 0,
         }
-        env.storage()
+    }
+
+    fn preview_holder_checkpoint(env: &Env, holder: Address) -> HolderDividendCheckpoint {
+        let mut checkpoint = Self::load_holder_checkpoint(env, &holder);
+        let (distribution_count, total_index, rent_index, capital_index) =
+            Self::latest_distribution_indexes(env);
+
+        let total_delta = Self::positive_difference(env, total_index, checkpoint.total_index);
+        let rent_delta = Self::positive_difference(env, rent_index, checkpoint.rent_index);
+        let capital_delta = Self::positive_difference(env, capital_index, checkpoint.capital_index);
+
+        checkpoint.unclaimed_total = Self::checked_add(
+            env,
+            checkpoint.unclaimed_total,
+            Self::checked_mul(env, checkpoint.balance, total_delta),
+        );
+        checkpoint.unclaimed_rent = Self::checked_add(
+            env,
+            checkpoint.unclaimed_rent,
+            Self::checked_mul(env, checkpoint.balance, rent_delta),
+        );
+        checkpoint.unclaimed_capital = Self::checked_add(
+            env,
+            checkpoint.unclaimed_capital,
+            Self::checked_mul(env, checkpoint.balance, capital_delta),
+        );
+        checkpoint.total_index = total_index;
+        checkpoint.rent_index = rent_index;
+        checkpoint.capital_index = capital_index;
+        checkpoint.distribution_count = distribution_count;
+        checkpoint
+    }
+
+    fn latest_distribution_indexes(env: &Env) -> (u32, i128, i128, i128) {
+        let distribution_count = Self::distribution_count(env);
+        if distribution_count > 0 {
+            let key = DataKey::DistributionCheckpoint(distribution_count - 1);
+            if let Some(checkpoint) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, DistributionCheckpoint>(&key)
+            {
+                env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+                return (
+                    distribution_count,
+                    checkpoint.cumulative_per_share,
+                    checkpoint.rent_cumulative_per_share,
+                    checkpoint.capital_cumulative_per_share,
+                );
+            }
+        }
+
+        // Pre-upgrade distributions have only the legacy cumulative keys.
+        // New distributions persist the journal entry atomically with the
+        // cumulative keys, so this fallback is limited to legacy state or an
+        // expired audit record.
+        (
+            distribution_count,
+            Self::dps(env),
+            Self::rent_dps(env),
+            Self::capital_dps(env),
+        )
+    }
+
+    fn settle_holder(env: &Env, holder: Address) -> HolderDividendCheckpoint {
+        let checkpoint = Self::preview_holder_checkpoint(env, holder.clone());
+        Self::store_holder_checkpoint(env, &holder, &checkpoint);
+        checkpoint
+    }
+
+    fn store_holder_checkpoint(env: &Env, holder: &Address, checkpoint: &HolderDividendCheckpoint) {
+        let key = DataKey::HolderDividendCheckpoint(holder.clone());
+        env.storage().persistent().set(&key, checkpoint);
+        env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+
+        // Keep the legacy debt keys synchronized. If a persistent checkpoint
+        // expires while the instance remains active, lazy reconstruction must
+        // not replay an already claimed distribution.
+        env.storage().instance().set(
+            &DataKey::Unclaimed(holder.clone()),
+            &checkpoint.unclaimed_total,
+        );
+        env.storage().instance().set(
+            &DataKey::UnclaimedRent(holder.clone()),
+            &checkpoint.unclaimed_rent,
+        );
+        env.storage().instance().set(
+            &DataKey::UnclaimedCapital(holder.clone()),
+            &checkpoint.unclaimed_capital,
+        );
+        env.storage().instance().set(
+            &DataKey::ClaimedDividend(holder.clone()),
+            &Self::checked_mul(env, checkpoint.balance, checkpoint.total_index),
+        );
+        env.storage().instance().set(
+            &DataKey::ClaimedDividendRent(holder.clone()),
+            &Self::checked_mul(env, checkpoint.balance, checkpoint.rent_index),
+        );
+        env.storage().instance().set(
+            &DataKey::ClaimedDividendCapital(holder.clone()),
+            &Self::checked_mul(env, checkpoint.balance, checkpoint.capital_index),
+        );
+    }
+
+    fn accrue(env: &Env, holder: Address) {
+        Self::settle_holder(env, holder);
+    }
+
+    fn reset_debt(env: &Env, holder: Address) {
+        let mut checkpoint = Self::preview_holder_checkpoint(env, holder.clone());
+        checkpoint.balance = Self::read_balance(env, holder.clone());
+        Self::store_holder_checkpoint(env, &holder, &checkpoint);
+    }
+
+    fn withdraw_dividend_pool(env: &Env, amount: i128) {
+        let pool: i128 = env
+            .storage()
             .instance()
-            .set(&DataKey::ClaimedDividendCapital(holder), &(bal * dps_cap));
+            .get(&DataKey::DividendPool)
+            .unwrap_or(0);
+        if pool < amount {
+            panic_with_error!(env, PropertyError::InsufficientDividendPool);
+        }
+        env.storage().instance().set(
+            &DataKey::DividendPool,
+            &Self::checked_sub(env, pool, amount),
+        );
+    }
+
+    fn positive_difference(env: &Env, left: i128, right: i128) -> i128 {
+        if left > right {
+            Self::checked_sub(env, left, right)
+        } else {
+            0
+        }
+    }
+
+    fn checked_add(env: &Env, left: i128, right: i128) -> i128 {
+        if let Some(value) = left.checked_add(right) {
+            value
+        } else {
+            panic_with_error!(env, PropertyError::DividendMathOverflow);
+        }
+    }
+
+    fn checked_sub(env: &Env, left: i128, right: i128) -> i128 {
+        if let Some(value) = left.checked_sub(right) {
+            value
+        } else {
+            panic_with_error!(env, PropertyError::DividendMathOverflow);
+        }
+    }
+
+    fn checked_mul(env: &Env, left: i128, right: i128) -> i128 {
+        if let Some(value) = left.checked_mul(right) {
+            value
+        } else {
+            panic_with_error!(env, PropertyError::DividendMathOverflow);
+        }
     }
 
     fn add_holder_local(env: &Env, addr: &Address) {
@@ -857,10 +1283,20 @@ impl PropertyToken {
             }
         }
         holders.push_back(addr.clone());
-        env.storage().persistent().set(&DataKey::HolderList, &holders);
-        env.storage().persistent().extend_ttl(&DataKey::HolderList, THRESHOLD, BUMP);
-        let count: u32 = env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0);
-        env.storage().instance().set(&DataKey::HolderCount, &(count + 1));
+        env.storage()
+            .persistent()
+            .set(&DataKey::HolderList, &holders);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::HolderList, THRESHOLD, BUMP);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::HolderCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::HolderCount, &(count + 1));
     }
 
     fn remove_holder_local(env: &Env, addr: &Address) {
@@ -879,10 +1315,20 @@ impl PropertyToken {
             }
         }
         if found {
-            env.storage().persistent().set(&DataKey::HolderList, &new_holders);
-            env.storage().persistent().extend_ttl(&DataKey::HolderList, THRESHOLD, BUMP);
-            let count: u32 = env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0);
-            env.storage().instance().set(&DataKey::HolderCount, &count.saturating_sub(1));
+            env.storage()
+                .persistent()
+                .set(&DataKey::HolderList, &new_holders);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::HolderList, THRESHOLD, BUMP);
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::HolderCount)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::HolderCount, &count.saturating_sub(1));
         }
     }
 

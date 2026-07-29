@@ -205,14 +205,19 @@ impl CarbonCreditToken {
     pub fn mint(env: Env, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, CarbonError::KycNotApproved);
-        }
-        if th::is_compliance_paused(&env) {
-            panic_with_error!(env, CarbonError::CompliancePaused);
-        }
-        if th::is_compliance_blocklisted(&env, &to) {
-            panic_with_error!(env, CarbonError::Blocklisted);
+        match th::evaluate_transfer_compliance(&env, &to, &to, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::Blocklisted);
+                } else {
+                    panic_with_error!(env, CarbonError::TransferBlocked);
+                }
+            }
         }
         let bal = Self::read_balance(&env, to.clone());
         Self::write_balance(&env, to.clone(), bal + amount);
@@ -233,14 +238,19 @@ impl CarbonCreditToken {
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, CarbonError::KycNotApproved);
-        }
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, CarbonError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &from, &to, amount) {
-            panic_with_error!(env, CarbonError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &from, &to, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::Blocklisted);
+                } else {
+                    panic_with_error!(env, CarbonError::TransferBlocked);
+                }
+            }
         }
         let from_bal = Self::read_balance(&env, from.clone());
         if from_bal < amount {
@@ -266,11 +276,15 @@ impl CarbonCreditToken {
     ) -> RetirementReceipt {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         retiree.require_auth();
-        if !th::is_kyc_approved(&env, &retiree) {
-            panic_with_error!(env, CarbonError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &retiree, &retiree, amount) {
-            panic_with_error!(env, CarbonError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &retiree, &retiree, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, CarbonError::TransferBlocked);
+                }
+            }
         }
         let bal = Self::read_balance(&env, retiree.clone());
         if bal < amount {
@@ -331,14 +345,19 @@ impl CarbonCreditToken {
     ) -> RetirementReceipt {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         retiree.require_auth();
-        if !th::is_kyc_approved(&env, &retiree) {
-            panic_with_error!(env, CarbonError::KycNotApproved);
+        match th::evaluate_transfer_compliance(&env, &retiree, &retiree, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, CarbonError::TransferBlocked);
+                }
+            }
         }
-        if !th::is_kyc_approved(&env, &on_behalf_of) {
+        // on_behalf_of is only recorded in the receipt — check KYC state explicitly.
+        if th::get_kyc_state_of(&env, &on_behalf_of) != th::KycState::Approved {
             panic_with_error!(env, CarbonError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &retiree, &retiree, amount) {
-            panic_with_error!(env, CarbonError::TransferBlocked);
         }
         let bal = Self::read_balance(&env, retiree.clone());
         if bal < amount {
@@ -403,11 +422,15 @@ impl CarbonCreditToken {
             panic_with_error!(env, CarbonError::BatchTooLarge);
         }
 
-        if !th::is_kyc_approved(&env, &retiree) {
-            panic_with_error!(env, CarbonError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &retiree, &retiree, 1) {
-            panic_with_error!(env, CarbonError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &retiree, &retiree, 1) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, CarbonError::TransferBlocked);
+                }
+            }
         }
 
         let mut total: i128 = 0;

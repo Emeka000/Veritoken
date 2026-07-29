@@ -1,11 +1,11 @@
 #![cfg(test)]
 
-use crate::{PropertyMeta, PropertyToken, PropertyTokenClient};
+use crate::{DataKey, DistributionType, PropertyMeta, PropertyToken, PropertyTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address, Env, IntoVal, String,
+    Address, Env, String,
 };
 
 struct Harness {
@@ -265,7 +265,7 @@ fn test_transfer_snapshots_dividends() {
     h.token.mint(&alice, &100);
 
     h.token.deposit_dividend(&1_000, &2); // 1 per share
-                                      // Alice accrued 100 before transferring all her shares.
+                                          // Alice accrued 100 before transferring all her shares.
     h.token.transfer(&alice, &bob, &100);
 
     // Bob just received shares; he must not inherit Alice's accrued dividend.
@@ -372,8 +372,12 @@ fn test_transfer_from_rejects_recipient_below_required_tier() {
     h.approve_kyc_with_tier(&bob, 0);
     h.approve_kyc_with_tier(&spender, 1);
     h.token.mint(&alice, &100);
-    h.token.approve(&alice, &spender, &50, &(h.env.ledger().sequence() + 100));
-    assert!(h.token.try_transfer_from(&spender, &alice, &bob, &50).is_err());
+    h.token
+        .approve(&alice, &spender, &50, &(h.env.ledger().sequence() + 100));
+    assert!(h
+        .token
+        .try_transfer_from(&spender, &alice, &bob, &50)
+        .is_err());
 }
 
 #[test]
@@ -386,7 +390,8 @@ fn test_transfer_from_accepts_recipient_with_sufficient_tier() {
     h.approve_kyc_with_tier(&bob, 1);
     h.approve_kyc_with_tier(&spender, 1);
     h.token.mint(&alice, &100);
-    h.token.approve(&alice, &spender, &50, &(h.env.ledger().sequence() + 100));
+    h.token
+        .approve(&alice, &spender, &50, &(h.env.ledger().sequence() + 100));
     h.token.transfer_from(&spender, &alice, &bob, &50);
     assert_eq!(h.token.balance(&bob), 50);
 }
@@ -440,7 +445,10 @@ fn test_valid_property_type_accepted_in_update_meta() {
     let mut new_meta = h.token.get_meta();
     new_meta.property_type = String::from_str(&h.env, "commercial");
     h.token.update_meta(&new_meta);
-    assert_eq!(h.token.get_meta().property_type, String::from_str(&h.env, "commercial"));
+    assert_eq!(
+        h.token.get_meta().property_type,
+        String::from_str(&h.env, "commercial")
+    );
 }
 
 // ── update_kyc_registry / update_compliance_engine tests ─────────────────────
@@ -464,7 +472,9 @@ fn test_update_kyc_registry_admin_only() {
             ),
         );
         let client2 = PropertyTokenClient::new(&env2, &token_id2);
-        assert!(client2.try_update_kyc_registry(&Address::generate(&env2)).is_err());
+        assert!(client2
+            .try_update_kyc_registry(&Address::generate(&env2))
+            .is_err());
     }
 
     // Admin succeeds
@@ -494,7 +504,9 @@ fn test_update_compliance_engine_admin_only() {
             ),
         );
         let client2 = PropertyTokenClient::new(&env2, &token_id2);
-        assert!(client2.try_update_compliance_engine(&Address::generate(&env2)).is_err());
+        assert!(client2
+            .try_update_compliance_engine(&Address::generate(&env2))
+            .is_err());
     }
 
     // Deploy a second compliance engine and pause it
@@ -628,7 +640,7 @@ fn test_buyback_rejects_kyc_unapproved_holder() {
 fn test_version_returns_nonempty() {
     let h = setup();
     let v = h.token.version();
-    assert!(v.len() > 0);
+    assert!(!v.is_empty());
 }
 
 #[test]
@@ -656,7 +668,7 @@ fn test_dividend_history_records_deposits() {
 }
 
 #[test]
-fn test_dividend_history_running_total_dps() {
+fn test_dividend_history_running_total_dps_legacy() {
     let h = setup();
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
@@ -668,6 +680,313 @@ fn test_dividend_history_running_total_dps() {
     let history = h.token.get_dividend_history(&0, &10);
     assert_eq!(history.get(0).unwrap().running_total_dps, 1);
     assert_eq!(history.get(1).unwrap().running_total_dps, 3);
+}
+
+// ── Checkpointed dividend accounting (#509) ──────────────────────────────────
+
+#[test]
+fn test_distribution_checkpoint_reconciles_rounding() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    h.token.deposit_dividend(&1_250, &0);
+
+    assert_eq!(h.token.dividend_accounting_version(), 1);
+    let checkpoint = h.token.get_distribution(&0).unwrap();
+    assert_eq!(checkpoint.id, 0);
+    assert_eq!(checkpoint.amount, 1_250);
+    assert_eq!(checkpoint.total_shares, 1_000);
+    assert_eq!(checkpoint.per_share, 1);
+    assert_eq!(checkpoint.allocated_amount, 1_000);
+    assert_eq!(checkpoint.remainder, 250);
+    assert_eq!(checkpoint.cumulative_per_share, 1);
+    assert_eq!(checkpoint.rent_cumulative_per_share, 1);
+    assert_eq!(checkpoint.capital_cumulative_per_share, 0);
+    assert_eq!(checkpoint.other_cumulative_per_share, 0);
+    assert_eq!(checkpoint.type_cumulative_per_share, 1);
+    assert_eq!(checkpoint.distribution_type, 0);
+
+    let page = h.token.get_distributions(&0, &10);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().id, 0);
+
+    let unclaimed = h.token.unclaimed_balance(&alice);
+    assert_eq!(unclaimed.total, 1_000);
+    assert_eq!(unclaimed.rent, 1_000);
+    assert_eq!(unclaimed.capital, 0);
+    assert_eq!(unclaimed.other, 0);
+    assert_eq!(unclaimed.distribution_count, 1);
+}
+
+#[test]
+fn test_claim_all_clears_typed_claims_and_cannot_overdraw_pool() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    h.token.deposit_dividend(&1_000, &0);
+    h.token.deposit_dividend(&2_000, &1);
+    h.token.deposit_dividend(&3_000, &2);
+
+    assert_eq!(h.token.claim_dividend(&alice), 6_000);
+    assert_eq!(h.token.dividend_pool(), 0);
+    assert_eq!(h.token.pending_dividend(&alice), 0);
+    assert_eq!(h.token.claim_rent_yield(&alice), 0);
+    assert_eq!(h.token.claim_capital_return(&alice), 0);
+    assert_eq!(h.token.dividend_pool(), 0);
+}
+
+#[test]
+fn test_claims_derive_indexes_from_distribution_journal() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+    h.token.deposit_dividend(&1_000, &0);
+    h.token.deposit_dividend(&2_000, &1);
+
+    // The immutable latest distribution checkpoint is the source of truth for
+    // post-upgrade accrual. Legacy mutable index keys are only a migration
+    // fallback and cannot alter a checkpoint-backed claim.
+    h.env.as_contract(&h.token.address, || {
+        h.env
+            .storage()
+            .instance()
+            .set(&DataKey::DividendPerShare, &0i128);
+        h.env
+            .storage()
+            .instance()
+            .set(&DataKey::DividendPerShareRent, &0i128);
+        h.env
+            .storage()
+            .instance()
+            .set(&DataKey::DividendPerShareCapital, &0i128);
+    });
+
+    let unclaimed = h.token.unclaimed_balance(&alice);
+    assert_eq!(unclaimed.total, 3_000);
+    assert_eq!(unclaimed.rent, 1_000);
+    assert_eq!(unclaimed.capital, 2_000);
+    assert_eq!(h.token.claim_dividend(&alice), 3_000);
+    assert_eq!(h.token.dividend_pool(), 0);
+}
+
+#[test]
+fn test_legacy_claim_all_state_cannot_restore_stale_typed_claims() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    h.token.deposit_dividend(&1_000, &0);
+    assert_eq!(h.token.claim_dividend(&alice), 1_000);
+    assert_eq!(h.token.dividend_pool(), 0);
+
+    // Recreate the pre-checkpoint bug: claim-all cleared the aggregate amount
+    // and pool, but left a stale typed rent counter.
+    h.env.as_contract(&h.token.address, || {
+        h.env
+            .storage()
+            .persistent()
+            .remove(&DataKey::HolderDividendCheckpoint(alice.clone()));
+        h.env
+            .storage()
+            .instance()
+            .set(&DataKey::UnclaimedRent(alice.clone()), &1_000i128);
+    });
+
+    let migrated = h.token.unclaimed_balance(&alice);
+    assert_eq!(migrated.total, 0);
+    assert_eq!(migrated.rent, 0);
+    assert_eq!(migrated.capital, 0);
+    assert_eq!(h.token.claim_rent_yield(&alice), 0);
+    assert_eq!(h.token.dividend_pool(), 0);
+}
+
+#[test]
+fn test_typed_claim_reconciles_aggregate_claimable() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &1_000);
+
+    h.token.deposit_dividend(&1_000, &0);
+    h.token.deposit_dividend(&2_000, &1);
+
+    assert_eq!(h.token.claim_rent_yield(&alice), 1_000);
+    let after_rent = h.token.unclaimed_balance(&alice);
+    assert_eq!(after_rent.total, 2_000);
+    assert_eq!(after_rent.rent, 0);
+    assert_eq!(after_rent.capital, 2_000);
+
+    assert_eq!(h.token.claim_dividend(&alice), 2_000);
+    assert_eq!(h.token.claim_capital_return(&alice), 0);
+    assert_eq!(h.token.dividend_pool(), 0);
+}
+
+#[test]
+fn test_forced_transfer_preserves_both_holders_accrual() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &600);
+    h.token.mint(&bob, &400);
+
+    h.token.deposit_dividend(&1_000, &0);
+    h.token.forced_transfer(&alice, &bob, &200);
+    h.token.deposit_dividend(&1_000, &1);
+
+    let alice_unclaimed = h.token.unclaimed_balance(&alice);
+    assert_eq!(alice_unclaimed.total, 1_000);
+    assert_eq!(alice_unclaimed.rent, 600);
+    assert_eq!(alice_unclaimed.capital, 400);
+
+    let bob_unclaimed = h.token.unclaimed_balance(&bob);
+    assert_eq!(bob_unclaimed.total, 1_000);
+    assert_eq!(bob_unclaimed.rent, 400);
+    assert_eq!(bob_unclaimed.capital, 600);
+
+    assert_eq!(h.token.claim_dividend(&alice), 1_000);
+    assert_eq!(h.token.claim_dividend(&bob), 1_000);
+    assert_eq!(h.token.dividend_pool(), 0);
+}
+
+#[test]
+fn test_deterministic_random_claim_transfer_model_preserves_invariants() {
+    fn next(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *seed
+    }
+
+    let h = setup();
+    let holders = [
+        Address::generate(&h.env),
+        Address::generate(&h.env),
+        Address::generate(&h.env),
+        Address::generate(&h.env),
+    ];
+    for holder in &holders {
+        h.approve_kyc(holder);
+    }
+    h.token.mint(&holders[0], &1_000);
+
+    let mut balances = [1_000i128, 0i128, 0i128, 0i128];
+    let mut expected_total = [0i128; 4];
+    let mut expected_rent = [0i128; 4];
+    let mut expected_capital = [0i128; 4];
+    let mut distributions = 0u32;
+    let mut expected_pool = 0i128;
+    let mut seed = 0x5eed_0509_dead_beefu64;
+
+    for step in 0usize..180 {
+        let operation = next(&mut seed) % 7;
+        if operation == 0 || distributions == 0 {
+            let distribution_type = (next(&mut seed) % 3) as u32;
+            h.token.deposit_dividend(&1_000, &distribution_type);
+            for index in 0..holders.len() {
+                expected_total[index] += balances[index];
+                if distribution_type == DistributionType::Rent as u32 {
+                    expected_rent[index] += balances[index];
+                } else if distribution_type == DistributionType::Capital as u32 {
+                    expected_capital[index] += balances[index];
+                }
+            }
+            distributions += 1;
+            expected_pool += 1_000;
+        } else if operation == 1 || operation == 2 {
+            let start = (next(&mut seed) as usize) % holders.len();
+            let mut from_index = start;
+            for offset in 0..holders.len() {
+                let candidate = (start + offset) % holders.len();
+                if balances[candidate] > 0 {
+                    from_index = candidate;
+                    break;
+                }
+            }
+            let to_index =
+                (from_index + 1 + (next(&mut seed) as usize % (holders.len() - 1))) % holders.len();
+            let amount = if step % 11 == 0 {
+                balances[from_index]
+            } else {
+                1 + i128::from(next(&mut seed) % balances[from_index] as u64)
+            };
+            if operation == 1 {
+                h.token
+                    .transfer(&holders[from_index], &holders[to_index], &amount);
+            } else {
+                h.token
+                    .forced_transfer(&holders[from_index], &holders[to_index], &amount);
+            }
+            balances[from_index] -= amount;
+            balances[to_index] += amount;
+        } else {
+            let holder_index = (next(&mut seed) as usize) % holders.len();
+            let claimed = if operation == 3 {
+                let amount = h.token.claim_dividend(&holders[holder_index]);
+                assert_eq!(amount, expected_total[holder_index]);
+                expected_total[holder_index] = 0;
+                expected_rent[holder_index] = 0;
+                expected_capital[holder_index] = 0;
+                amount
+            } else if operation == 4 {
+                let amount = h.token.claim_rent_yield(&holders[holder_index]);
+                assert_eq!(amount, expected_rent[holder_index]);
+                expected_total[holder_index] -= amount;
+                expected_rent[holder_index] = 0;
+                amount
+            } else {
+                let amount = h.token.claim_capital_return(&holders[holder_index]);
+                assert_eq!(amount, expected_capital[holder_index]);
+                expected_total[holder_index] -= amount;
+                expected_capital[holder_index] = 0;
+                amount
+            };
+            expected_pool -= claimed;
+        }
+
+        for index in 0..holders.len() {
+            assert_eq!(h.token.balance(&holders[index]), balances[index]);
+            assert_eq!(
+                h.token.pending_dividend(&holders[index]),
+                expected_total[index]
+            );
+            let unclaimed = h.token.unclaimed_balance(&holders[index]);
+            assert_eq!(unclaimed.total, expected_total[index]);
+            assert_eq!(unclaimed.rent, expected_rent[index]);
+            assert_eq!(unclaimed.capital, expected_capital[index]);
+            assert_eq!(
+                unclaimed.other,
+                expected_total[index] - expected_rent[index] - expected_capital[index]
+            );
+        }
+        let expected_holder_count = balances.iter().filter(|balance| **balance > 0).count() as u32;
+        assert_eq!(h.token.holder_count(), expected_holder_count);
+        assert_eq!(h.token.dividend_pool(), expected_pool);
+        assert_eq!(h.token.dividend_deposit_count(), distributions);
+    }
+
+    for index in 0..holders.len() {
+        assert_eq!(
+            h.token.claim_dividend(&holders[index]),
+            expected_total[index]
+        );
+    }
+    assert_eq!(h.token.dividend_pool(), 0);
+}
+
+#[test]
+fn test_rejects_invalid_distribution_inputs() {
+    let h = setup();
+    assert!(h.token.try_deposit_dividend(&0, &0).is_err());
+    assert!(h.token.try_deposit_dividend(&-1, &0).is_err());
+    assert!(h.token.try_deposit_dividend(&1_000, &3).is_err());
 }
 
 #[test]
@@ -795,11 +1114,10 @@ fn test_second_claim_yields_nothing() {
     assert_eq!(h.token.claim_capital_return(&alice), 0);
 }
 
-
 // ── Dividend auditability tests (#355) ───────────────────────────────────────
 
 #[test]
-fn test_dividend_deposit_count_increments() {
+fn test_dividend_deposit_count_increments_checkpoint_audit() {
     let h = setup();
     let alice = Address::generate(&h.env);
     h.approve_kyc_with_tier(&alice, 1);
@@ -818,7 +1136,7 @@ fn test_dividend_deposit_count_increments() {
 }
 
 #[test]
-fn test_get_dividend_history_returns_events() {
+fn test_get_dividend_history_returns_events_checkpoint_audit() {
     let h = setup();
     let alice = Address::generate(&h.env);
     h.approve_kyc_with_tier(&alice, 1);
@@ -840,7 +1158,7 @@ fn test_get_dividend_history_returns_events() {
 }
 
 #[test]
-fn test_get_dividend_history_pagination() {
+fn test_get_dividend_history_pagination_checkpoint_audit() {
     let h = setup();
     let alice = Address::generate(&h.env);
     h.approve_kyc_with_tier(&alice, 1);
@@ -866,7 +1184,7 @@ fn test_get_dividend_history_pagination() {
 }
 
 #[test]
-fn test_dividend_history_running_total_dps() {
+fn test_dividend_history_running_total_dps_checkpoint_audit() {
     let h = setup();
     let alice = Address::generate(&h.env);
     h.approve_kyc_with_tier(&alice, 1);

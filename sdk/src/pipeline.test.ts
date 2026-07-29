@@ -2,12 +2,21 @@
  * Tests for TxPipeline, SequenceCache, and the TxError hierarchy.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Networks, nativeToScVal, rpc, TransactionBuilder } from "@stellar/stellar-sdk";
+import {
+  Account,
+  Contract,
+  Networks,
+  nativeToScVal,
+  rpc,
+  TransactionBuilder,
+  type Transaction,
+} from "@stellar/stellar-sdk";
 import {
   TxPipeline, SequenceCache,
   SequenceError, SimulationError, SigningError,
   SubmissionError, ConfirmError, TimeoutError, TransientError,
   isTransientError,
+  type PipelineOptions,
 } from "./pipeline.js";
 import { encodeAddress, encodeI128 } from "./codec.js";
 
@@ -17,21 +26,39 @@ const ALICE = "GBQG2SJ7MXUH34SI3MJ2I256I5UMGM2QSQZM77YFX5S6JOHXUQJEPC3A";
 const BOB   = "GAQWW5UBJVPNKMM5NLAIBEL6QK24ODXABL7YAXBN6KNMH3OYNM5JXT35";
 const SIM_SRC = ALICE;
 
-const { Account, Contract, TransactionBuilder: TB } = require("@stellar/stellar-sdk");
 const VALID_XDR = (() => {
   const acct = new Account(ALICE, "0");
   const contract = new Contract(CONTRACT_ID);
-  return new TB(acct, { fee: "100", networkPassphrase: PASSPHRASE })
+  return new TransactionBuilder(acct, { fee: "100", networkPassphrase: PASSPHRASE })
     .addOperation(contract.call("t", encodeAddress(ALICE)))
     .setTimeout(30).build().toXDR();
 })();
 
-const mockAssemble = (_tx, _sim) => ({ build: () => ({ toXDR: () => VALID_XDR }) });
-const noSleep = () => Promise.resolve();
-const sign = vi.fn(async (x) => x);
-beforeEach(() => vi.clearAllMocks());
+const mockAssemble: typeof rpc.assembleTransaction = () =>
+  ({
+    build: () => ({ toXDR: () => VALID_XDR }),
+  }) as unknown as ReturnType<typeof rpc.assembleTransaction>;
+const noSleep = (_ms: number): Promise<void> => Promise.resolve();
+const sign = vi.fn(async (x: string) => x);
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
-function makeSrv(opts = {}) {
+interface ServerOptions {
+  sequence?: string;
+  simError?: boolean | string;
+  sendStatus?: string;
+  getTxStatus?: string;
+}
+
+type MockServer = rpc.Server & {
+  getAccount: ReturnType<typeof vi.fn>;
+  simulateTransaction: ReturnType<typeof vi.fn>;
+  sendTransaction: ReturnType<typeof vi.fn>;
+  getTransaction: ReturnType<typeof vi.fn>;
+};
+
+function makeSrv(opts: ServerOptions = {}): MockServer {
   const { sequence = "10", simError = false, sendStatus = "PENDING", getTxStatus = "SUCCESS" } = opts;
   const simResp = simError
     ? { error: typeof simError === "string" ? simError : "Error(Contract, #6)", _e: true }
@@ -41,11 +68,11 @@ function makeSrv(opts = {}) {
     simulateTransaction: vi.fn().mockResolvedValue(simResp),
     sendTransaction: vi.fn().mockResolvedValue({ status: sendStatus, hash: "txhash_abc", errorResult: sendStatus === "ERROR" ? { msg: "bad" } : undefined }),
     getTransaction: vi.fn().mockResolvedValue({ status: getTxStatus, resultXdr: "r", resultMetaXdr: null }),
-  };
+  } as unknown as MockServer;
 }
 
-function makePipeline(srv, overrides = {}) {
-  return new TxPipeline(srv, PASSPHRASE, {
+function makePipeline(srv: unknown, overrides: PipelineOptions = {}) {
+  return new TxPipeline(srv as rpc.Server, PASSPHRASE, {
     assemble: mockAssemble,
     sleep: noSleep,
     maxRetries: 2,
@@ -105,7 +132,9 @@ describe("SequenceCache", () => {
   });
   it("throws SequenceError when getAccount fails", async () => {
     const srv = { getAccount: vi.fn().mockRejectedValue(new Error("rpc down")) };
-    await expect(new SequenceCache().next(srv, ALICE)).rejects.toBeInstanceOf(SequenceError);
+    await expect(
+      new SequenceCache().next(srv as unknown as rpc.Server, ALICE),
+    ).rejects.toBeInstanceOf(SequenceError);
   });
 });
 
@@ -118,7 +147,14 @@ describe("TxPipeline.buildTx", () => {
   });
   it("advances sequence by 1", () => {
     const p = makePipeline(makeSrv());
-    expect(TransactionBuilder.fromXDR(p.buildTx(CONTRACT_ID, "name", [], ALICE, "5"), PASSPHRASE).sequence).toBe("6");
+    expect(
+      (
+        TransactionBuilder.fromXDR(
+          p.buildTx(CONTRACT_ID, "name", [], ALICE, "5"),
+          PASSPHRASE,
+        ) as Transaction
+      ).sequence,
+    ).toBe("6");
   });
 });
 
@@ -129,9 +165,9 @@ describe("TxPipeline.read", () => {
   });
   it("throws SimulationError on contract error response", async () => {
     const orig = rpc.Api.isSimulationError;
-    (rpc.Api).isSimulationError = (r) => Boolean(r._e);
+    (rpc.Api as any).isSimulationError = (r: any) => Boolean(r._e);
     await expect(makePipeline(makeSrv({ simError: true })).read(CONTRACT_ID, "balance", [], SIM_SRC)).rejects.toBeInstanceOf(SimulationError);
-    (rpc.Api).isSimulationError = orig;
+    (rpc.Api as any).isSimulationError = orig;
   });
   it("throws SimulationError when no retval", async () => {
     const srv = { simulateTransaction: vi.fn().mockResolvedValue({ result: undefined, latestLedger: 1000 }) };
@@ -202,7 +238,7 @@ describe("TxPipeline.write — confirmation polling", () => {
     const srv = makeSrv();
     srv.getTransaction = vi.fn().mockResolvedValue({ status: "NOT_FOUND" });
     let elapsed = 0;
-    const fakeSleep = (ms) => { elapsed += ms; return Promise.resolve(); };
+    const fakeSleep = (ms: number) => { elapsed += ms; return Promise.resolve(); };
     const p = makePipeline(srv, { confirmTimeoutMs: 100, pollIntervalMs: 60, sleep: fakeSleep });
     await expect(p.write(CONTRACT_ID, "t", [encodeAddress(ALICE), encodeAddress(BOB), encodeI128(1n)], ALICE, sign)).rejects.toBeInstanceOf(TimeoutError);
   });
@@ -211,11 +247,11 @@ describe("TxPipeline.write — confirmation polling", () => {
 describe("TxPipeline.write — error handling", () => {
   it("throws SimulationError for contract errors without retrying", async () => {
     const orig = rpc.Api.isSimulationError;
-    (rpc.Api).isSimulationError = (r) => Boolean(r._e);
+    (rpc.Api as any).isSimulationError = (r: any) => Boolean(r._e);
     const srv = makeSrv({ simError: true });
     await expect(makePipeline(srv, { maxRetries: 3 }).write(CONTRACT_ID, "t", [], ALICE, sign)).rejects.toBeInstanceOf(SimulationError);
     expect(srv.simulateTransaction).toHaveBeenCalledOnce();
-    (rpc.Api).isSimulationError = orig;
+    (rpc.Api as any).isSimulationError = orig;
   });
   it("throws SubmissionError when sendTransaction returns ERROR", async () => {
     await expect(makePipeline(makeSrv({ sendStatus: "ERROR" }))

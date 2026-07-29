@@ -130,10 +130,11 @@ export function encodeInvoiceMeta(meta: InvoiceMeta): xdr.ScVal {
     ["discount_rate_bps", encodeU32(meta.discount_rate_bps)],
     ["due_date",        encodeU64(meta.due_date)],
     ["face_value_usd",  encodeI128(meta.face_value_usd)],
-    ["fee_recipient",   meta.fee_recipient ? encodeString(meta.fee_recipient) : nativeToScVal(null)],
+    ["fee_recipient",   meta.fee_recipient ? encodeAddress(meta.fee_recipient) : nativeToScVal(null)],
     ["invoice_id",      encodeString(meta.invoice_id)],
     ["ipfs_doc_hash",   encodeString(meta.ipfs_doc_hash)],
     ["issuer",          encodeString(meta.issuer)],
+    ["notification_webhook", encodeString(meta.notification_webhook)],
     ["transfer_fee_bps", encodeU32(meta.transfer_fee_bps)],
   ]);
 }
@@ -169,6 +170,8 @@ export function encodeProjectMeta(meta: ProjectMeta): xdr.ScVal {
     ["project_id",     encodeString(meta.project_id)],
     ["project_name",   encodeString(meta.project_name)],
     ["project_type",   encodeString(meta.project_type)],
+    ["registry_project_id", encodeString(meta.registry_project_id)],
+    ["registry_url",   encodeString(meta.registry_url)],
     ["standard",       encodeString(meta.standard)],
     ["verifier",       encodeString(meta.verifier)],
     ["vintage_year",   encodeU32(meta.vintage_year)],

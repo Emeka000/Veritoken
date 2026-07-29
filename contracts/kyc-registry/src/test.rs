@@ -1189,3 +1189,226 @@ fn test_get_full_record_log_entries_match_verifier_log_count() {
     let full = client.get_full_record(&subject, &subject);
     assert_eq!(full.log_entries.len(), 4);
 }
+
+// ── get_kyc_state tests ───────────────────────────────────────────────────────
+
+#[test]
+fn test_get_kyc_state_missing_returns_missing() {
+    use crate::KycState;
+    let (env, client, _admin) = setup();
+    let subject = Address::generate(&env);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Missing);
+}
+
+#[test]
+fn test_get_kyc_state_approved_returns_approved() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    assert_eq!(client.get_kyc_state(&subject), KycState::Approved);
+}
+
+#[test]
+fn test_get_kyc_state_approved_but_expired_returns_expired() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    // Approve with an expiry timestamp in the past.
+    client.approve(&verifier, &subject, &0, &1, &js(&env, "US"));
+    // Move ledger time beyond the expiry.
+    env.ledger().set_timestamp(100);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Expired);
+}
+
+#[test]
+fn test_get_kyc_state_revoked_returns_revoked() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Revoked);
+}
+
+#[test]
+fn test_get_kyc_state_rejected_returns_rejected() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    // reject() creates a default record then sets status to Rejected.
+    client.reject(&verifier, &subject);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Rejected);
+}
+
+// ── get_record_opt tests ──────────────────────────────────────────────────────
+
+#[test]
+fn test_get_record_opt_missing_returns_none() {
+    let (env, client, _admin) = setup();
+    let subject = Address::generate(&env);
+    assert!(client.get_record_opt(&subject).is_none());
+}
+
+#[test]
+fn test_get_record_opt_approved_returns_some() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "DE"));
+
+    let record = client.get_record_opt(&subject).expect("record must exist");
+    assert_eq!(record.tier, 1);
+    assert_eq!(record.jurisdiction, js(&env, "DE"));
+}
+
+#[test]
+fn test_get_record_opt_never_panics_for_any_state() {
+    // Verify get_record_opt returns None/Some deterministically without panicking,
+    // even for records in Revoked or Rejected state.
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &alice, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &alice);
+    assert!(client.get_record_opt(&alice).is_some());
+
+    client.reject(&verifier, &bob);
+    assert!(client.get_record_opt(&bob).is_some());
+}
+
+// ── Schema migration tests ────────────────────────────────────────────────────
+
+#[test]
+fn test_schema_version_initialized_to_one() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.schema_version(), 1u32);
+}
+
+#[test]
+fn test_migration_count_starts_at_zero() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.migration_count(), 0u32);
+}
+
+#[test]
+fn test_migrate_schema_success_v1_to_v2() {
+    let (env, client, admin) = setup();
+    assert_eq!(client.schema_version(), 1);
+
+    client.migrate_schema(&admin, &2, &js(&env, "v1 -> v2: add jurisdiction index"));
+
+    assert_eq!(client.schema_version(), 2);
+    assert_eq!(client.migration_count(), 1);
+}
+
+#[test]
+fn test_migrate_schema_record_persisted() {
+    let (env, client, admin) = setup();
+    let desc = js(&env, "v1 -> v2 upgrade");
+    client.migrate_schema(&admin, &2, &desc);
+
+    let rec = client.get_migration_record(&0);
+    assert_eq!(rec.from_version, 1u32);
+    assert_eq!(rec.to_version, 2u32);
+    assert_eq!(rec.description, desc);
+}
+
+#[test]
+fn test_migrate_schema_already_at_version_rejected() {
+    let (env, client, admin) = setup();
+    // schema version is 1 after initialize(); trying to migrate to 1 must fail.
+    let res = client.try_migrate_schema(&admin, &1, &js(&env, "dup"));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(KycError::AlreadyAtSchemaVersion)
+    );
+}
+
+#[test]
+fn test_migrate_schema_version_skip_rejected() {
+    let (env, client, admin) = setup();
+    // Skipping from v1 to v3 must be rejected.
+    let res = client.try_migrate_schema(&admin, &3, &js(&env, "skip"));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(KycError::MigrationVersionNotSequential)
+    );
+}
+
+#[test]
+fn test_migrate_schema_unauthorized_rejected() {
+    let (env, client, _admin) = setup();
+    let rogue = Address::generate(&env);
+    let res = client.try_migrate_schema(&rogue, &2, &js(&env, "hack"));
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_migrate_schema_legacy_bootstrap() {
+    use crate::DataKey;
+    use soroban_sdk::testutils::storage::Instance;
+
+    let (env, client, admin) = setup();
+    let contract_id = env.register(crate::KycRegistry, ());
+    let legacy = KycRegistryClient::new(&env, &contract_id);
+    legacy.initialize(&admin);
+
+    // Simulate a legacy deployment by removing the StorageVersion key.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::StorageVersion);
+    });
+
+    assert_eq!(legacy.schema_version(), 0u32);
+
+    // Bootstrap migration: v0 → v1 must succeed.
+    legacy.migrate_schema(&admin, &1, &js(&env, "bootstrap"));
+    assert_eq!(legacy.schema_version(), 1u32);
+    assert_eq!(legacy.migration_count(), 1u32);
+}
+
+#[test]
+fn test_migrate_schema_state_continuity() {
+    // KYC data must be intact after a schema migration.
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &2, &0, &js(&env, "DE"));
+
+    client.migrate_schema(&admin, &2, &js(&env, "v1 -> v2"));
+
+    // KYC record still accessible and correct after migration.
+    assert!(client.is_approved(&subject));
+    assert_eq!(client.get_tier(&subject), 2);
+}
+
+#[test]
+fn test_migrate_schema_sequential_steps_succeed() {
+    let (env, client, admin) = setup();
+
+    client.migrate_schema(&admin, &2, &js(&env, "step 1"));
+    client.migrate_schema(&admin, &3, &js(&env, "step 2"));
+
+    assert_eq!(client.schema_version(), 3);
+    assert_eq!(client.migration_count(), 2);
+
+    let rec0 = client.get_migration_record(&0);
+    let rec1 = client.get_migration_record(&1);
+    assert_eq!(rec0.from_version, 1);
+    assert_eq!(rec0.to_version, 2);
+    assert_eq!(rec1.from_version, 2);
+    assert_eq!(rec1.to_version, 3);
+}
