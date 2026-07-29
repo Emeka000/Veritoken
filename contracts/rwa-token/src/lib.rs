@@ -65,6 +65,10 @@ pub enum RwaError {
     KycRegistryUnavailable = 19,
     /// Caller is neither the admin nor the holder of the required role.
     UnauthorizedRole = 20,
+    /// The sum of batch entries cannot be represented as an `i128`.
+    BatchAmountOverflow = 21,
+    /// The complete transfer plan would exceed the configured holder cap.
+    HolderLimitExceeded = 22,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -115,6 +119,15 @@ pub struct ComplianceMetadata {
 pub struct RecipientEntry {
     pub to: Address,
     pub amount: i128,
+}
+
+/// Fully validated, immutable execution data for one or more transfer legs.
+///
+/// Every transfer entry point builds this plan before mutating balances,
+/// allowances, holder registration, or events.
+struct TransferPlan {
+    total_amount: i128,
+    sender_balance_after: i128,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -341,14 +354,10 @@ impl RwaToken {
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         Self::enter_transfer_guard(&env);
         from.require_auth();
-        Self::validate_sender(&env, &from);
-        Self::validate_recipient(&env, &from, &to, amount);
-        let from_bal = balance::read_balance(&env, from.clone());
-        Self::apply_transfer_leg(&env, &from, &to, amount);
-        if from != to && from_bal == amount {
-            compliance::unregister_holder(&env, &from);
-        }
-        events::emit_transfer(&env, from, to, amount);
+        let mut recipients = Vec::new(&env);
+        recipients.push_back(RecipientEntry { to, amount });
+        let plan = Self::prepare_transfer_plan(&env, &from, &recipients);
+        Self::execute_transfer_plan(&env, &from, &recipients, &plan);
         Self::exit_transfer_guard(&env);
     }
 
@@ -359,15 +368,11 @@ impl RwaToken {
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         Self::enter_transfer_guard(&env);
         spender.require_auth();
-        Self::validate_sender(&env, &from);
-        Self::validate_recipient(&env, &from, &to, amount);
-        allowance::spend_allowance(&env, from.clone(), spender, amount);
-        let from_bal = balance::read_balance(&env, from.clone());
-        Self::apply_transfer_leg(&env, &from, &to, amount);
-        if from != to && from_bal == amount {
-            compliance::unregister_holder(&env, &from);
-        }
-        events::emit_transfer(&env, from, to, amount);
+        let mut recipients = Vec::new(&env);
+        recipients.push_back(RecipientEntry { to, amount });
+        let plan = Self::prepare_transfer_plan(&env, &from, &recipients);
+        allowance::spend_allowance(&env, from.clone(), spender, plan.total_amount);
+        Self::execute_transfer_plan(&env, &from, &recipients, &plan);
         Self::exit_transfer_guard(&env);
     }
 
@@ -477,42 +482,9 @@ impl RwaToken {
     /// If any check fails, the entire batch is rejected with no state changes.
     pub fn batch_transfer(env: Env, from: Address, recipients: Vec<RecipientEntry>) {
         Self::enter_transfer_guard(&env);
-        let len = recipients.len();
-        if len > 10 {
-            panic_with_error!(env, RwaError::BatchTooLarge);
-        }
         from.require_auth();
-        Self::validate_sender(&env, &from);
-
-        // ── Validation pass (no state changes) ───────────────────────────────
-        let mut total_amount: i128 = 0;
-        for i in 0..len {
-            let entry = recipients.get(i).expect("recipient index out of bounds");
-            Self::validate_recipient(&env, &from, &entry.to, entry.amount);
-            total_amount = total_amount
-                .checked_add(entry.amount)
-                .unwrap_or(i128::MAX);
-        }
-
-        // Total balance check — guarantees the execution pass cannot fail due
-        // to an insufficient-balance panic midway through, which would leave
-        // recipients-before-the-failure with tokens while later ones have none.
-        let from_balance = balance::read_balance(&env, from.clone());
-        if from_balance < total_amount {
-            panic_with_error!(env, RwaError::InsufficientBalance);
-        }
-
-        // ── Execution pass (guaranteed to succeed after validation) ───────────
-        for i in 0..len {
-            let entry = recipients.get(i).expect("recipient index out of bounds");
-            Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
-            events::emit_transfer(&env, from.clone(), entry.to.clone(), entry.amount);
-        }
-
-        // Deregister sender if their balance was fully drained.
-        if balance::read_balance(&env, from.clone()) == 0 {
-            compliance::unregister_holder(&env, &from);
-        }
+        let plan = Self::prepare_transfer_plan(&env, &from, &recipients);
+        Self::execute_transfer_plan(&env, &from, &recipients, &plan);
         Self::exit_transfer_guard(&env);
     }
 
@@ -525,42 +497,10 @@ impl RwaToken {
         recipients: Vec<RecipientEntry>,
     ) {
         Self::enter_transfer_guard(&env);
-        let len = recipients.len();
-        if len > 10 {
-            panic_with_error!(env, RwaError::BatchTooLarge);
-        }
         spender.require_auth();
-        Self::validate_sender(&env, &from);
-
-        // ── Validation pass ───────────────────────────────────────────────────
-        let mut total_amount: i128 = 0;
-        for i in 0..len {
-            let entry = recipients.get(i).expect("recipient index out of bounds");
-            Self::validate_recipient(&env, &from, &entry.to, entry.amount);
-            total_amount = total_amount
-                .checked_add(entry.amount)
-                .unwrap_or(i128::MAX);
-        }
-
-        // Balance check before any mutation.
-        let from_balance = balance::read_balance(&env, from.clone());
-        if from_balance < total_amount {
-            panic_with_error!(env, RwaError::InsufficientBalance);
-        }
-
-        // Consume the entire allowance for the batch upfront.
-        allowance::spend_allowance(&env, from.clone(), spender, total_amount);
-
-        // ── Execution pass ────────────────────────────────────────────────────
-        for i in 0..len {
-            let entry = recipients.get(i).expect("recipient index out of bounds");
-            Self::apply_transfer_leg(&env, &from, &entry.to, entry.amount);
-            events::emit_transfer(&env, from.clone(), entry.to.clone(), entry.amount);
-        }
-
-        if balance::read_balance(&env, from.clone()) == 0 {
-            compliance::unregister_holder(&env, &from);
-        }
+        let plan = Self::prepare_transfer_plan(&env, &from, &recipients);
+        allowance::spend_allowance(&env, from.clone(), spender, plan.total_amount);
+        Self::execute_transfer_plan(&env, &from, &recipients, &plan);
         Self::exit_transfer_guard(&env);
     }
 
@@ -815,6 +755,83 @@ impl RwaToken {
         }
         kyc::require_kyc(env, to);
         compliance::check_transfer(env, from, to, amount);
+    }
+
+    /// Builds a complete transfer plan without mutating token, allowance,
+    /// compliance, or event state.
+    fn prepare_transfer_plan(
+        env: &Env,
+        from: &Address,
+        recipients: &Vec<RecipientEntry>,
+    ) -> TransferPlan {
+        let len = recipients.len();
+        if len > 10 {
+            panic_with_error!(env, RwaError::BatchTooLarge);
+        }
+
+        Self::validate_sender(env, from);
+
+        let mut total_amount = 0i128;
+        let mut self_transfer_amount = 0i128;
+        let mut new_holders = Vec::<Address>::new(env);
+
+        for i in 0..len {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            Self::validate_recipient(env, from, &entry.to, entry.amount);
+
+            total_amount = match total_amount.checked_add(entry.amount) {
+                Some(total) => total,
+                None => panic_with_error!(env, RwaError::BatchAmountOverflow),
+            };
+
+            if entry.to == from.clone() {
+                self_transfer_amount = match self_transfer_amount.checked_add(entry.amount) {
+                    Some(total) => total,
+                    None => panic_with_error!(env, RwaError::BatchAmountOverflow),
+                };
+            } else if balance::read_balance(env, entry.to.clone()) == 0
+                && !new_holders.contains(&entry.to)
+            {
+                new_holders.push_back(entry.to);
+            }
+        }
+
+        let sender_balance_before = balance::read_balance(env, from.clone());
+        if sender_balance_before < total_amount {
+            panic_with_error!(env, RwaError::InsufficientBalance);
+        }
+
+        let net_outgoing = total_amount - self_transfer_amount;
+        let sender_balance_after = sender_balance_before - net_outgoing;
+        compliance::ensure_holder_capacity(
+            env,
+            new_holders.len(),
+            sender_balance_before > 0 && sender_balance_after == 0,
+        );
+
+        TransferPlan {
+            total_amount,
+            sender_balance_after,
+        }
+    }
+
+    /// Applies a previously validated plan. No validation is performed here,
+    /// so all entry points have exactly the same mutation and event ordering.
+    fn execute_transfer_plan(
+        env: &Env,
+        from: &Address,
+        recipients: &Vec<RecipientEntry>,
+        plan: &TransferPlan,
+    ) {
+        for i in 0..recipients.len() {
+            let entry = recipients.get(i).expect("recipient index out of bounds");
+            Self::apply_transfer_leg(env, from, &entry.to, entry.amount);
+            events::emit_transfer(env, from.clone(), entry.to, entry.amount);
+        }
+
+        if plan.total_amount > 0 && plan.sender_balance_after == 0 {
+            compliance::unregister_holder(env, from);
+        }
     }
 
     /// Applies the balance mutations and recipient holder registration for one

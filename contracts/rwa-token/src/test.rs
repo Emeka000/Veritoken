@@ -3,7 +3,7 @@
 use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, vec, Address, Env, String, TryFromVal, symbol_short};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
 
 #[allow(dead_code)]
 struct Harness {
@@ -89,6 +89,18 @@ impl Harness {
     /// Returns the current admin nonce and consumes it for the next protected call.
     fn next_nonce(&self) -> u64 {
         self.token.admin_nonce()
+    }
+
+    fn set_max_holders(&self, max_holders: u32) {
+        self.compliance.set_rules(&ComplianceRules {
+            max_transfer_amount: 0,
+            min_holding_period: 0,
+            max_holders,
+            require_same_jurisdiction: false,
+            paused: false,
+            allowlist_mode: false,
+            max_holding_period: 0,
+        });
     }
 }
 
@@ -648,6 +660,104 @@ fn test_batch_transfer_holder_count_correct_after_batch() {
 }
 
 #[test]
+fn test_batch_transfer_rejects_cumulative_holder_limit_without_state_change() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.mint(&alice, 1_000);
+    h.set_max_holders(2);
+
+    // Each leg independently sees one holder and would pass a cap of two.
+    // The complete plan creates two new holders and must fail before mutation.
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry { to: carol.clone(), amount: 100 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+#[test]
+fn test_batch_transfer_counts_duplicate_recipient_once_for_holder_limit() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+    h.set_max_holders(2);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry { to: bob.clone(), amount: 150 },
+    ];
+    h.token.batch_transfer(&alice, &recipients);
+
+    assert_eq!(h.token.balance(&alice), 750);
+    assert_eq!(h.token.balance(&bob), 250);
+    assert_eq!(h.compliance.holder_count(), 2);
+}
+
+#[test]
+fn test_batch_transfer_reuses_drained_sender_holder_slot() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.mint(&alice, 1_000);
+    h.set_max_holders(2);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 500 },
+        RecipientEntry { to: carol.clone(), amount: 500 },
+    ];
+    h.token.batch_transfer(&alice, &recipients);
+
+    assert_eq!(h.token.balance(&alice), 0);
+    assert_eq!(h.token.balance(&bob), 500);
+    assert_eq!(h.token.balance(&carol), 500);
+    assert_eq!(h.compliance.holder_count(), 2);
+}
+
+#[test]
+fn test_batch_transfer_amount_overflow_leaves_state_unchanged() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.mint(&alice, i128::MAX);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: i128::MAX },
+        RecipientEntry { to: carol.clone(), amount: 1 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), i128::MAX);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+#[test]
 fn test_batch_transfer_compliance_paused_state_unchanged() {
     let h = setup();
     let alice = Address::generate(&h.env);
@@ -837,6 +947,35 @@ fn test_batch_transfer_from_allowance_consumed_atomically() {
 }
 
 #[test]
+fn test_batch_transfer_from_holder_limit_failure_preserves_allowance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.mint(&alice, 1_000);
+    h.set_max_holders(2);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &500, &expiration);
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry { to: carol.clone(), amount: 100 },
+    ];
+
+    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert_eq!(h.token.allowance(&alice, &spender), 500);
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+#[test]
 fn test_batch_transfer_from_exceeds_max_recipients() {
     let h = setup();
     let alice = Address::generate(&h.env);
@@ -975,8 +1114,18 @@ fn test_get_token_export_reflects_set_compliance_metadata() {
     let h = setup();
     let key_entity = soroban_sdk::Symbol::new(&h.env, META_LEGAL_ENTITY);
     let key_isin   = soroban_sdk::Symbol::new(&h.env, META_ISIN);
-    h.token.set_compliance_metadata(&key_entity, &String::from_str(&h.env, "Acme Corp"));
-    h.token.set_compliance_metadata(&key_isin,   &String::from_str(&h.env, "US0231351067"));
+    h.token.set_compliance_metadata(
+        &h.admin,
+        &key_entity,
+        &String::from_str(&h.env, "Acme Corp"),
+        &h.next_nonce(),
+    );
+    h.token.set_compliance_metadata(
+        &h.admin,
+        &key_isin,
+        &String::from_str(&h.env, "US0231351067"),
+        &h.next_nonce(),
+    );
 
     let export = h.token.get_token_export();
     assert_eq!(export.legal_entity, Some(String::from_str(&h.env, "Acme Corp")));
@@ -990,7 +1139,7 @@ fn test_get_token_export_reflects_total_supply_after_mint() {
     let h = setup();
     let user = Address::generate(&h.env);
     h.approve_kyc(&user);
-    h.token.mint(&user, &5_000);
+    h.mint(&user, 5_000);
 
     let export = h.token.get_token_export();
     assert_eq!(export.total_supply, 5_000i128);
@@ -1196,7 +1345,7 @@ fn test_transfer_blocked_after_revocation() {
     let bob = Address::generate(&h.env);
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
 
     // Transfer works before revocation
     h.token.transfer(&alice, &bob, &100);
@@ -1225,7 +1374,7 @@ fn test_transfer_blocked_after_expiry() {
     );
     h.approve_kyc(&bob);
 
-    h.token.mint(&alice, &1_000);
+    h.mint(&alice, 1_000);
 
     // Transfer works before expiry
     h.token.transfer(&alice, &bob, &100);
@@ -1251,11 +1400,11 @@ fn test_mint_blocked_after_recipient_kyc_expires() {
         &String::from_str(&h.env, "US"),
     );
 
-    h.token.mint(&user, &500); // works before expiry
+    h.mint(&user, 500); // works before expiry
 
     h.env.ledger().set_timestamp(1_600); // past expiry
 
-    assert!(h.token.try_mint(&user, &500).is_err());
+    assert!(h.token.try_mint(&h.admin, &user, &500).is_err());
 }
 
 #[test]
