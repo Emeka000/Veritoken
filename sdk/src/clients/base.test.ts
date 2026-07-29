@@ -224,3 +224,59 @@ describe("BaseContractClient", () => {
     expect(new C(mkS()).fe(new Error("network timeout"))).toBe("network timeout");
   });
 });
+
+// BaseContractClient.getEvents()
+describe("BaseContractClient.getEvents()", () => {
+  class C extends BaseContractClient {
+    constructor(s: rpc.Server) { super(CONTRACT_ID, s, PASSPHRASE, "rwa"); }
+  }
+
+  function rawTransferEvent(): rpc.Api.EventResponse {
+    return {
+      id: "1-0", type: "contract", ledger: 500, ledgerClosedAt: "2026-01-01T00:00:00Z",
+      pagingToken: "1-0", inSuccessfulContractCall: true, txHash: "hash1",
+      contractId: CONTRACT_ID as any,
+      topic: [
+        nativeToScVal("transfer", { type: "symbol" }),
+        nativeToScVal(ALICE, { type: "address" }),
+        nativeToScVal(BOB, { type: "address" }),
+      ],
+      value: nativeToScVal([nativeToScVal(10n, { type: "i128" }), nativeToScVal(1n, { type: "u64" })] as any),
+    } as unknown as rpc.Api.EventResponse;
+  }
+
+  it("scans back from the latest ledger by default and returns parsed events", async () => {
+    const getEvents = vi.fn().mockResolvedValue({ latestLedger: 20_000, events: [rawTransferEvent()] });
+    const s = {
+      getLatestLedger: vi.fn().mockResolvedValue({ sequence: 20_000 }),
+      getEvents,
+    } as unknown as rpc.Server;
+
+    const events = await new C(s).getEvents();
+    expect(getEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ startLedger: 10_000, filters: [expect.objectContaining({ contractIds: [CONTRACT_ID] })] }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].name).toBe("transfer");
+  });
+
+  it("uses an explicit startLedger over the default lookback", async () => {
+    const getEvents = vi.fn().mockResolvedValue({ latestLedger: 20_000, events: [] });
+    const getLatestLedger = vi.fn();
+    const s = { getLatestLedger, getEvents } as unknown as rpc.Server;
+
+    await new C(s).getEvents({ startLedger: 42 });
+    expect(getLatestLedger).not.toHaveBeenCalled();
+    expect(getEvents).toHaveBeenCalledWith(expect.objectContaining({ startLedger: 42 }));
+  });
+
+  it("uses a cursor over startLedger when both context is available", async () => {
+    const getEvents = vi.fn().mockResolvedValue({ latestLedger: 20_000, events: [] });
+    const s = { getLatestLedger: vi.fn(), getEvents } as unknown as rpc.Server;
+
+    await new C(s).getEvents({ cursor: "5-0" });
+    const call = getEvents.mock.calls[0][0];
+    expect(call.cursor).toBe("5-0");
+    expect(call.startLedger).toBeUndefined();
+  });
+});

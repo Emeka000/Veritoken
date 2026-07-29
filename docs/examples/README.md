@@ -31,6 +31,12 @@ writes; the examples below follow the same pattern in each language.
 |---|---|---|
 | [`python_example.py`](python_example.py) | Python 3.10+ | `python python_example.py` |
 | [`javascript_example.js`](javascript_example.js) | JavaScript (Node.js) | `node javascript_example.js` |
+| [`sdk_client_factory_example.ts`](sdk_client_factory_example.ts) | TypeScript (`@veritoken/sdk`) | `npx tsx docs/examples/sdk_client_factory_example.ts` |
+
+The TypeScript example additionally shows the SDK's client factory and
+dependency-injection pattern (`createClients` / `ClientFactory`) — composing
+several contract clients from one config object, and swapping in a mock
+client for tests without touching a real or simulated RPC endpoint.
 
 ## Prerequisites
 
