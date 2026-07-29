@@ -380,6 +380,28 @@ export class ComplianceEngineClient {
   async recordAttestation(
     adminAddress: string,
     record: import("../../types").AttestationRecord,
+    signTx: SignTx
+  ): Promise<void> {
+    const seq = await fetchSequence(this.server, adminAddress);
+    await writeCall(
+      this.server,
+      this.contractId,
+      "record_attestation",
+      [
+        toAddress(record.subject),
+        nativeToScVal(record.id, { type: "string" }),
+        nativeToScVal(record.attestation_type, { type: "string" }),
+        nativeToScVal(record.reference_url, { type: "string" }),
+        nativeToScVal(record.issuer, { type: "string" }),
+        nativeToScVal(record.issued_at, { type: "u64" }),
+        nativeToScVal(record.notes ?? "", { type: "string" }),
+      ],
+      adminAddress,
+      seq,
+      signTx
+    );
+  }
+
   // ── Tier-based policy ─────────────────────────────────────────────────────
 
   /**
@@ -435,15 +457,6 @@ export class ComplianceEngineClient {
     await writeCall(
       this.server,
       this.contractId,
-      "record_attestation",
-      [
-        toAddress(record.subject),
-        nativeToScVal(record.id, { type: "string" }),
-        nativeToScVal(record.attestation_type, { type: "string" }),
-        nativeToScVal(record.reference_url, { type: "string" }),
-        nativeToScVal(record.issuer, { type: "string" }),
-        nativeToScVal(record.issued_at, { type: "u64" }),
-        nativeToScVal(record.notes ?? "", { type: "string" }),
       "set_tier_policy",
       [toU32(fromTier), toU32(toTier), encodeTierPolicy(policy)],
       adminAddress,
@@ -566,6 +579,9 @@ export class ComplianceEngineClient {
     } catch {
       return [];
     }
+  }
+
+  /**
    * Admin-only: assign a risk score (0–100) to a jurisdiction.
    * `jurisdiction` must be a 2-letter ISO-3166-1 alpha-2 code.
    *
