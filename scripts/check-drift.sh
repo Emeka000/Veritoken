@@ -90,7 +90,7 @@ get_manifest_value() {
     | sed 's/.*"[^"]*"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
 }
 
-MAN_NETWORK=$(get_manifest_value "network")
+MAN_NETWORK=$(get_manifest_value "network_name")
 MAN_KYC=$(get_manifest_value "kyc_registry_id")
 MAN_CE=$(get_manifest_value "compliance_engine_id")
 MAN_INV=$(get_manifest_value "invoice_token_id")

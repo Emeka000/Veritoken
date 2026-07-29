@@ -49,6 +49,32 @@ The admin address controls minting, settlement, verifier management, and complia
 
 ## Deploying to Mainnet
 
+> **Canonical path:** use the fixture-tested orchestrator described in
+> [deployment-automation.md](deployment-automation.md). It handles the KYC and
+> compliance post-deploy initializers, constructor-based asset contracts,
+> dependency ordering, exact WASM/metadata verification, resumable
+> checkpoints, and atomic registry publication. The manual commands below are
+> retained as an operator reference, not as the preferred deployment path.
+
+Prepare and review a production config, validate its plan, and then deploy:
+
+```bash
+cp deployment/config.mainnet.example.json deployment/config.mainnet.json
+# Expand the config for this release and replace every <placeholder>.
+
+python3 scripts/deployment_cli.py plan \
+  --config deployment/config.mainnet.json \
+  --network mainnet
+
+STELLAR_NETWORK=mainnet \
+DEPLOY_CONFIG=deployment/config.mainnet.json \
+bash scripts/deploy.sh mainnet-admin
+```
+
+The canonical manifest and verification report are not published until every
+deployed code hash, contract metadata hash, registry link, and health check
+matches.
+
 > **Warning:** All `--meta` JSON values in the commands below are placeholders. Replace every field with real production data before running. Deploying placeholder metadata to mainnet cannot be undone.
 
 Set up your environment:
@@ -82,9 +108,13 @@ stellar contract optimize --wasm "$WASM_DIR/carbon_credit_token.wasm"
 KYC_ID=$(stellar contract deploy \
   --source-account "$IDENTITY" \
   --network "$NETWORK" \
-  --wasm "$WASM_DIR/kyc_registry.wasm" \
-  -- \
-  --admin "$ADMIN_ADDR")
+  --wasm "$WASM_DIR/kyc_registry.wasm")
+stellar contract invoke \
+  --source-account "$IDENTITY" \
+  --network "$NETWORK" \
+  --id "$KYC_ID" \
+  -- initialize \
+  --admin "$ADMIN_ADDR"
 echo "KYC_REGISTRY_ID=$KYC_ID"
 ```
 
@@ -94,9 +124,15 @@ echo "KYC_REGISTRY_ID=$KYC_ID"
 CE_ID=$(stellar contract deploy \
   --source-account "$IDENTITY" \
   --network "$NETWORK" \
-  --wasm "$WASM_DIR/compliance_engine.wasm" \
-  -- \
-  --admin "$ADMIN_ADDR")
+  --wasm "$WASM_DIR/compliance_engine.wasm")
+stellar contract invoke \
+  --source-account "$IDENTITY" \
+  --network "$NETWORK" \
+  --id "$CE_ID" \
+  -- initialize \
+  --admin "$ADMIN_ADDR" \
+  --kyc-registry "$KYC_ID" \
+  --rule-change-delay 86400
 echo "COMPLIANCE_ENGINE_ID=$CE_ID"
 ```
 
@@ -111,7 +147,7 @@ INV_ID=$(stellar contract deploy \
   --admin "$ADMIN_ADDR" \
   --kyc-registry "$KYC_ID" \
   --compliance-engine "$CE_ID" \
-  --meta '{"invoice_id":"INV-2024-001","issuer":"Acme Corp","debtor":"Globex LLC","face_value_usd":100000000000,"discount_rate_bps":250,"due_date":1900000000,"currency":"USD","ipfs_doc_hash":"QmYourRealHashHere"}')
+  --meta '{"invoice_id":"INV-2024-001","issuer":"Acme Corp","debtor":"Globex LLC","face_value_usd":100000000000,"discount_rate_bps":250,"due_date":1900000000,"currency":"USD","ipfs_doc_hash":"QmYourRealHashHere","transfer_fee_bps":0,"fee_recipient":null,"notification_webhook":""}')
 echo "INVOICE_TOKEN_ID=$INV_ID"
 ```
 
@@ -141,7 +177,7 @@ CARBON_ID=$(stellar contract deploy \
   --admin "$ADMIN_ADDR" \
   --kyc-registry "$KYC_ID" \
   --compliance-engine "$CE_ID" \
-  --meta '{"project_id":"VCS-2024-001","standard":"VCS","vintage_year":2024,"project_name":"Amazon Reforestation Initiative","project_type":"forestry","country":"BR","verifier":"Verra","ipfs_cert_hash":"QmYourCertHashHere"}')
+  --meta '{"project_id":"VCS-2024-001","standard":"VCS","vintage_year":2024,"project_name":"Amazon Reforestation Initiative","project_type":"forestry","country":"BR","verifier":"Verra","ipfs_cert_hash":"QmYourCertHashHere","registry_url":"https://registry.example","registry_project_id":"VCS-2024-001"}')
 echo "CARBON_TOKEN_ID=$CARBON_ID"
 ```
 
@@ -232,6 +268,18 @@ stellar contract invoke \
 ---
 
 ## Post-deployment Verification
+
+The automated deployment already performs these checks before publishing the
+new canonical registry. Re-run the same verifier at any time:
+
+```bash
+STELLAR_NETWORK=mainnet \
+DEPLOY_MANIFEST=deploy-manifest.json \
+bash scripts/verify-deployment.sh mainnet-admin
+```
+
+Retain `deployment-verification-report.json` with the release records. The
+following manual checks are useful as a secondary operator inspection.
 
 Run these checks immediately after deployment to confirm the contracts are correctly configured.
 

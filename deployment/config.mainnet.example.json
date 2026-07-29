@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "profile": "production",
+  "contracts": [
+    {
+      "name": "kyc_registry",
+      "artifact": "${wasm_dir}/kyc_registry.wasm",
+      "env_key": "VITE_KYC_REGISTRY_ID",
+      "dependencies": [],
+      "deployment_mode": "initialize",
+      "initialize_function": "initialize",
+      "initialize_args": {
+        "admin": "${admin}"
+      },
+      "declared_metadata": {
+        "package": "kyc-registry",
+        "release": "<release-tag>"
+      },
+      "health_check": {
+        "function": "verifier_count",
+        "expectation": "integer"
+      }
+    },
+    {
+      "name": "compliance_engine",
+      "artifact": "${wasm_dir}/compliance_engine.wasm",
+      "env_key": "VITE_COMPLIANCE_ENGINE_ID",
+      "dependencies": [
+        "kyc_registry"
+      ],
+      "deployment_mode": "initialize",
+      "initialize_function": "initialize",
+      "initialize_args": {
+        "admin": "${admin}",
+        "kyc_registry": "${contract.kyc_registry}",
+        "rule_change_delay": 86400
+      },
+      "declared_metadata": {
+        "package": "compliance-engine",
+        "release": "<release-tag>"
+      },
+      "health_check": {
+        "function": "holder_count",
+        "expectation": "integer"
+      }
+    }
+  ]
+}

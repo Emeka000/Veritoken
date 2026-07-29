@@ -64,6 +64,11 @@ Neither call can be bypassed by the application layer.
 
 ## Quick Start
 
+Deployments produce a canonical manifest and independently auditable
+verification report. See
+[docs/deployment-automation.md](docs/deployment-automation.md) for planning,
+resume, mainnet configuration, and verification details.
+
 **Prerequisites:** Rust, `wasm32-unknown-unknown` target, Stellar CLI, Node.js ≥ 20
 
 ```bash
@@ -207,6 +212,7 @@ Veritoken/
 
 | Document | Description |
 |---|---|
+| [docs/deployment-automation.md](docs/deployment-automation.md) | Resumable deployment, canonical manifests, and code/metadata verification |
 | [docs/mainnet-deployment.md](docs/mainnet-deployment.md) | Step-by-step mainnet deployment with production checklist |
 | [docs/storage-patterns.md](docs/storage-patterns.md) | Storage tier rationale and TTL bump map for every `DataKey` |
 | [docs/incident-response.md](docs/incident-response.md) | Operational runbook: pause, key rotation, compromised verifier, upgrade |
