@@ -104,6 +104,10 @@ export const invoiceMetadata = (
       val: xdr.ScVal.scvString(""),
     }),
     new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("notification_webhook"),
+      val: xdr.ScVal.scvString(""),
+    }),
+    new xdr.ScMapEntry({
       key: xdr.ScVal.scvSymbol("transfer_fee_bps"),
       val: xdr.ScVal.scvU32(0),
     }),

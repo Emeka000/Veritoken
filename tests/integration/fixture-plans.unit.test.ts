@@ -107,7 +107,7 @@ describe("integration fixture plans", () => {
     expect(contextOrder).toEqual(["kyc", "compliance", "invoice"]);
     const invoiceArgs = transport.deployments[2].constructorArgs;
     expect(invoiceArgs).toHaveLength(4);
-    expect(invoiceArgs?.[3].map()).toHaveLength(10);
+    expect(invoiceArgs?.[3].map()).toHaveLength(11);
     expect(
       invoiceArgs?.[3].map()?.map((entry) => entry.key().sym().toString()),
     ).toEqual([
@@ -120,6 +120,7 @@ describe("integration fixture plans", () => {
       "invoice_id",
       "ipfs_doc_hash",
       "issuer",
+      "notification_webhook",
       "transfer_fee_bps",
     ]);
   });
