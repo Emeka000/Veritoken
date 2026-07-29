@@ -45,6 +45,7 @@ pub enum DataKey {
     // ── Core admin (STABLE) ───────────────────────────────────────────────
     Admin,
     PendingAdmin,
+    AdminNonce,
     // ── Token supply (STABLE) ─────────────────────────────────────────────
     TotalSupply,
     MaxSupply,
@@ -60,6 +61,7 @@ pub enum DataKey {
     Frozen(Address),
     // ── Compliance metadata (STABLE) ──────────────────────────────────────
     ComplianceMeta(Symbol),
+    RoleAssignment(Symbol),
     // ── Versioning (#342) (STABLE) ────────────────────────────────────────
     ContractSemver,
     MigrationCount,
@@ -71,8 +73,6 @@ pub enum DataKey {
     ActiveRecovery,
     // ── Reentrancy guard (#345) (UNSTABLE — ephemeral per-invocation) ──────
     TransferLock,
-    // ── Recovery config ──────────────────────────────────────────────────────
-    RecoveryConfig,
     // ── Metadata export ───────────────────────────────────────────────────────
     ExternalUri,
 }

@@ -57,6 +57,14 @@ pub enum RwaError {
     InvalidRecoveryConfig = 15,
     /// Mint would exceed the configured max supply cap.
     ExceedsMaxSupply = 16,
+    /// Nonce-protected admin operation was submitted out of order.
+    InvalidNonce = 17,
+    /// The linked compliance engine trapped or could not be reached.
+    ComplianceEngineUnavailable = 18,
+    /// The linked KYC registry trapped or could not be reached.
+    KycRegistryUnavailable = 19,
+    /// Caller is neither the admin nor the holder of the required role.
+    UnauthorizedRole = 20,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -819,28 +827,6 @@ impl RwaToken {
         if from != to && to_balance_before == 0 {
             compliance::register_holder(env, to);
         }
-    }
-
-    /// Sets the reentrancy guard flag; panics if a transfer is already in progress.
-    fn enter_transfer_guard(env: &Env) {
-        if env
-            .storage()
-            .instance()
-            .get::<storage_types::DataKey, bool>(&storage_types::DataKey::TransferLock)
-            .unwrap_or(false)
-        {
-            panic!("transfer reentrancy detected");
-        }
-        env.storage()
-            .instance()
-            .set(&storage_types::DataKey::TransferLock, &true);
-    }
-
-    /// Clears the reentrancy guard flag set by [`enter_transfer_guard`].
-    fn exit_transfer_guard(env: &Env) {
-        env.storage()
-            .instance()
-            .set(&storage_types::DataKey::TransferLock, &false);
     }
 
     fn read_recovery_config(env: &Env) -> RecoveryConfig {
