@@ -71,6 +71,10 @@ pub enum ComplianceError {
     InvalidRiskScore = 7,
     /// `max_score` in `RiskConfig` is out of the valid range [0, 100].
     InvalidRiskConfig = 8,
+    /// Migration target version equals the current schema version.
+    AlreadyAtSchemaVersion = 9,
+    /// Migration must increment schema version by exactly one.
+    MigrationVersionNotSequential = 10,
 }
 
 // ── Tier-based policy types ───────────────────────────────────────────────────
@@ -186,6 +190,24 @@ pub enum DataKey {
     JurisdictionRisk(String),
     /// Global risk configuration.
     RiskConfig,
+    // ── Storage versioning ────────────────────────────────────────────────────
+    /// Current schema version.  Written to 1 on `initialize`; incremented by
+    /// each `migrate_schema` call.  Missing = legacy pre-versioned deployment.
+    StorageVersion,
+    /// Number of migration records stored.
+    MigrationCount,
+    /// Indexed migration history; key is the zero-based migration index.
+    Migration(u32),
+}
+
+/// On-chain record of a single admin-initiated schema migration.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceMigrationRecord {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub timestamp: u64,
+    pub description: String,
 }
 
 #[contracttype]
@@ -254,6 +276,9 @@ impl ComplianceEngine {
             .instance()
             .set(&DataKey::Rules, &default_rules);
         env.storage().instance().set(&DataKey::HolderCount, &0u32);
+        // Set the initial schema version so new deployments start at v1.
+        env.storage().instance().set(&DataKey::StorageVersion, &1u32);
+        env.storage().instance().set(&DataKey::MigrationCount, &0u32);
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) {
@@ -850,6 +875,103 @@ impl ComplianceEngine {
 
     pub fn version(env: Env) -> soroban_sdk::String {
         soroban_sdk::String::from_str(&env, env!("CARGO_PKG_VERSION"))
+    }
+
+    // ── Storage versioning / migration ────────────────────────────────────────
+
+    /// Returns the current numeric schema version.
+    ///
+    /// Returns `0` for legacy deployments initialized before schema versioning
+    /// was introduced.  New deployments start at `1` via `initialize`.
+    pub fn schema_version(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0)
+    }
+
+    /// Returns the number of schema migrations that have been applied.
+    pub fn migration_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::MigrationCount)
+            .unwrap_or(0)
+    }
+
+    /// Returns the migration record at `index`, or panics if out of range.
+    pub fn get_migration_record(env: Env, index: u32) -> ComplianceMigrationRecord {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::Migration(index))
+            .expect("migration record not found")
+    }
+
+    /// Admin-only upgrade hook.  Advances the schema version by exactly one.
+    ///
+    /// Rules:
+    /// - Caller must be the registered admin.
+    /// - `to_version` must equal `current_schema_version + 1`.
+    /// - For legacy deployments without a `StorageVersion` key, the current
+    ///   version is treated as `0`, so the first valid call is
+    ///   `migrate_schema(1, ...)` (the bootstrap migration).
+    ///
+    /// Add a new `to_version =>` match arm here when the storage schema changes.
+    pub fn migrate_schema(env: Env, to_version: u32, description: String) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        Self::require_admin(&env);
+
+        let current: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0);
+
+        if to_version == current {
+            panic_with_error!(env, ComplianceError::AlreadyAtSchemaVersion);
+        }
+        if to_version != current + 1 {
+            panic_with_error!(env, ComplianceError::MigrationVersionNotSequential);
+        }
+
+        // ── Per-version migration hooks ────────────────────────────────────
+        // Add a new `to_version =>` arm here when the storage schema changes.
+        match to_version {
+            1 => {
+                // Bootstrap: record that this deployment is now at schema v1.
+                // The v0 and v1 layouts are identical; no data transformation.
+            }
+            _ => {
+                // Future versions: implement data migrations here.
+            }
+        }
+
+        // Record the migration.
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationCount)
+            .unwrap_or(0);
+        let record = ComplianceMigrationRecord {
+            from_version: current,
+            to_version,
+            timestamp: env.ledger().timestamp(),
+            description,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::Migration(count), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationCount, &(count + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &to_version);
+
+        env.events()
+            .publish((symbol_short!("migrated"),), (current, to_version));
     }
 
     // ── Tier-based policy ─────────────────────────────────────────────────────
