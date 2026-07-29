@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "test:unit": "vitest run fixture-runner.unit.test.ts fixture-plans.unit.test.ts soroban-transport.unit.test.ts",
+    "test:lifecycle": "vitest run lifecycle.test.ts",
+    "typecheck": "tsc --noEmit",
     "test:watch": "vitest"
   },
   "devDependencies": {

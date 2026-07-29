@@ -1,657 +1,256 @@
 /**
- * Integration tests for Veritoken contracts against a local Stellar quickstart node.
+ * Integration tests for Veritoken contracts against a local Stellar quickstart
+ * node. Every test receives a newly deployed fixture, while uploaded WASM code
+ * is cached for the lifetime of this process.
  *
  * Prerequisites:
- *   - A Stellar standalone node running on http://localhost:8000
- *     (start via `docker-compose up -d` from the repo root)
- *   - WASM binaries built under target/wasm32-unknown-unknown/release/
+ *   - A Stellar standalone node on http://localhost:8000
+ *     (`docker-compose up -d` from the repository root)
+ *   - WASM binaries under target/wasm32-unknown-unknown/release/
  *
- * Run: npm test
+ * Run: npm run test:lifecycle
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { scValToNative, xdr } from "@stellar/stellar-sdk";
 import {
-  Keypair,
-  Networks,
-  SorobanRpc,
-  TransactionBuilder,
-  BASE_FEE,
-  xdr,
-  Operation,
-  Contract,
-} from "@stellar/stellar-sdk";
-import * as fs from "fs";
-import * as path from "path";
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 
-const RPC_URL = process.env.STELLAR_RPC_URL ?? "http://localhost:8000/soroban/rpc";
-const NETWORK_PASSPHRASE = Networks.STANDALONE;
+import type { FixtureContext } from "./fixtures/fixture-runner";
+import {
+  accountAddress,
+  complianceFixturePlan,
+  createIntegrationFixtureEnvironment,
+  i128,
+  invoiceFixturePlan,
+  invoiceMetadata,
+  kycFixturePlan,
+  rwaFixturePlan,
+} from "./fixtures/fixture-plans";
 
-const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: true });
-
-// Funded test account (quickstart pre-funds this key in standalone mode)
-const admin = Keypair.fromSecret(
-  "SCZANGBA5RLMPI7JMTP2UME5XM7JRQF6AQZH7KSGDTQR3FVTZFM7VQ"
-);
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-async function uploadWasm(keypair: Keypair, wasmPath: string): Promise<string> {
-  const wasmBytes = fs.readFileSync(wasmPath);
-  const account = await rpc.getAccount(keypair.publicKey());
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(
-      Operation.uploadContractWasm({ wasm: wasmBytes })
-    )
-    .setTimeout(30)
-    .build();
-
-  const prepared = await rpc.prepareTransaction(tx);
-  prepared.sign(keypair);
-  const result = await rpc.sendTransaction(prepared);
-  const hash = result.hash;
-
-  let getResult = await rpc.getTransaction(hash);
-  while (getResult.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1000));
-    getResult = await rpc.getTransaction(hash);
-  }
-  if (getResult.status !== "SUCCESS") {
-    throw new Error(`Upload failed: ${JSON.stringify(getResult)}`);
-  }
-  const meta = getResult.resultMetaXdr;
-  const parsed = xdr.TransactionMeta.fromXDR(meta, "base64");
-  const wasmHash = parsed
-    .v3()
-    .sorobanMeta()
-    ?.returnValue()
-    .bytes()
-    .toString("hex");
-  if (!wasmHash) throw new Error("No wasm hash returned");
-  return wasmHash;
-}
-
-async function deployContract(
-  keypair: Keypair,
-  wasmHash: string,
-  constructorArgs: xdr.ScVal[]
-): Promise<string> {
-  const account = await rpc.getAccount(keypair.publicKey());
-  const salt = Buffer.allocUnsafe(32);
-  crypto.getRandomValues(salt);
-
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(
-      Operation.createCustomContract({
-        address: new Contract(keypair.publicKey()).address(),
-        wasmHash: Buffer.from(wasmHash, "hex"),
-        salt,
-        constructorArgs,
-      })
-    )
-    .setTimeout(30)
-    .build();
-
-  const prepared = await rpc.prepareTransaction(tx);
-  prepared.sign(keypair);
-  const result = await rpc.sendTransaction(prepared);
-  const hash = result.hash;
-
-  let getResult = await rpc.getTransaction(hash);
-  while (getResult.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1000));
-    getResult = await rpc.getTransaction(hash);
-  }
-  if (getResult.status !== "SUCCESS") {
-    throw new Error(`Deploy failed: ${JSON.stringify(getResult)}`);
-  }
-  const meta = getResult.resultMetaXdr;
-  const parsed = xdr.TransactionMeta.fromXDR(meta, "base64");
-  const contractId = parsed
-    .v3()
-    .sorobanMeta()
-    ?.returnValue()
-    .address()
-    .contractId()
-    .toString("hex");
-  if (!contractId) throw new Error("No contract ID returned");
-  return contractId;
-}
-
-async function invokeContract(
-  keypair: Keypair,
-  contractId: string,
-  method: string,
-  args: xdr.ScVal[]
-): Promise<xdr.ScVal> {
-  const account = await rpc.getAccount(keypair.publicKey());
-  const contract = new Contract(contractId);
-
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(30)
-    .build();
-
-  const prepared = await rpc.prepareTransaction(tx);
-  prepared.sign(keypair);
-  const result = await rpc.sendTransaction(prepared);
-  const hash = result.hash;
-
-  let getResult = await rpc.getTransaction(hash);
-  while (getResult.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1000));
-    getResult = await rpc.getTransaction(hash);
-  }
-  if (getResult.status !== "SUCCESS") {
-    throw new Error(`Invoke ${method} failed: ${JSON.stringify(getResult)}`);
-  }
-  const meta = getResult.resultMetaXdr;
-  const parsed = xdr.TransactionMeta.fromXDR(meta, "base64");
-  return parsed.v3().sorobanMeta()!.returnValue();
-}
-
-// ── Test suite ────────────────────────────────────────────────────────────────
-
-const WASM_DIR = path.resolve(
-  import.meta.dirname,
-  "../../target/wasm32-unknown-unknown/release"
-);
+const { runner } = createIntegrationFixtureEnvironment();
 
 describe("KYC Registry lifecycle", () => {
-  let kycContractId: string;
-  const verifier = Keypair.random();
+  let fixture: FixtureContext | undefined;
 
-  beforeAll(async () => {
-    const wasmHash = await uploadWasm(
-      admin,
-      path.join(WASM_DIR, "kyc_registry.wasm")
-    );
-    const adminAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(
-          Buffer.from(admin.rawPublicKey())
-        )
-      )
-    );
-    kycContractId = await deployContract(admin, wasmHash, [adminAddr]);
-
-    // Register verifier once for all tests in this suite
-    const verifierAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(
-          Buffer.from(verifier.rawPublicKey())
-        )
-      )
-    );
-    await invokeContract(admin, kycContractId, "add_verifier", [verifierAddr]);
+  beforeEach(async () => {
+    fixture = await runner.setup(kycFixturePlan());
   });
 
+  afterEach(async () => {
+    await runner.teardown(fixture);
+    fixture = undefined;
+  });
+
+  const current = (): FixtureContext => {
+    if (!fixture) throw new Error("KYC fixture was not initialized");
+    return fixture;
+  };
+
   it("deploys KYC registry and admin can add a verifier", async () => {
-    expect(kycContractId).toBeTruthy();
-    const count = await invokeContract(admin, kycContractId, "verifier_count", []);
+    expect(current().contract("kyc")).toBeTruthy();
+    const count = await current().invoke("kyc", "verifier_count", []);
     expect(count.u32()).toBe(1);
   });
 
   it("lifecycle_count starts at zero for an unknown subject", async () => {
-    const unknown = Keypair.random();
-    const unknownAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(unknown.rawPublicKey()))
-      )
-    );
-    const result = await invokeContract(
-      admin,
-      kycContractId,
-      "get_lifecycle_count",
-      [unknownAddr]
-    );
+    const result = await current().invoke("kyc", "get_lifecycle_count", [
+      accountAddress(current().account("unknown")),
+    ]);
     expect(result.u32()).toBe(0);
   });
 
   it("approve records a lifecycle entry and advances count to 1", async () => {
-    const subject = Keypair.random();
-    const subjectAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
-      )
-    );
-    const verifierAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
-      )
-    );
+    const subject = accountAddress(current().account("subject"));
+    const verifier = accountAddress(current().account("admin"));
 
-    await invokeContract(verifier, kycContractId, "approve", [
-      verifierAddr,
-      subjectAddr,
+    await current().invoke("kyc", "approve", [
+      verifier,
+      subject,
       xdr.ScVal.scvU32(1),
       xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
       xdr.ScVal.scvString("US"),
     ]);
 
-    const countResult = await invokeContract(
-      admin,
-      kycContractId,
-      "get_lifecycle_count",
-      [subjectAddr]
-    );
-    expect(countResult.u32()).toBe(1);
+    const count = await current().invoke("kyc", "get_lifecycle_count", [
+      subject,
+    ]);
+    expect(count.u32()).toBe(1);
   });
 
-  it("approve → revoke produces two lifecycle entries", async () => {
-    const subject = Keypair.random();
-    const subjectAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
-      )
-    );
-    const verifierAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
-      )
-    );
+  it("approve then revoke produces two lifecycle entries", async () => {
+    const subject = accountAddress(current().account("subject"));
+    const verifier = accountAddress(current().account("admin"));
 
-    await invokeContract(verifier, kycContractId, "approve", [
-      verifierAddr,
-      subjectAddr,
+    await current().invoke("kyc", "approve", [
+      verifier,
+      subject,
       xdr.ScVal.scvU32(0),
       xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
       xdr.ScVal.scvString("DE"),
     ]);
-    await invokeContract(verifier, kycContractId, "revoke", [
-      verifierAddr,
-      subjectAddr,
-    ]);
+    await current().invoke("kyc", "revoke", [verifier, subject]);
 
-    const countResult = await invokeContract(
-      admin,
-      kycContractId,
-      "get_lifecycle_count",
-      [subjectAddr]
-    );
-    expect(countResult.u32()).toBe(2);
+    const count = await current().invoke("kyc", "get_lifecycle_count", [
+      subject,
+    ]);
+    expect(count.u32()).toBe(2);
   });
 
-  it("get_lifecycle_history returns a non-empty vec after transitions", async () => {
-    const subject = Keypair.random();
-    const subjectAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
-      )
-    );
-    const verifierAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
-      )
-    );
+  it("get_lifecycle_history returns entries after transitions", async () => {
+    const subject = accountAddress(current().account("subject"));
+    const verifier = accountAddress(current().account("admin"));
 
-    await invokeContract(verifier, kycContractId, "approve", [
-      verifierAddr,
-      subjectAddr,
+    await current().invoke("kyc", "approve", [
+      verifier,
+      subject,
       xdr.ScVal.scvU32(2),
       xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
       xdr.ScVal.scvString("GB"),
     ]);
 
-    const histResult = await invokeContract(
-      admin,
-      kycContractId,
-      "get_lifecycle_history",
-      [subjectAddr, xdr.ScVal.scvU32(0), xdr.ScVal.scvU32(10)]
-    );
-    // Should be a vec with at least one element
-    expect(histResult.vec()!.length).toBeGreaterThanOrEqual(1);
+    const history = await current().invoke("kyc", "get_lifecycle_history", [
+      subject,
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(history.vec()?.length).toBeGreaterThanOrEqual(1);
   });
 
   it("is_approved returns true after approve and false after revoke", async () => {
-    const subject = Keypair.random();
-    const subjectAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(subject.rawPublicKey()))
-      )
-    );
-    const verifierAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
-      )
-    );
+    const subject = accountAddress(current().account("subject"));
+    const verifier = accountAddress(current().account("admin"));
 
-    await invokeContract(verifier, kycContractId, "approve", [
-      verifierAddr,
-      subjectAddr,
+    await current().invoke("kyc", "approve", [
+      verifier,
+      subject,
       xdr.ScVal.scvU32(0),
       xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
       xdr.ScVal.scvString("JP"),
     ]);
-    const approved = await invokeContract(admin, kycContractId, "is_approved", [subjectAddr]);
-    expect(approved.bool()).toBe(true);
+    const approved = await current().invoke("kyc", "is_approved", [subject]);
+    expect(scValToNative(approved)).toBe(true);
 
-    await invokeContract(verifier, kycContractId, "revoke", [verifierAddr, subjectAddr]);
-    const revoked = await invokeContract(admin, kycContractId, "is_approved", [subjectAddr]);
-    expect(revoked.bool()).toBe(false);
+    await current().invoke("kyc", "revoke", [verifier, subject]);
+    const revoked = await current().invoke("kyc", "is_approved", [subject]);
+    expect(scValToNative(revoked)).toBe(false);
   });
 
-  it("get_lifecycle_history returns empty vec for unknown subject", async () => {
-    const unknown = Keypair.random();
-    const unknownAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(unknown.rawPublicKey()))
-      )
-    );
-    const histResult = await invokeContract(
-      admin,
-      kycContractId,
-      "get_lifecycle_history",
-      [unknownAddr, xdr.ScVal.scvU32(0), xdr.ScVal.scvU32(10)]
-    );
-    expect(histResult.vec()!.length).toBe(0);
+  it("get_lifecycle_history returns an empty vector for an unknown subject", async () => {
+    const history = await current().invoke("kyc", "get_lifecycle_history", [
+      accountAddress(current().account("unknown")),
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(history.vec()?.length).toBe(0);
   });
 });
 
 describe("Compliance Engine lifecycle", () => {
-  let kycContractId: string;
-  let ceContractId: string;
+  let fixture: FixtureContext | undefined;
 
-  beforeAll(async () => {
-    const kycHash = await uploadWasm(
-      admin,
-      path.join(WASM_DIR, "kyc_registry.wasm")
-    );
-    const adminAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(
-          Buffer.from(admin.rawPublicKey())
-        )
-      )
-    );
-    kycContractId = await deployContract(admin, kycHash, [adminAddr]);
-
-    const ceHash = await uploadWasm(
-      admin,
-      path.join(WASM_DIR, "compliance_engine.wasm")
-    );
-    const kycAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeContract(Buffer.from(kycContractId, "hex"))
-    );
-    ceContractId = await deployContract(admin, ceHash, [adminAddr, kycAddr]);
+  beforeEach(async () => {
+    fixture = await runner.setup(complianceFixturePlan());
   });
+
+  afterEach(async () => {
+    await runner.teardown(fixture);
+    fixture = undefined;
+  });
+
+  const current = (): FixtureContext => {
+    if (!fixture) throw new Error("Compliance fixture was not initialized");
+    return fixture;
+  };
 
   it("deploys compliance engine and default rules allow transfers", async () => {
-    expect(ceContractId).toBeTruthy();
+    expect(current().contract("compliance")).toBeTruthy();
 
-    const from = Keypair.random();
-    const to = Keypair.random();
-    const fromAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(from.rawPublicKey()))
-      )
-    );
-    const toAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(to.rawPublicKey()))
-      )
-    );
-    const amount = xdr.ScVal.scvI128(
-      new xdr.Int128Parts({ hi: xdr.Int64.fromString("0"), lo: xdr.Uint64.fromString("1000") })
-    );
-
-    const result = await invokeContract(admin, ceContractId, "can_transfer", [
-      fromAddr,
-      toAddr,
-      amount,
+    const result = await current().invoke("compliance", "can_transfer", [
+      accountAddress(current().account("investor")),
+      accountAddress(current().account("subject")),
+      i128("1000"),
     ]);
-    expect(result.bool()).toBe(true);
+    expect(scValToNative(result)).toBe(true);
   });
 
-  it("pause blocks all transfers", async () => {
-    await invokeContract(admin, ceContractId, "pause", []);
+  it("pause blocks all transfers without leaking state into the next test", async () => {
+    await current().invoke("compliance", "pause", []);
 
-    const from = Keypair.random();
-    const to = Keypair.random();
-    const fromAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(from.rawPublicKey()))
-      )
-    );
-    const toAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(to.rawPublicKey()))
-      )
-    );
-    const amount = xdr.ScVal.scvI128(
-      new xdr.Int128Parts({ hi: xdr.Int64.fromString("0"), lo: xdr.Uint64.fromString("1") })
-    );
-
-    const result = await invokeContract(admin, ceContractId, "can_transfer", [
-      fromAddr,
-      toAddr,
-      amount,
+    const result = await current().invoke("compliance", "can_transfer", [
+      accountAddress(current().account("investor")),
+      accountAddress(current().account("subject")),
+      i128("1"),
     ]);
-    expect(result.bool()).toBe(false);
-
-    await invokeContract(admin, ceContractId, "unpause", []);
+    expect(scValToNative(result)).toBe(false);
   });
 });
 
 describe("RWA Token lifecycle", () => {
-  let kycContractId: string;
-  let ceContractId: string;
-  let rwaContractId: string;
-  const investor = Keypair.random();
+  let fixture: FixtureContext | undefined;
 
-  beforeAll(async () => {
-    const adminAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(admin.rawPublicKey()))
-      )
-    );
+  beforeEach(async () => {
+    fixture = await runner.setup(rwaFixturePlan());
+  });
 
-    const kycHash = await uploadWasm(admin, path.join(WASM_DIR, "kyc_registry.wasm"));
-    kycContractId = await deployContract(admin, kycHash, [adminAddr]);
-
-    const verifier = Keypair.random();
-    const verifierAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(verifier.rawPublicKey()))
-      )
-    );
-    await invokeContract(admin, kycContractId, "add_verifier", [verifierAddr]);
-
-    const ceHash = await uploadWasm(admin, path.join(WASM_DIR, "compliance_engine.wasm"));
-    const kycAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeContract(Buffer.from(kycContractId, "hex"))
-    );
-    ceContractId = await deployContract(admin, ceHash, [adminAddr, kycAddr]);
-
-    const rwaHash = await uploadWasm(admin, path.join(WASM_DIR, "rwa_token.wasm"));
-    const ceAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeContract(Buffer.from(ceContractId, "hex"))
-    );
-    rwaContractId = await deployContract(admin, rwaHash, [
-      adminAddr,
-      xdr.ScVal.scvU32(7),
-      xdr.ScVal.scvString("Veritoken RWA"),
-      xdr.ScVal.scvString("VTRWA"),
-      xdr.ScVal.scvString("property"),
-      xdr.ScVal.scvAddress(
-        xdr.ScAddress.scAddressTypeContract(Buffer.from(kycContractId, "hex"))
-      ),
-      ceAddr,
-      xdr.ScVal.scvVoid(),
-    ]);
+  afterEach(async () => {
+    await runner.teardown(fixture);
+    fixture = undefined;
   });
 
   it("deploys RWA token with correct metadata", async () => {
-    expect(rwaContractId).toBeTruthy();
-    const name = await invokeContract(admin, rwaContractId, "name", []);
+    if (!fixture) throw new Error("RWA fixture was not initialized");
+    expect(fixture.contract("rwa")).toBeTruthy();
+    const name = await fixture.invoke("rwa", "name", []);
     expect(name.str().toString()).toBe("Veritoken RWA");
   });
 });
 
 describe("Invoice Token multi-invoice lifecycle", () => {
-  let kycContractId: string;
-  let ceContractId: string;
-  let invoiceContractId: string;
+  let fixture: FixtureContext | undefined;
 
-  beforeAll(async () => {
-    const adminAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeAccount(
-        xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(admin.rawPublicKey()))
-      )
-    );
-
-    const kycHash = await uploadWasm(admin, path.join(WASM_DIR, "kyc_registry.wasm"));
-    kycContractId = await deployContract(admin, kycHash, [adminAddr]);
-
-    const ceHash = await uploadWasm(admin, path.join(WASM_DIR, "compliance_engine.wasm"));
-    const kycAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeContract(Buffer.from(kycContractId, "hex"))
-    );
-    ceContractId = await deployContract(admin, ceHash, [adminAddr, kycAddr]);
-
-    const invoiceHash = await uploadWasm(
-      admin,
-      path.join(WASM_DIR, "invoice_token.wasm")
-    );
-    const ceAddr = xdr.ScVal.scvAddress(
-      xdr.ScAddress.scAddressTypeContract(Buffer.from(ceContractId, "hex"))
-    );
-
-    const initialMeta = xdr.ScVal.scvMap([
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("invoice_id"),
-        val: xdr.ScVal.scvString("INV-001"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("issuer"),
-        val: xdr.ScVal.scvString("Acme Corp"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("debtor"),
-        val: xdr.ScVal.scvString("Globex"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("face_value_usd"),
-        val: xdr.ScVal.scvI128(
-          new xdr.Int128Parts({
-            hi: xdr.Int64.fromString("0"),
-            lo: xdr.Uint64.fromString("1000000000000"),
-          })
-        ),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("discount_rate_bps"),
-        val: xdr.ScVal.scvU32(250),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("due_date"),
-        val: xdr.ScVal.scvU64(xdr.Uint64.fromString("1900000000")),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("currency"),
-        val: xdr.ScVal.scvString("USD"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("ipfs_doc_hash"),
-        val: xdr.ScVal.scvString("Qm..."),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("transfer_fee_bps"),
-        val: xdr.ScVal.scvU32(0),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("fee_recipient"),
-        val: xdr.ScVal.scvVoid(),
-      }),
-    ]);
-
-    invoiceContractId = await deployContract(admin, invoiceHash, [
-      adminAddr,
-      xdr.ScVal.scvAddress(
-        xdr.ScAddress.scAddressTypeContract(Buffer.from(kycContractId, "hex"))
-      ),
-      ceAddr,
-      initialMeta,
-    ]);
+  beforeEach(async () => {
+    fixture = await runner.setup(invoiceFixturePlan());
   });
 
-  it("deploys invoice token and lists initial invoice", async () => {
-    expect(invoiceContractId).toBeTruthy();
-
-    const invoices = await invokeContract(
-      admin,
-      invoiceContractId,
-      "list_invoices",
-      [xdr.ScVal.scvU32(0), xdr.ScVal.scvU32(10)]
-    );
-    expect(invoices.vec()!.length).toBe(1);
+  afterEach(async () => {
+    await runner.teardown(fixture);
+    fixture = undefined;
   });
 
-  it("creates a second invoice", async () => {
-    const secondMeta = xdr.ScVal.scvMap([
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("invoice_id"),
-        val: xdr.ScVal.scvString("INV-002"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("issuer"),
-        val: xdr.ScVal.scvString("Beta Corp"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("debtor"),
-        val: xdr.ScVal.scvString("Delta Ltd"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("face_value_usd"),
-        val: xdr.ScVal.scvI128(
-          new xdr.Int128Parts({
-            hi: xdr.Int64.fromString("0"),
-            lo: xdr.Uint64.fromString("500000000000"),
-          })
-        ),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("discount_rate_bps"),
-        val: xdr.ScVal.scvU32(100),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("due_date"),
-        val: xdr.ScVal.scvU64(xdr.Uint64.fromString("1900000000")),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("currency"),
-        val: xdr.ScVal.scvString("USD"),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("ipfs_doc_hash"),
-        val: xdr.ScVal.scvString(""),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("transfer_fee_bps"),
-        val: xdr.ScVal.scvU32(0),
-      }),
-      new xdr.ScMapEntry({
-        key: xdr.ScVal.scvSymbol("fee_recipient"),
-        val: xdr.ScVal.scvVoid(),
+  const current = (): FixtureContext => {
+    if (!fixture) throw new Error("Invoice fixture was not initialized");
+    return fixture;
+  };
+
+  it("deploys invoice token and lists the initial invoice", async () => {
+    expect(current().contract("invoice")).toBeTruthy();
+    const invoices = await current().invoke("invoice", "list_invoices", [
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(invoices.vec()?.length).toBe(1);
+  });
+
+  it("creates a second invoice in its isolated fixture", async () => {
+    await current().invoke("invoice", "create_invoice", [
+      invoiceMetadata({
+        debtor: "Delta Ltd",
+        discountRateBps: 100,
+        faceValue: "500000000000",
+        invoiceId: "INV-002",
+        issuer: "Beta Corp",
       }),
     ]);
 
-    await invokeContract(admin, invoiceContractId, "create_invoice", [secondMeta]);
-
-    const invoices = await invokeContract(
-      admin,
-      invoiceContractId,
-      "list_invoices",
-      [xdr.ScVal.scvU32(0), xdr.ScVal.scvU32(10)]
-    );
-    expect(invoices.vec()!.length).toBe(2);
+    const invoices = await current().invoke("invoice", "list_invoices", [
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(invoices.vec()?.length).toBe(2);
   });
 });
