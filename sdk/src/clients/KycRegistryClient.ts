@@ -8,6 +8,7 @@ import {
   encodeString,
 } from "../codec.js";
 import type { rpc } from "@stellar/stellar-sdk";
+import { withAuth, assertIsVerifier, assertIsAdmin } from "../auth.js";
 
 export class KycRegistryClient extends BaseContractClient {
   constructor(
@@ -47,7 +48,17 @@ export class KycRegistryClient extends BaseContractClient {
     return this.read<string[]>("verifier_list_pub", []);
   }
 
+  /** Registered contract admins. Used by the auth helpers' `assertIsAdmin` pre-check. */
+  async getAdmins(): Promise<string[]> {
+    return this.read<string[]>("get_admins", []);
+  }
+
   // ── Write API ─────────────────────────────────────────────────────────────
+  //
+  // Verifier- and admin-gated writes below run a local pre-flight role check
+  // (see sdk/src/auth.ts) before building the transaction: a wrong caller is
+  // rejected immediately with a clear AuthError instead of a round trip to
+  // simulation. On-chain `require_auth()` enforcement is unchanged either way.
 
   async approve(
     verifier: string,
@@ -57,17 +68,19 @@ export class KycRegistryClient extends BaseContractClient {
     jurisdiction: string,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "approve",
-      [
-        encodeAddress(verifier),
-        encodeAddress(subject),
-        encodeU32(tier),
-        encodeU64(expiry),
-        encodeString(jurisdiction),
-      ],
-      verifier,
-      signTx,
+    await withAuth("verifier", verifier, () => assertIsVerifier(this, verifier), () =>
+      this.write(
+        "approve",
+        [
+          encodeAddress(verifier),
+          encodeAddress(subject),
+          encodeU32(tier),
+          encodeU64(expiry),
+          encodeString(jurisdiction),
+        ],
+        verifier,
+        signTx,
+      ),
     );
   }
 
@@ -76,11 +89,13 @@ export class KycRegistryClient extends BaseContractClient {
     subject: string,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "reject",
-      [encodeAddress(verifier), encodeAddress(subject)],
-      verifier,
-      signTx,
+    await withAuth("verifier", verifier, () => assertIsVerifier(this, verifier), () =>
+      this.write(
+        "reject",
+        [encodeAddress(verifier), encodeAddress(subject)],
+        verifier,
+        signTx,
+      ),
     );
   }
 
@@ -89,11 +104,13 @@ export class KycRegistryClient extends BaseContractClient {
     subject: string,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "revoke",
-      [encodeAddress(verifier), encodeAddress(subject)],
-      verifier,
-      signTx,
+    await withAuth("verifier", verifier, () => assertIsVerifier(this, verifier), () =>
+      this.write(
+        "revoke",
+        [encodeAddress(verifier), encodeAddress(subject)],
+        verifier,
+        signTx,
+      ),
     );
   }
 
@@ -103,11 +120,13 @@ export class KycRegistryClient extends BaseContractClient {
     newTier: number,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "update_tier",
-      [encodeAddress(verifier), encodeAddress(subject), encodeU32(newTier)],
-      verifier,
-      signTx,
+    await withAuth("verifier", verifier, () => assertIsVerifier(this, verifier), () =>
+      this.write(
+        "update_tier",
+        [encodeAddress(verifier), encodeAddress(subject), encodeU32(newTier)],
+        verifier,
+        signTx,
+      ),
     );
   }
 
@@ -116,11 +135,13 @@ export class KycRegistryClient extends BaseContractClient {
     verifier: string,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "add_verifier",
-      [encodeAddress(adminAddress), encodeAddress(verifier)],
-      adminAddress,
-      signTx,
+    await withAuth("admin", adminAddress, () => assertIsAdmin(this, adminAddress), () =>
+      this.write(
+        "add_verifier",
+        [encodeAddress(adminAddress), encodeAddress(verifier)],
+        adminAddress,
+        signTx,
+      ),
     );
   }
 
@@ -129,11 +150,13 @@ export class KycRegistryClient extends BaseContractClient {
     verifier: string,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "remove_verifier",
-      [encodeAddress(adminAddress), encodeAddress(verifier)],
-      adminAddress,
-      signTx,
+    await withAuth("admin", adminAddress, () => assertIsAdmin(this, adminAddress), () =>
+      this.write(
+        "remove_verifier",
+        [encodeAddress(adminAddress), encodeAddress(verifier)],
+        adminAddress,
+        signTx,
+      ),
     );
   }
 
@@ -142,11 +165,13 @@ export class KycRegistryClient extends BaseContractClient {
     newAdmin: string,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "add_admin",
-      [encodeAddress(callerAddress), encodeAddress(newAdmin)],
-      callerAddress,
-      signTx,
+    await withAuth("admin", callerAddress, () => assertIsAdmin(this, callerAddress), () =>
+      this.write(
+        "add_admin",
+        [encodeAddress(callerAddress), encodeAddress(newAdmin)],
+        callerAddress,
+        signTx,
+      ),
     );
   }
 
@@ -155,11 +180,13 @@ export class KycRegistryClient extends BaseContractClient {
     adminToRemove: string,
     signTx: SignTx,
   ): Promise<void> {
-    await this.write(
-      "remove_admin",
-      [encodeAddress(callerAddress), encodeAddress(adminToRemove)],
-      callerAddress,
-      signTx,
+    await withAuth("admin", callerAddress, () => assertIsAdmin(this, callerAddress), () =>
+      this.write(
+        "remove_admin",
+        [encodeAddress(callerAddress), encodeAddress(adminToRemove)],
+        callerAddress,
+        signTx,
+      ),
     );
   }
 

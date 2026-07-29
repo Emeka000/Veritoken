@@ -12,8 +12,10 @@
  */
 
 import {
+  Account,
   Contract,
   Keypair,
+  TransactionBuilder,
   rpc,
   xdr,
   scValToNative,
@@ -24,6 +26,8 @@ import {
   type ContractName,
   type ContractError,
 } from "../errors.js";
+import { TxPipeline, type PipelineOptions } from "../pipeline.js";
+import { parseEvents, type ParsedEvent } from "../eventParser.js";
 
 // ── Simulation dummy account ──────────────────────────────────────────────────
 
@@ -225,6 +229,8 @@ export abstract class BaseContractClient {
     protected readonly networkPassphrase: string,
     /** Used for error message enrichment; must match ContractName in errors.ts */
     protected readonly contractName: ContractName,
+    /** Optional overrides for the shared TxPipeline (retries, timeouts, injected assemble/sleep for tests). */
+    pipelineOpts: PipelineOptions = {},
   ) {
     this.contract = new Contract(contractId);
     this.pipeline = new TxPipeline(server, networkPassphrase, pipelineOpts);
@@ -307,6 +313,53 @@ export abstract class BaseContractClient {
       err instanceof Error ? err.message : String(err),
     );
   }
+
+  /**
+   * Fetch and decode this contract's recent events via `getEvents`, typed
+   * through the shared event parser (see sdk/src/eventParser.ts).
+   *
+   * When neither `cursor` nor `startLedger` is given, scans back
+   * `lookbackLedgers` (default 10,000) ledgers from the current tip.
+   */
+  async getEvents(opts: GetContractEventsOptions = {}): Promise<ParsedEvent[]> {
+    const request: rpc.Server.GetEventsRequest = {
+      filters: [
+        {
+          type: opts.eventType ?? "contract",
+          contractIds: [this.contractId],
+          ...(opts.topicFilters ? { topics: opts.topicFilters } : {}),
+        },
+      ],
+      ...(opts.limit ? { limit: opts.limit } : {}),
+    };
+
+    if (opts.cursor) {
+      request.cursor = opts.cursor;
+    } else if (opts.startLedger !== undefined) {
+      request.startLedger = opts.startLedger;
+    } else {
+      const latest = await this.server.getLatestLedger();
+      request.startLedger = Math.max(
+        0,
+        latest.sequence - (opts.lookbackLedgers ?? 10_000),
+      );
+    }
+
+    const response = await this.server.getEvents(request);
+    return parseEvents(response.events);
+  }
+}
+
+export interface GetContractEventsOptions {
+  limit?: number;
+  /** Ledger to begin scanning from. Defaults to a bounded lookback from the tip. */
+  startLedger?: number;
+  /** RPC paging cursor returned as `pagingToken` on a previously parsed event. */
+  cursor?: string;
+  eventType?: rpc.Api.EventType;
+  topicFilters?: string[][];
+  /** How far back to scan when neither `cursor` nor `startLedger` is given. @default 10_000 */
+  lookbackLedgers?: number;
 }
 
 // ── Convenience re-export ─────────────────────────────────────────────────────

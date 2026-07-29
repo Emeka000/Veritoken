@@ -92,28 +92,79 @@ export const TOPIC_RECOVERY_CANCELLED = "rcv_cnl";
 // All amounts are i128 (represented as bigint in JS). Timestamps are u64 (bigint).
 
 export interface TransferEventData {
+  /** Sourced from topic[1] — not part of the on-chain data payload. */
+  from: string;
+  /** Sourced from topic[2] — not part of the on-chain data payload. */
+  to: string;
   amount: bigint;
   timestamp: bigint;
 }
 
 export interface MintEventData {
+  /** Sourced from topic[1] — not part of the on-chain data payload. */
+  to: string;
   amount: bigint;
   timestamp: bigint;
 }
 
 export interface BurnEventData {
+  /** Sourced from topic[1] — not part of the on-chain data payload. */
+  from: string;
   amount: bigint;
   timestamp: bigint;
 }
 
 export interface ApproveEventData {
+  /** Sourced from topic[1] — not part of the on-chain data payload. */
+  from: string;
+  /** Sourced from topic[2] — not part of the on-chain data payload. */
+  spender: string;
   amount: bigint;
   expirationLedger: number;
+}
+
+export interface FreezeEventData {
+  /** Sourced from topic[1] — not part of the on-chain data payload. */
+  addr: string;
+}
+
+export interface AdminProposedEventData {
+  newAdmin: string;
+  /** Admin nonce consumed by this operation. */
+  nonce: bigint;
 }
 
 export interface AdminSetEventData {
   oldAdmin: string;
   newAdmin: string;
+}
+
+export interface KycUpdatedEventData {
+  newRegistry: string;
+  nonce: bigint;
+}
+
+export interface CeUpdatedEventData {
+  newEngine: string;
+  nonce: bigint;
+}
+
+export interface RoleAssignedEventData {
+  role: string;
+  holder: string;
+  nonce: bigint;
+}
+
+export interface RoleRevokedEventData {
+  role: string;
+  nonce: bigint;
+}
+
+export interface KycStaleEventData {
+  /** Sourced from topic[1] — not part of the on-chain data payload. */
+  addr: string;
+  isActive: boolean;
+  expiry: bigint;
 }
 
 export interface MigrationEventData {

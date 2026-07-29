@@ -66,6 +66,33 @@ export {
 } from "./events.js";
 export type {
   TransferEventData, MintEventData, BurnEventData, ApproveEventData,
-  AdminSetEventData, MigrationEventData, RecoveryApprovedEventData,
-  RecoveryExecutedEventData,
+  FreezeEventData, AdminProposedEventData, AdminSetEventData,
+  KycUpdatedEventData, CeUpdatedEventData, RoleAssignedEventData,
+  RoleRevokedEventData, KycStaleEventData, MigrationEventData,
+  RecoveryApprovedEventData, RecoveryExecutedEventData,
 } from "./events.js";
+
+// ── Typed event parsing (#393) ──────────────────────────────────────────────────
+export { parseEvent, parseEvents, filterByName } from "./eventParser.js";
+export type {
+  ParsedEvent, KnownParsedEvent, UnknownParsedEvent, EventDataMap, KnownEventName,
+} from "./eventParser.js";
+export type { GetContractEventsOptions } from "./clients/base.js";
+
+// ── Auth helpers (#397) ─────────────────────────────────────────────────────────
+export {
+  isValidAddress, assertValidAddress, isUnauthorizedError,
+  assertIsVerifier, assertIsAdmin, withAuth, AuthError,
+} from "./auth.js";
+export type { Role } from "./auth.js";
+
+// ── Client factory & dependency injection (#395) ────────────────────────────────
+export { createClients, ClientFactory } from "./factory.js";
+export type { ClientMap, ClientKey, CreateClientsConfig } from "./factory.js";
+
+// Note: the mock RPC test harness (#396, sdk/src/testing/mockRpc.ts) is
+// intentionally NOT re-exported here. It imports `vi` from vitest (a
+// devDependency), and this file is the package's public production entry
+// point — exporting it here would pull vitest into every consumer's runtime
+// dependency graph. It's used directly (via relative import) by the SDK's
+// own test suite; see sdk/src/clients/*.test.ts for usage examples.
