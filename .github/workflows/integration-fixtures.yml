@@ -73,20 +73,30 @@ jobs:
           -p invoice-token
 
       - name: Start Stellar Quickstart
-        run: docker compose up -d stellar
+        run: >-
+          docker run --detach
+          --name stellar-fixtures
+          --publish 8000:8000
+          stellar/quickstart:latest
+          --local
+          --limits unlimited
 
       - name: Wait for Stellar RPC
         shell: bash
         run: |
-          container_id="$(docker compose ps -q stellar)"
           for attempt in {1..60}; do
-            status="$(docker inspect --format='{{.State.Health.Status}}' "$container_id")"
-            if [[ "$status" == "healthy" ]]; then
+            response="$(
+              curl --silent --show-error \
+                --header 'Content-Type: application/json' \
+                --data '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' \
+                http://localhost:8000/soroban/rpc || true
+            )"
+            if grep --quiet '"status":"healthy"' <<<"$response"; then
               exit 0
             fi
             sleep 3
           done
-          docker compose logs stellar
+          docker logs stellar-fixtures
           exit 1
 
       - name: Set up Node
@@ -106,8 +116,8 @@ jobs:
 
       - name: Print Quickstart logs after a failure
         if: failure()
-        run: docker compose logs stellar
+        run: docker logs stellar-fixtures
 
       - name: Stop Quickstart
         if: always()
-        run: docker compose down --volumes
+        run: docker rm --force --volumes stellar-fixtures
