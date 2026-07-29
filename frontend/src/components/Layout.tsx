@@ -1,19 +1,28 @@
-import { useState, type ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useWallet } from "../lib/wallet";
 import { useNetworkStore, type Network } from "../lib/networkStore";
+import { useRoleStore, type UserRole } from "../lib/roleStore";
+import { NotificationCenter } from "./NotificationCenter";
 
-const NAV = [
+interface NavItem {
+  to: string;
+  label: string;
+  /** Minimum role required to see this nav item. Undefined = always visible. */
+  role?: UserRole;
+}
+
+const NAV: NavItem[] = [
   { to: "/", label: "Dashboard" },
   { to: "/invoices", label: "Invoices" },
   { to: "/property", label: "Property" },
   { to: "/carbon", label: "Carbon" },
   { to: "/kyc", label: "KYC" },
   { to: "/attestations", label: "Attestations" },
-  { to: "/admin", label: "Admin" },
-  { to: "/batch", label: "Batch" },
-  { to: "/onboarding", label: "Onboarding" },
-  { to: "/deploy", label: "Deploy" },
+  { to: "/admin", label: "Admin", role: "admin" },
+  { to: "/batch", label: "Batch", role: "verifier" },
+  { to: "/onboarding", label: "Onboarding", role: "verifier" },
+  { to: "/deploy", label: "Deploy", role: "admin" },
   { to: "/docs", label: "Docs" },
 ];
 
@@ -21,7 +30,26 @@ export default function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const { address, connected, connect, disconnect } = useWallet();
   const { network, setNetwork } = useNetworkStore();
+  const { role, resolveRole, clearRole } = useRoleStore();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Resolve role whenever the connected address changes.
+  useEffect(() => {
+    if (connected && address) {
+      resolveRole(address);
+    } else {
+      clearRole();
+    }
+  }, [connected, address, resolveRole, clearRole]);
+
+  /** Returns true when this nav item should be visible given the current role. */
+  const isVisible = (item: NavItem): boolean => {
+    if (!item.role) return true;
+    if (!connected) return false;
+    if (item.role === "admin") return role === "admin";
+    if (item.role === "verifier") return role === "admin" || role === "verifier";
+    return true;
+  };
 
   const closeMenu = () => setMenuOpen(false);
 
@@ -51,9 +79,8 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   const handleNetworkChange = (newNetwork: Network) => {
     setNetwork(newNetwork);
-    // Clear wallet connection state
+    clearRole();
     disconnect();
-    // Reload the page to reinitialize with new network
     window.location.reload();
   };
 
@@ -70,7 +97,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           </Link>
 
           <nav style={styles.nav} className="nav-desktop" aria-label="Main navigation">
-            {NAV.map((n) => {
+            {NAV.filter(isVisible).map((n) => {
               const active = n.to === "/" ? pathname === "/" : pathname.startsWith(n.to);
               return (
                 <Link
@@ -108,6 +135,23 @@ export default function Layout({ children }: { children: ReactNode }) {
                 <span style={styles.address} className="mono">
                   <span className="dot" />
                   {address?.slice(0, 4)}…{address?.slice(-4)}
+                  {role && role !== "user" && (
+                    <span
+                      style={{
+                        marginLeft: "0.35rem",
+                        fontSize: "0.65rem",
+                        padding: "0.1rem 0.4rem",
+                        borderRadius: 4,
+                        background: role === "admin" ? "rgba(124,110,247,0.18)" : "rgba(59,184,122,0.18)",
+                        color: role === "admin" ? "#a78bfa" : "#4ade80",
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.04em",
+                      }}
+                    >
+                      {role}
+                    </span>
+                  )}
                 </span>
                 <button onClick={disconnect} className="btn-ghost" style={styles.disconnectBtn}>
                   Disconnect
@@ -116,6 +160,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             ) : (
               <button onClick={connect}>Connect Wallet</button>
             )}
+            <NotificationCenter />
             <button
               className="hamburger"
               onClick={() => setMenuOpen(!menuOpen)}
@@ -141,7 +186,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         onKeyDown={handleDrawerKeyDown}
         style={{ ...styles.drawer, ...(menuOpen ? styles.drawerOpen : {}) }}
       >
-        {NAV.map((n) => {
+        {NAV.filter(isVisible).map((n) => {
           const active = n.to === "/" ? pathname === "/" : pathname.startsWith(n.to);
           return (
             <Link
