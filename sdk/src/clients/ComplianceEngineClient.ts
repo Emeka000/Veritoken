@@ -1,6 +1,7 @@
 import type { rpc } from "@stellar/stellar-sdk";
 import { BaseContractClient, type SignTx } from "./base.js";
 import type { ComplianceRules, TierPolicy, RiskConfig } from "../types.js";
+import { checkHealth, type ContractHealth, type HealthCheckOptions } from "../health.js";
 import {
   encodeAddress,
   encodeU32,
@@ -18,6 +19,26 @@ export class ComplianceEngineClient extends BaseContractClient {
     networkPassphrase: string,
   ) {
     super(contractId, server, networkPassphrase, "compliance");
+  }
+
+  // ── Health / analytics (#400) ─────────────────────────────────────────────
+
+  /**
+   * Return operational health signals for the compliance engine.
+   * Extends the base signals with `paused` and `holderCount`.
+   */
+  async health(opts: HealthCheckOptions = {}): Promise<ContractHealth & { paused: boolean | null; holderCount: number | null }> {
+    const base = await checkHealth(this.server, this.contractId, opts);
+    if (!base.reachable) return { ...base, paused: null, holderCount: null };
+    const [paused, holderCount] = await Promise.allSettled([
+      this.getRules().then((r) => r.paused),
+      this.holderCount(),
+    ]);
+    return {
+      ...base,
+      paused: paused.status === "fulfilled" ? paused.value : null,
+      holderCount: holderCount.status === "fulfilled" ? holderCount.value : null,
+    };
   }
 
   // ── Read API ──────────────────────────────────────────────────────────────

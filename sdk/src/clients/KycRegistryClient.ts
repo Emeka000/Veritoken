@@ -1,5 +1,6 @@
 import { BaseContractClient, type SignTx } from "./base.js";
 import type { KycRecord } from "../types.js";
+import { checkHealth, type ContractHealth, type HealthCheckOptions } from "../health.js";
 import {
   encodeAddress,
   encodeU32,
@@ -16,6 +17,22 @@ export class KycRegistryClient extends BaseContractClient {
     networkPassphrase: string,
   ) {
     super(contractId, server, networkPassphrase, "kyc");
+  }
+
+  // ── Health / analytics (#400) ─────────────────────────────────────────────
+
+  /**
+   * Return operational health signals for the KYC registry.
+   * Extends the base signals with `verifierCount`.
+   */
+  async health(opts: HealthCheckOptions = {}): Promise<ContractHealth & { verifierCount: number | null }> {
+    const base = await checkHealth(this.server, this.contractId, opts);
+    if (!base.reachable) return { ...base, verifierCount: null };
+    const result = await Promise.allSettled([this.verifierCount()]);
+    return {
+      ...base,
+      verifierCount: result[0].status === "fulfilled" ? result[0].value : null,
+    };
   }
 
   // ── Read API ──────────────────────────────────────────────────────────────

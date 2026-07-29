@@ -6,6 +6,12 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "homepage": "https://github.com/chidinma000/Veritoken/tree/main/sdk#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chidinma000/Veritoken",
+    "directory": "sdk"
+  },
+  "versioningPolicy": "sdk/VERSIONING.md",
   "exports": {
     ".": {
       "import": "./dist/index.js",

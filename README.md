@@ -76,17 +76,37 @@ resume, mainnet configuration, and verification details.
 git clone https://github.com/abore9769/Veritoken
 cd Veritoken
 
-# Create and fund a testnet identity
-bash scripts/setup-identity.sh veritoken-dev
+# One-command bootstrap: checks tools, installs deps, creates and funds identity
+bash scripts/setup-local.sh
 
-# Build all contracts and deploy to testnet
-# (writes contract IDs to frontend/.env automatically)
-bash scripts/deploy.sh veritoken-dev
+# Or bootstrap + deploy in one step:
+bash scripts/setup-local.sh --deploy
 
 # Start the frontend
 cd frontend
-npm install
 npm run dev
+```
+
+For the full CLI reference (deploy, KYC, compliance, tests):
+
+```bash
+bash scripts/veritoken-cli.sh help
+```
+
+Common CLI operations:
+
+```bash
+# KYC
+bash scripts/veritoken-cli.sh kyc approve <addr> 1 0 US
+bash scripts/veritoken-cli.sh kyc check <addr>
+
+# Compliance
+bash scripts/veritoken-cli.sh compliance pause
+bash scripts/veritoken-cli.sh compliance blocklist add <addr>
+
+# Tests
+bash scripts/veritoken-cli.sh test
+bash scripts/veritoken-cli.sh sdk-test
 ```
 
 ### Docker (recommended for consistent local environments)

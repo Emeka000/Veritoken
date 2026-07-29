@@ -252,6 +252,62 @@ const transfers = filterByName(parsed, "transfer"); // narrows to KnownParsedEve
 Every client also exposes a convenience `getEvents` — see
 [src/clients/base.ts](src/clients/base.ts) (`GetContractEventsOptions`).
 
+## Health and analytics
+
+_Issue #400 — SDK health helpers_
+
+Three clients expose a `health()` method that collects operational signals
+without a wallet or write access. All reads are simulated and safe to call
+from monitoring scripts or dashboards.
+
+```ts
+import { createClients } from "@veritoken/sdk";
+
+const { complianceEngine, kycRegistry, rwaToken } = createClients({
+  network: "testnet",
+  contractIds: {
+    complianceEngine: process.env.VITE_COMPLIANCE_ENGINE_ID,
+    kycRegistry: process.env.VITE_KYC_REGISTRY_ID,
+    rwaToken: process.env.VITE_RWA_TOKEN_ID,
+  },
+});
+
+const ceHealth = await complianceEngine?.health();
+// {
+//   reachable: true,
+//   latestLedger: 12345,
+//   recentEventCount: 7,
+//   checkedAt: "2025-01-01T00:00:00.000Z",
+//   paused: false,
+//   holderCount: 42
+// }
+
+const kycHealth = await kycRegistry?.health();
+// { ...base, verifierCount: 3 }
+
+const tokenHealth = await rwaToken?.health();
+// { ...base, totalSupply: 1000000n }
+```
+
+The base `ContractHealth` shape (from `checkHealth` in `health.ts`) is also
+exported for use in custom monitoring scripts:
+
+```ts
+import { checkHealth } from "@veritoken/sdk";
+
+const health = await checkHealth(server, contractId, { lookbackLedgers: 500 });
+if (!health.reachable) console.error("Contract unreachable:", health.error);
+```
+
+Signals collected:
+- `reachable` — RPC responded without a network error
+- `latestLedger` — current ledger sequence
+- `recentEventCount` — events emitted in the last `lookbackLedgers` ledgers (default 1000)
+- `checkedAt` — ISO timestamp of the check
+- `error` — error message if `reachable` is false
+
+Per-contract extensions: `paused` + `holderCount` (compliance), `verifierCount` (KYC), `totalSupply` (RWA token).
+
 ## Auth helpers
 
 _Issue #397 — Local pre-flight role checks_
@@ -286,6 +342,22 @@ production runtime surface. Import it via a relative/subpath path from your
 own test suite instead. See any `src/clients/*.test.ts` for the established
 pattern (happy path, simulation error, malformed payload, network
 rejection).
+
+## Versioning and breaking changes
+
+_Issue #399 — SemVer strategy_
+
+`@veritoken/sdk` follows [Semantic Versioning 2.0.0](https://semver.org). The
+full policy — what counts as a breaking change, how breaking changes are
+communicated, and migration guides — is in [VERSIONING.md](VERSIONING.md).
+
+In short:
+- `PATCH` — bug fixes, no API change
+- `MINOR` — new exports or methods, backward-compatible
+- `MAJOR` — removed/renamed exports, changed signatures, dropped peer versions
+
+Breaking changes are announced in `CHANGELOG.md` under a `### Breaking Changes`
+section and documented with a migration note in `VERSIONING.md`.
 
 ## Adding a new contract client
 
