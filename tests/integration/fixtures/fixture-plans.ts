@@ -70,7 +70,7 @@ export interface InvoiceMetadataOptions {
 export const invoiceMetadata = (
   options: InvoiceMetadataOptions,
 ): xdr.ScVal =>
-  xdr.ScVal.scvMap([
+  xdr.scvSortedMap([
     new xdr.ScMapEntry({
       key: xdr.ScVal.scvSymbol("invoice_id"),
       val: xdr.ScVal.scvString(options.invoiceId),

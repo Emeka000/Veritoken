@@ -108,5 +108,19 @@ describe("integration fixture plans", () => {
     const invoiceArgs = transport.deployments[2].constructorArgs;
     expect(invoiceArgs).toHaveLength(4);
     expect(invoiceArgs?.[3].map()).toHaveLength(10);
+    expect(
+      invoiceArgs?.[3].map()?.map((entry) => entry.key().sym().toString()),
+    ).toEqual([
+      "currency",
+      "debtor",
+      "discount_rate_bps",
+      "due_date",
+      "face_value_usd",
+      "fee_recipient",
+      "invoice_id",
+      "ipfs_doc_hash",
+      "issuer",
+      "transfer_fee_bps",
+    ]);
   });
 });
