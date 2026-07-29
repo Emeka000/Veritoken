@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import ConfirmDialog from "../ConfirmDialog";
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -87,7 +87,9 @@ describe("ConfirmDialog – rendering", () => {
 });
 
 describe("ConfirmDialog – interactions", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   it("calls onConfirm when the confirm button is clicked", () => {
     const onConfirm = vi.fn();

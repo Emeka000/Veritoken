@@ -1,4 +1,3 @@
-import { Address, nativeToScVal } from "@stellar/stellar-sdk";
 import { BaseContractClient, type SignTx } from "./base.js";
 import type { KycRecord } from "../types.js";
 import {

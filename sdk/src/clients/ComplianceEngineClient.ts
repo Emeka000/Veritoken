@@ -1,5 +1,4 @@
 import type { rpc } from "@stellar/stellar-sdk";
-import { nativeToScVal } from "@stellar/stellar-sdk";
 import { BaseContractClient, type SignTx } from "./base.js";
 import type { ComplianceRules, TierPolicy, RiskConfig } from "../types.js";
 import {

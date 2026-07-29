@@ -61,9 +61,9 @@ export default function PropertyPage() {
 
   // ── Dividend history ─────────────────────────────────────────────────────
   const [dividendHistory, setDividendHistory] = useState<DividendEvent[] | null>(null);
-  const [dividendHistoryCount, setDividendHistoryCount] = useState<number | null>(null);
+  const [, setDividendHistoryCount] = useState<number | null>(null);
   const [dividendHistoryLoading, setDividendHistoryLoading] = useState(false);
-  const [dividendHistoryError, setDividendHistoryError] = useState<string | null>(null);
+  const [, setDividendHistoryError] = useState<string | null>(null);
 
   // ── Claim dividend ───────────────────────────────────────────────────────
   const [claimLoading, setClaimLoading] = useState(false);
