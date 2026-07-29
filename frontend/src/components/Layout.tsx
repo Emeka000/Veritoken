@@ -5,12 +5,14 @@ import { useNetworkStore, type Network } from "../lib/networkStore";
 
 const NAV = [
   { to: "/", label: "Dashboard" },
+  { to: "/marketplace", label: "Marketplace" },    // #439
   { to: "/invoices", label: "Invoices" },
   { to: "/property", label: "Property" },
   { to: "/carbon", label: "Carbon" },
   { to: "/kyc", label: "KYC" },
   { to: "/attestations", label: "Attestations" },
   { to: "/admin", label: "Admin" },
+  { to: "/compliance-config", label: "Config I/O" }, // #436
   { to: "/batch", label: "Batch" },
   { to: "/onboarding", label: "Onboarding" },
   { to: "/deploy", label: "Deploy" },
