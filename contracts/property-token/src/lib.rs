@@ -243,8 +243,21 @@ impl PropertyToken {
     pub fn mint(env: Env, to: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
+        // Use (to, to) so the compliance engine checks to's KYC and compliance
+        // state without requiring the admin to also hold a KYC record.
+        match th::evaluate_transfer_compliance(&env, &to, &to, shares) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::Blocklisted);
+                } else {
+                    panic_with_error!(env, PropertyError::TransferBlocked);
+                }
+            }
         }
         Self::require_tier(&env, &to);
         let meta: PropertyMeta = env
@@ -252,10 +265,6 @@ impl PropertyToken {
             .instance()
             .get(&DataKey::PropertyMeta)
             .expect("property meta must be set");
-        let admin = th::read_admin(&env);
-        if !th::can_transfer_compliance(&env, &admin, &to, shares) {
-            panic!("mint blocked by compliance");
-        }
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
@@ -291,16 +300,21 @@ impl PropertyToken {
     pub fn transfer(env: Env, from: Address, to: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
-        }
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
+        match th::evaluate_transfer_compliance(&env, &from, &to, shares) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::Blocklisted);
+                } else {
+                    panic_with_error!(env, PropertyError::TransferBlocked);
+                }
+            }
         }
         Self::require_tier(&env, &to);
-        if !th::can_transfer_compliance(&env, &from, &to, shares) {
-            panic_with_error!(env, PropertyError::TransferBlocked);
-        }
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
@@ -328,7 +342,7 @@ impl PropertyToken {
     pub fn buyback(env: Env, from: Address, shares: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        if !th::is_kyc_approved(&env, &from) {
+        if th::get_kyc_state_of(&env, &from) != th::KycState::Approved {
             panic_with_error!(env, PropertyError::KycNotApproved);
         }
         if shares <= 0 {
@@ -395,16 +409,21 @@ impl PropertyToken {
 
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, shares: i128) {
         spender.require_auth();
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
-        }
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, PropertyError::KycNotApproved);
+        match th::evaluate_transfer_compliance(&env, &from, &to, shares) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::KycNotApproved);
+                } else if th::is_paused_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::CompliancePaused);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, PropertyError::Blocklisted);
+                } else {
+                    panic_with_error!(env, PropertyError::TransferBlocked);
+                }
+            }
         }
         Self::require_tier(&env, &to);
-        if !th::can_transfer_compliance(&env, &from, &to, shares) {
-            panic_with_error!(env, PropertyError::TransferBlocked);
-        }
         if shares <= 0 {
             panic!("shares must be positive");
         }
@@ -664,10 +683,10 @@ impl PropertyToken {
         if shares <= 0 {
             panic_with_error!(env, PropertyError::NegativeShares);
         }
-        if !th::is_kyc_approved(&env, &from) {
+        if th::get_kyc_state_of(&env, &from) != th::KycState::Approved {
             panic_with_error!(env, PropertyError::KycNotApproved);
         }
-        if !th::is_kyc_approved(&env, &to) {
+        if th::get_kyc_state_of(&env, &to) != th::KycState::Approved {
             panic_with_error!(env, PropertyError::KycNotApproved);
         }
         Self::require_tier(&env, &to);

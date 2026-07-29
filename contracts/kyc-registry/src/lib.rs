@@ -95,7 +95,7 @@ pub struct KycTransition {
 // ── Supporting storage types ──────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VerifierLogEntry {
     pub verifier: Address,
     pub subject: Address,
@@ -128,15 +128,36 @@ pub struct ExpiringRecord {
 /// - `registry`    — the contract's own address, so the caller can anchor the
 ///                   export to a specific on-chain registry instance.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KycFullRecord {
     pub record: KycRecord,
     pub log_entries: Vec<VerifierLogEntry>,
     pub registry: Address,
 }
 
+/// Resolved KYC state for an address, distinguishing all non-approved cases.
+///
+/// Returned by [`KycRegistry::get_kyc_state`] — never panics regardless of
+/// whether a record exists.
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum KycState {
+    /// No record exists for this address.
+    Missing,
+    /// Record exists, status = Approved, and the expiry has not passed.
+    Approved,
+    /// Record exists, status = Approved, but the expiry timestamp has passed.
+    Expired,
+    /// Record exists, status = Revoked.
+    Revoked,
+    /// Record exists, status = Rejected.
+    Rejected,
+    /// Record exists, status = Pending (not yet reviewed).
+    Pending,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
 pub enum KycStatus {
     Pending,
     Approved,
@@ -145,7 +166,7 @@ pub enum KycStatus {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KycRecord {
     pub status: KycStatus,
     pub verifier: Address,
@@ -560,14 +581,63 @@ impl KycRegistry {
     }
 
     /// Returns the current canonical KYC record for a subject.
+    ///
+    /// Panics with `expect` when no record exists. Callers that need a
+    /// non-panicking variant should use [`get_record_opt`].
     pub fn get_record(env: Env, addr: Address) -> KycRecord {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::fetch_record(&env, addr)
     }
 
+    /// Returns the KYC record for an address, or `None` if no record exists.
+    ///
+    /// Unlike [`get_record`] this never panics. Named `get_record_opt` rather
+    /// than `try_get_record` to avoid colliding with the `try_` prefix that the
+    /// Soroban SDK auto-generates for every contract method's client wrapper.
+    pub fn get_record_opt(env: Env, addr: Address) -> Option<KycRecord> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .persistent()
+            .get::<DataKey, KycRecord>(&DataKey::KycStatus(addr))
+    }
+
+    /// Resolves the full KYC state for an address without panicking.
+    ///
+    /// Returns [`KycState::Missing`] when no record exists,
+    /// [`KycState::Expired`] when the record has passed its expiry timestamp,
+    /// and the appropriately named state otherwise.
+    pub fn get_kyc_state(env: Env, addr: Address) -> KycState {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let key = DataKey::KycStatus(addr);
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, KycRecord>(&key)
+        {
+            None => KycState::Missing,
+            Some(record) => match record.status {
+                KycStatus::Approved => {
+                    if record.expiry != 0 && record.expiry < env.ledger().timestamp() {
+                        KycState::Expired
+                    } else {
+                        KycState::Approved
+                    }
+                }
+                KycStatus::Revoked => KycState::Revoked,
+                KycStatus::Rejected => KycState::Rejected,
+                KycStatus::Pending => KycState::Pending,
+            },
+        }
+    }
+
+    /// Returns the KYC tier of `addr`, or `0` when no record exists.
     pub fn get_tier(env: Env, addr: Address) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::fetch_record(&env, addr).tier
+        env.storage()
+            .persistent()
+            .get::<DataKey, KycRecord>(&DataKey::KycStatus(addr))
+            .map(|r| r.tier)
+            .unwrap_or(0)
     }
 
     /// Paged query of subjects approved by a given verifier.

@@ -307,7 +307,7 @@ impl InvoiceToken {
     pub fn issue(env: Env, invoice_id: String, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        if !th::is_kyc_approved(&env, &to) {
+        if th::get_kyc_state_of(&env, &to) != th::KycState::Approved {
             panic_with_error!(env, InvoiceError::KycNotApproved);
         }
 
@@ -457,8 +457,15 @@ impl InvoiceToken {
             panic_with_error!(env, InvoiceError::NotSettled);
         }
 
-        if !th::can_transfer_compliance(&env, &from, &from, amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &from, &from, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, InvoiceError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, InvoiceError::TransferBlocked);
+                }
+            }
         }
 
         let bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
@@ -509,11 +516,15 @@ impl InvoiceToken {
     /// SEP-41-style burn.
     pub fn burn(env: Env, invoice_id: String, from: Address, amount: i128) {
         from.require_auth();
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, InvoiceError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &from, &from, amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &from, &from, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, InvoiceError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, InvoiceError::TransferBlocked);
+                }
+            }
         }
 
         let bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
@@ -559,11 +570,15 @@ impl InvoiceToken {
         amount: i128,
     ) {
         spender.require_auth();
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, InvoiceError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &from, &from, amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &from, &from, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, InvoiceError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, InvoiceError::TransferBlocked);
+                }
+            }
         }
 
         let allowance = Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
@@ -647,14 +662,15 @@ impl InvoiceToken {
         if amount < 0 {
             panic_with_error!(env, InvoiceError::NegativeAmount);
         }
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, InvoiceError::KycNotApproved);
-        }
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, InvoiceError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &from, &to, amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &from, &to, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, InvoiceError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, InvoiceError::TransferBlocked);
+                }
+            }
         }
 
         // ── Fee deduction ────────────────────────────────────────────────
@@ -729,14 +745,15 @@ impl InvoiceToken {
         if amount < 0 {
             panic_with_error!(env, InvoiceError::NegativeAmount);
         }
-        if !th::is_kyc_approved(&env, &from) {
-            panic_with_error!(env, InvoiceError::KycNotApproved);
-        }
-        if !th::is_kyc_approved(&env, &to) {
-            panic_with_error!(env, InvoiceError::KycNotApproved);
-        }
-        if !th::can_transfer_compliance(&env, &from, &to, amount) {
-            panic_with_error!(env, InvoiceError::TransferBlocked);
+        match th::evaluate_transfer_compliance(&env, &from, &to, amount) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, InvoiceError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, InvoiceError::TransferBlocked);
+                }
+            }
         }
 
         let allowance = Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());

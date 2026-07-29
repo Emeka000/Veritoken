@@ -9,6 +9,54 @@ use soroban_sdk::{
     Address, Env, String, Vec,
 };
 
+/// The reason a transfer was denied by the compliance engine.
+///
+/// Returned inside [`TransferDecision`] by [`ComplianceEngine::evaluate_transfer`].
+/// Callers can match on this to surface a precise error to the user, e.g.
+/// mapping KYC-related variants to a `KycNotApproved` contract error and
+/// the rest to `TransferBlocked`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DenyReason {
+    CompliancePaused,
+    FromBlocklisted,
+    ToBlocklisted,
+    FromKycMissing,
+    ToKycMissing,
+    FromKycExpired,
+    ToKycExpired,
+    FromKycRevoked,
+    ToKycRevoked,
+    FromKycRejected,
+    ToKycRejected,
+    FromKycPending,
+    ToKycPending,
+    FromJurisdictionBlocked,
+    ToJurisdictionBlocked,
+    SameJurisdictionRequired,
+    AmountExceeded,
+    HoldingPeriodNotMet,
+    MaxHoldersReached,
+    RecipientHoldingPeriodExceeded,
+    TierPolicyBlocked,
+    TierFromBelowMin,
+    TierToBelowMin,
+    TierAmountExceeded,
+    RiskScoreTooHigh,
+}
+
+/// The outcome of a compliance transfer evaluation.
+///
+/// Returned by [`ComplianceEngine::evaluate_transfer`].
+/// `Allow` means the transfer may proceed.
+/// `Deny(reason)` carries the specific rule that blocked the transfer.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransferDecision {
+    Allow,
+    Deny(DenyReason),
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -333,6 +381,28 @@ impl ComplianceEngine {
         Self::blocklist(&env).contains(&addr)
     }
 
+    pub fn blocklist_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::BlocklistCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_blocklist(env: Env, start: u32, limit: u32) -> Vec<Address> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let all = Self::blocklist(&env);
+        let total = all.len();
+        let mut result: Vec<Address> = Vec::new(&env);
+        let end = (start + limit).min(total);
+        for i in start..end {
+            if let Some(addr) = all.get(i) {
+                result.push_back(addr);
+            }
+        }
+        result
+    }
+
     // ── Allowlist ────────────────────────────────────────────────────────────
 
     pub fn add_to_allowlist(env: Env, addr: Address) {
@@ -426,52 +496,130 @@ impl ComplianceEngine {
 
     // ── Transfer validation ──────────────────────────────────────────────────
 
+    /// Returns `true` when the compliance rules permit a transfer.
+    ///
+    /// This function does **not** validate KYC state — callers are expected to
+    /// check KYC separately before invoking it (as the legacy token contracts do).
+    /// Panic-prone `get_record` / `get_tier` calls have been replaced with safe
+    /// `get_record_opt` / `get_tier` (which returns 0 for missing records) so
+    /// that a missing KYC record never causes a host trap: it results in a
+    /// deterministic `false` instead.
+    ///
+    /// For a single call that validates both KYC state and all compliance rules
+    /// use [`evaluate_transfer`].
     pub fn can_transfer(env: Env, from: Address, to: Address, amount: i128) -> bool {
+        matches!(Self::evaluate_transfer_inner(&env, &from, &to, amount, false), TransferDecision::Allow)
+    }
+
+    /// Evaluates a transfer against both KYC state and all compliance rules.
+    ///
+    /// Unlike [`can_transfer`], this function explicitly resolves the KYC state
+    /// for both parties first and returns a deterministic deny for missing,
+    /// expired, revoked, rejected, or pending records — no host traps.
+    ///
+    /// Returns a [`TransferDecision`] whose `deny_reason` field identifies the
+    /// first failing rule, enabling callers to surface a precise error.
+    pub fn evaluate_transfer(env: Env, from: Address, to: Address, amount: i128) -> TransferDecision {
+        Self::evaluate_transfer_inner(&env, &from, &to, amount, true)
+    }
+
+    /// Shared implementation for both `can_transfer` and `evaluate_transfer`.
+    ///
+    /// When `check_kyc` is `true` the function validates the KYC state of both
+    /// parties before any other rule; when `false` it skips the KYC check
+    /// (preserving the legacy `can_transfer` semantics for backward compat).
+    fn evaluate_transfer_inner(
+        env: &Env,
+        from: &Address,
+        to: &Address,
+        amount: i128,
+        check_kyc: bool,
+    ) -> TransferDecision {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();
 
         if rules.paused {
-            return false;
+            return TransferDecision::Deny(DenyReason::CompliancePaused);
         }
 
-        let blocklist = Self::blocklist(&env);
-        if blocklist.contains(&from) || blocklist.contains(&to) {
-            return false;
+        let blocklist = Self::blocklist(env);
+        if blocklist.contains(from) {
+            return TransferDecision::Deny(DenyReason::FromBlocklisted);
+        }
+        if blocklist.contains(to) {
+            return TransferDecision::Deny(DenyReason::ToBlocklisted);
         }
 
+        // ── KYC state validation (evaluate_transfer only) ─────────────────────
+        if check_kyc {
+            let kyc_registry: Address =
+                env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+            let kyc = kyc_iface::KycRegistryClient::new(env, &kyc_registry);
+
+            let from_state = kyc.get_kyc_state(from);
+            match from_state {
+                kyc_iface::KycState::Missing  => return TransferDecision::Deny(DenyReason::FromKycMissing),
+                kyc_iface::KycState::Expired  => return TransferDecision::Deny(DenyReason::FromKycExpired),
+                kyc_iface::KycState::Revoked  => return TransferDecision::Deny(DenyReason::FromKycRevoked),
+                kyc_iface::KycState::Rejected => return TransferDecision::Deny(DenyReason::FromKycRejected),
+                kyc_iface::KycState::Pending  => return TransferDecision::Deny(DenyReason::FromKycPending),
+                kyc_iface::KycState::Approved => {}
+            }
+
+            let to_state = kyc.get_kyc_state(to);
+            match to_state {
+                kyc_iface::KycState::Missing  => return TransferDecision::Deny(DenyReason::ToKycMissing),
+                kyc_iface::KycState::Expired  => return TransferDecision::Deny(DenyReason::ToKycExpired),
+                kyc_iface::KycState::Revoked  => return TransferDecision::Deny(DenyReason::ToKycRevoked),
+                kyc_iface::KycState::Rejected => return TransferDecision::Deny(DenyReason::ToKycRejected),
+                kyc_iface::KycState::Pending  => return TransferDecision::Deny(DenyReason::ToKycPending),
+                kyc_iface::KycState::Approved => {}
+            }
+        }
+
+        // ── Jurisdiction checks ───────────────────────────────────────────────
+        // Use get_record_opt so missing KYC records never trap; a missing record
+        // returns false for any active jurisdiction rule.
         let blocked_jurisdictions = Self::get_blocked_jurisdictions(env.clone());
         if !blocked_jurisdictions.is_empty() {
-            let kyc_registry: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::KycRegistry)
-                .unwrap();
-            let kyc = kyc_iface::KycRegistryClient::new(&env, &kyc_registry);
-            let from_record = kyc.get_record(&from);
-            let to_record = kyc.get_record(&to);
-            if blocked_jurisdictions.contains(&from_record.jurisdiction)
-                || blocked_jurisdictions.contains(&to_record.jurisdiction)
-            {
-                return false;
+            let kyc_registry: Address =
+                env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+            let kyc = kyc_iface::KycRegistryClient::new(env, &kyc_registry);
+            match kyc.get_record_opt(from) {
+                Some(r) if blocked_jurisdictions.contains(&r.jurisdiction) => {
+                    return TransferDecision::Deny(DenyReason::FromJurisdictionBlocked);
+                }
+                None => return TransferDecision::Deny(DenyReason::FromJurisdictionBlocked),
+                _ => {}
+            }
+            match kyc.get_record_opt(to) {
+                Some(r) if blocked_jurisdictions.contains(&r.jurisdiction) => {
+                    return TransferDecision::Deny(DenyReason::ToJurisdictionBlocked);
+                }
+                None => return TransferDecision::Deny(DenyReason::ToJurisdictionBlocked),
+                _ => {}
             }
         }
 
         if rules.require_same_jurisdiction {
-            let kyc_registry: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::KycRegistry)
-                .unwrap();
-            let kyc = kyc_iface::KycRegistryClient::new(&env, &kyc_registry);
-            let from_record = kyc.get_record(&from);
-            let to_record = kyc.get_record(&to);
-            if from_record.jurisdiction != to_record.jurisdiction {
-                return false;
+            let kyc_registry: Address =
+                env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+            let kyc = kyc_iface::KycRegistryClient::new(env, &kyc_registry);
+            match (kyc.get_record_opt(from), kyc.get_record_opt(to)) {
+                (Some(fr), Some(tr)) if fr.jurisdiction != tr.jurisdiction => {
+                    return TransferDecision::Deny(DenyReason::SameJurisdictionRequired);
+                }
+                (None, _) | (_, None) => {
+                    return TransferDecision::Deny(DenyReason::SameJurisdictionRequired);
+                }
+                _ => {}
             }
         }
 
+        // ── Amount / holding period / holder count ────────────────────────────
+
         if rules.max_transfer_amount > 0 && amount > rules.max_transfer_amount {
-            return false;
+            return TransferDecision::Deny(DenyReason::AmountExceeded);
         }
 
         if rules.min_holding_period > 0 {
@@ -479,21 +627,20 @@ impl ComplianceEngine {
             if let Some(since) = env.storage().persistent().get::<DataKey, u64>(&key) {
                 let elapsed = env.ledger().timestamp().saturating_sub(since);
                 if elapsed < rules.min_holding_period {
-                    return false;
+                    return TransferDecision::Deny(DenyReason::HoldingPeriodNotMet);
                 }
             }
         }
 
-        // ── Max holding period (forced-exit window) ───────────────────────────
-        // If max_holding_period > 0, block the *recipient* (`to`) from receiving
-        // more tokens once they have already exceeded their maximum holding window.
-        // The *sender* (`from`) is still allowed to transfer out (forced exit).
+        // If max_holding_period > 0, block the *recipient* from receiving more
+        // tokens once they have exceeded their maximum holding window.
+        // The *sender* is still allowed to transfer out (forced exit).
         if rules.max_holding_period > 0 {
             let key = DataKey::HolderSince(to.clone());
             if let Some(since) = env.storage().persistent().get::<DataKey, u64>(&key) {
                 let elapsed = env.ledger().timestamp().saturating_sub(since);
                 if elapsed >= rules.max_holding_period {
-                    return false;
+                    return TransferDecision::Deny(DenyReason::RecipientHoldingPeriodExceeded);
                 }
             }
         }
@@ -503,7 +650,7 @@ impl ComplianceEngine {
             if !env.storage().persistent().has(&key) {
                 let count = Self::holder_count(env.clone());
                 if count >= rules.max_holders {
-                    return false;
+                    return TransferDecision::Deny(DenyReason::MaxHoldersReached);
                 }
             }
         }
@@ -511,20 +658,18 @@ impl ComplianceEngine {
         // ── Tier-based policy evaluation ──────────────────────────────────────
         // Only perform the cross-contract KYC tier lookup when at least one tier
         // policy has been configured, to keep the no-policy path gas-free.
+        // get_tier() now returns 0 for missing records — no host trap possible.
         let policy_count: u32 = env
             .storage()
             .instance()
             .get(&DataKey::TierPolicyCount)
             .unwrap_or(0);
         if policy_count > 0 {
-            let kyc_registry: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::KycRegistry)
-                .unwrap();
-            let kyc = kyc_iface::KycRegistryClient::new(&env, &kyc_registry);
-            let from_tier = kyc.get_tier(&from);
-            let to_tier = kyc.get_tier(&to);
+            let kyc_registry: Address =
+                env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+            let kyc = kyc_iface::KycRegistryClient::new(env, &kyc_registry);
+            let from_tier = kyc.get_tier(from);
+            let to_tier = kyc.get_tier(to);
 
             // Resolution order: exact match > wildcard-from > wildcard-to > wildcard-both.
             let wildcard: u32 = u32::MAX;
@@ -549,20 +694,15 @@ impl ComplianceEngine {
                 });
 
             if let Some(p) = policy {
-                // Hard block for this tier pair.
                 if p.blocked {
-                    return false;
+                    return TransferDecision::Deny(DenyReason::TierPolicyBlocked);
                 }
-                // Tier-pair minimum sender tier.
                 if from_tier < p.min_from_tier {
-                    return false;
+                    return TransferDecision::Deny(DenyReason::TierFromBelowMin);
                 }
-                // Tier-pair minimum recipient tier.
                 if to_tier < p.min_to_tier {
-                    return false;
+                    return TransferDecision::Deny(DenyReason::TierToBelowMin);
                 }
-                // Per-tier-pair transfer cap — applies only when more restrictive
-                // than the global cap (or when the global cap is unlimited).
                 if p.max_transfer_amount > 0 {
                     let effective_max = if rules.max_transfer_amount > 0 {
                         p.max_transfer_amount.min(rules.max_transfer_amount)
@@ -570,7 +710,7 @@ impl ComplianceEngine {
                         p.max_transfer_amount
                     };
                     if amount > effective_max {
-                        return false;
+                        return TransferDecision::Deny(DenyReason::TierAmountExceeded);
                     }
                 }
             }
@@ -578,40 +718,45 @@ impl ComplianceEngine {
 
         // ── Jurisdiction risk scoring ──────────────────────────────────────────
         // Only active when a `RiskConfig` with `max_score > 0` has been set.
-        // Requires a KYC registry call to fetch jurisdictions.
+        // Uses get_record_opt so missing records get the default risk score
+        // rather than trapping.
         if let Some(risk_cfg) = env
             .storage()
             .instance()
             .get::<DataKey, RiskConfig>(&DataKey::RiskConfig)
         {
             if risk_cfg.max_score > 0 {
-                let kyc_registry: Address = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::KycRegistry)
-                    .unwrap();
-                let kyc = kyc_iface::KycRegistryClient::new(&env, &kyc_registry);
-                let from_record = kyc.get_record(&from);
-                let to_record = kyc.get_record(&to);
+                let kyc_registry: Address =
+                    env.storage().instance().get(&DataKey::KycRegistry).unwrap();
+                let kyc = kyc_iface::KycRegistryClient::new(env, &kyc_registry);
+
+                let from_jur = kyc
+                    .get_record_opt(from)
+                    .map(|r| r.jurisdiction)
+                    .unwrap_or_else(|| String::from_str(env, ""));
+                let to_jur = kyc
+                    .get_record_opt(to)
+                    .map(|r| r.jurisdiction)
+                    .unwrap_or_else(|| String::from_str(env, ""));
 
                 let from_score: u32 = env
                     .storage()
                     .instance()
-                    .get(&DataKey::JurisdictionRisk(from_record.jurisdiction))
+                    .get(&DataKey::JurisdictionRisk(from_jur))
                     .unwrap_or(risk_cfg.default_score);
                 let to_score: u32 = env
                     .storage()
                     .instance()
-                    .get(&DataKey::JurisdictionRisk(to_record.jurisdiction))
+                    .get(&DataKey::JurisdictionRisk(to_jur))
                     .unwrap_or(risk_cfg.default_score);
 
                 if from_score > risk_cfg.max_score || to_score > risk_cfg.max_score {
-                    return false;
+                    return TransferDecision::Deny(DenyReason::RiskScoreTooHigh);
                 }
             }
         }
 
-        true
+        TransferDecision::Allow
     }
 
     pub fn register_holder(env: Env, addr: Address) {
@@ -900,6 +1045,19 @@ impl ComplianceEngine {
 mod kyc_iface {
     use soroban_sdk::{contractclient, contracttype, Address, String};
 
+    /// Mirrors `kyc_registry::KycState` — variant names must stay identical
+    /// for the XDR encoding to round-trip correctly across the contract boundary.
+    #[contracttype]
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum KycState {
+        Missing,
+        Approved,
+        Expired,
+        Revoked,
+        Rejected,
+        Pending,
+    }
+
     #[contracttype]
     #[derive(Clone)]
     pub struct KycRecord {
@@ -922,7 +1080,11 @@ mod kyc_iface {
     #[contractclient(name = "KycRegistryClient")]
     #[allow(dead_code)]
     pub trait KycRegistry {
-        fn get_record(env: soroban_sdk::Env, addr: Address) -> KycRecord;
+        /// Returns the resolved KYC state without panicking on missing records.
+        fn get_kyc_state(env: soroban_sdk::Env, addr: Address) -> KycState;
+        /// Returns the KYC record or `None` — never panics.
+        fn get_record_opt(env: soroban_sdk::Env, addr: Address) -> Option<KycRecord>;
+        /// Returns the tier (0 when no record exists — never panics).
         fn get_tier(env: soroban_sdk::Env, addr: Address) -> u32;
     }
 }

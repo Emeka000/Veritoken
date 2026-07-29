@@ -42,18 +42,40 @@ pub fn read_metadata(env: &Env, key: Symbol) -> String {
 
 /// Cross-contract call to the compliance engine to validate a transfer.
 ///
-/// Error propagation (#348):
-/// - Engine call failure (contract unavailable, host trap) → `ComplianceEngineUnavailable`.
-/// - Engine returns `false` (rule violation) → `TransferBlocked`.
+/// Uses `evaluate_transfer` so that KYC-related denials are mapped to
+/// `KycNotApproved` instead of the generic `TransferBlocked`, and all
+/// missing/expired/revoked/rejected KYC records produce a deterministic deny
+/// rather than a host trap.
 ///
-/// Called in the validation phase before any state mutation, so no partial
-/// state can be written when this function panics.
+/// Error propagation:
+/// - Engine call failure (contract unavailable, host trap) → `ComplianceEngineUnavailable`.
+/// - KYC-related deny reason → `KycNotApproved`.
+/// - Any other deny reason → `TransferBlocked`.
+///
+/// Called before any state mutation so no partial state can be written on denial.
 pub fn check_transfer(env: &Env, from: &Address, to: &Address, amount: i128) {
     let engine = read_compliance_engine(env);
     let client = ComplianceEngineClient::new(env, &engine);
-    match client.try_can_transfer(from, to, &amount) {
-        Ok(Ok(true)) => {}
-        Ok(Ok(false)) => soroban_sdk::panic_with_error!(env, RwaError::TransferBlocked),
+    match client.try_evaluate_transfer(from, to, &amount) {
+        Ok(Ok(compliance_interface::TransferDecision::Allow)) => {}
+        Ok(Ok(compliance_interface::TransferDecision::Deny(ref reason))) => {
+            use compliance_interface::DenyReason;
+            match reason {
+                DenyReason::FromKycMissing
+                | DenyReason::ToKycMissing
+                | DenyReason::FromKycExpired
+                | DenyReason::ToKycExpired
+                | DenyReason::FromKycRevoked
+                | DenyReason::ToKycRevoked
+                | DenyReason::FromKycRejected
+                | DenyReason::ToKycRejected
+                | DenyReason::FromKycPending
+                | DenyReason::ToKycPending => {
+                    soroban_sdk::panic_with_error!(env, RwaError::KycNotApproved)
+                }
+                _ => soroban_sdk::panic_with_error!(env, RwaError::TransferBlocked),
+            }
+        }
         Ok(Err(_)) | Err(_) => {
             soroban_sdk::panic_with_error!(env, RwaError::ComplianceEngineUnavailable)
         }
@@ -100,12 +122,58 @@ pub fn unregister_holder(env: &Env, addr: &Address) {
 }
 
 mod compliance_interface {
-    use soroban_sdk::{contractclient, Address};
+    use soroban_sdk::{contractclient, contracttype, Address};
+
+    /// Mirrors `compliance_engine::DenyReason` — variant names must stay
+    /// identical for XDR round-tripping across the contract boundary.
+    #[contracttype]
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DenyReason {
+        CompliancePaused,
+        FromBlocklisted,
+        ToBlocklisted,
+        FromKycMissing,
+        ToKycMissing,
+        FromKycExpired,
+        ToKycExpired,
+        FromKycRevoked,
+        ToKycRevoked,
+        FromKycRejected,
+        ToKycRejected,
+        FromKycPending,
+        ToKycPending,
+        FromJurisdictionBlocked,
+        ToJurisdictionBlocked,
+        SameJurisdictionRequired,
+        AmountExceeded,
+        HoldingPeriodNotMet,
+        MaxHoldersReached,
+        RecipientHoldingPeriodExceeded,
+        TierPolicyBlocked,
+        TierFromBelowMin,
+        TierToBelowMin,
+        TierAmountExceeded,
+        RiskScoreTooHigh,
+    }
+
+    /// Mirrors `compliance_engine::TransferDecision`.
+    #[contracttype]
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum TransferDecision {
+        Allow,
+        Deny(DenyReason),
+    }
 
     #[contractclient(name = "ComplianceEngineClient")]
     #[allow(dead_code)]
     pub trait ComplianceEngineInterface {
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
+        fn evaluate_transfer(
+            env: soroban_sdk::Env,
+            from: Address,
+            to: Address,
+            amount: i128,
+        ) -> TransferDecision;
         fn register_holder(env: soroban_sdk::Env, addr: &Address);
         fn unregister_holder(env: soroban_sdk::Env, addr: &Address);
         fn holder_count(env: soroban_sdk::Env) -> u32;
