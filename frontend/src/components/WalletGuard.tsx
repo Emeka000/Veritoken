@@ -103,7 +103,7 @@ function Sep7MobilePanel() {
 
 // ── No-wallet panel (detects Freighter availability on mount) ────────────────
 
-function NoWalletPanel({ onConnect }: { onConnect: () => void }) {
+function NoWalletPanel({ onConnect, message }: { onConnect: () => void; message?: string }) {
   const [mobile] = useState(() => isMobile());
   const [freighterPresent, setFreighterPresent] = useState<boolean | null>(null);
 
@@ -120,7 +120,7 @@ function NoWalletPanel({ onConnect }: { onConnect: () => void }) {
           {loading
             ? "Detecting wallet…"
             : freighterPresent
-              ? "Connect your Freighter wallet to continue"
+              ? message ?? "Connect your Freighter wallet to continue"
               : mobile
                 ? "No browser wallet detected"
                 : "Freighter not detected"}
@@ -162,11 +162,11 @@ function NoWalletPanel({ onConnect }: { onConnect: () => void }) {
 
 // ── Main guard ───────────────────────────────────────────────────────────────
 
-export default function WalletGuard({ children }: { children: ReactNode }) {
+export default function WalletGuard({ children, message }: { children: ReactNode; message?: string }) {
   const { connected, connect } = useWallet();
 
   if (!connected) {
-    return <NoWalletPanel onConnect={() => connect().catch(() => {})} />;
+    return <NoWalletPanel onConnect={() => connect().catch(() => {})} message={message} />;
   }
 
   return <>{children}</>;

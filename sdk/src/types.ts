@@ -159,4 +159,15 @@ export interface KycSyncStatus {
   checked_at: bigint;
 }
 
-export type Network = "testnet" | "mainnet" | "futurenet" | "standalone";
+/** The four networks the SDK ships built-in RPC/passphrase defaults for. */
+export type KnownNetwork = "testnet" | "mainnet" | "futurenet" | "standalone";
+
+/**
+ * A network name: one of the built-in {@link KnownNetwork}s, or any other
+ * string identifying a custom network (see `resolveNetworkConfig` in
+ * network.ts — custom names require an explicit `rpcUrl` and
+ * `networkPassphrase` since there's no built-in default to fall back to).
+ * The `string & {}` intersection keeps editor autocomplete suggesting the
+ * known values without narrowing the type to a closed union.
+ */
+export type Network = KnownNetwork | (string & {});

@@ -118,11 +118,12 @@ const server = createServer({
 | `networkPassphrase`    | `networkPassphrase`                          | `VERITOKEN_NETWORK_PASSPHRASE`, `STELLAR_NETWORK_PASSPHRASE`, `VITE_STELLAR_NETWORK_PASSPHRASE` |
 | `allowHttp`            | `allowHttp`                                  | `VERITOKEN_RPC_ALLOW_HTTP` (`"true"`/`"false"`) |
 
-Validation runs on every call: an unknown network name, an empty `rpcUrl` /
-`networkPassphrase`, or a plaintext-`http://` RPC URL on a network that
-doesn't expect one (anything but `standalone`, unless `allowHttp: true` is
-set explicitly) all throw `InvalidNetworkConfigError` with a message that
-says exactly what's wrong — instead of failing later as an opaque RPC error.
+Validation runs on every call: an unknown network name without an explicit
+`rpcUrl` + `networkPassphrase` pair, an empty `rpcUrl` / `networkPassphrase`,
+or a plaintext-`http://` RPC URL on a network that doesn't expect one
+(anything but `standalone`, unless `allowHttp: true` is set explicitly) all
+throw `InvalidNetworkConfigError` with a message that says exactly what's
+wrong — instead of failing later as an opaque RPC error.
 
 ```ts
 import { isValidNetwork, KNOWN_NETWORKS } from "@veritoken/sdk";
@@ -135,6 +136,31 @@ KNOWN_NETWORKS; // ["testnet", "mainnet", "futurenet", "standalone"]
 `createClients` / `ClientFactory` (below) accept the same `network` /
 `rpcUrl` / `networkPassphrase` / `allowHttp` fields directly, so most
 applications never need to call `resolveNetworkConfig` themselves.
+
+### Custom networks and RPC endpoints (#451)
+
+`network` isn't limited to the four built-in names — any string works, as
+long as you supply both `rpcUrl` and `networkPassphrase` (there's no
+built-in default to fall back to for a name the SDK doesn't recognize).
+This covers a private Soroban node, a forked testnet, or per-environment CI
+infrastructure without editing SDK call sites:
+
+```ts
+const server = createServer({
+  network: "my-private-devnet",
+  rpcUrl: "https://rpc.my-devnet.internal",
+  networkPassphrase: "My Private Devnet ; 2026",
+});
+```
+
+Custom networks default `allowHttp` to `false` (same safe-by-default rule
+built-in networks other than `standalone` use) — pass `allowHttp: true` (or
+set `VERITOKEN_RPC_ALLOW_HTTP=true`) for a plaintext local endpoint.
+Env-var overrides work identically to built-in networks — set
+`VERITOKEN_NETWORK=my-private-devnet` alongside `VERITOKEN_RPC_URL` and
+`VERITOKEN_NETWORK_PASSPHRASE` (or the `SOROBAN_RPC_URL`/`STELLAR_NETWORK_PASSPHRASE`/
+`VITE_`-prefixed equivalents) to switch entirely via environment, no code
+changes required.
 
 ## Building clients: `createClients` / `ClientFactory`
 

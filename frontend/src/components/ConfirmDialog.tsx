@@ -7,6 +7,11 @@ interface ConfirmDialogProps {
   onCancel: () => void;
   confirmLabel?: string;
   loading?: boolean;
+  /** When explicitly `false`, renders nothing. Defaults to `true` so existing
+   * callers that mount/unmount this component conditionally (`{x && <ConfirmDialog .../>}`)
+   * keep working unchanged. */
+  open?: boolean;
+  danger?: boolean;
 }
 
 export default function ConfirmDialog({
@@ -16,21 +21,24 @@ export default function ConfirmDialog({
   onCancel,
   confirmLabel = "Confirm",
   loading = false,
+  open = true,
+  danger = false,
 }: ConfirmDialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = "confirm-dialog-title";
 
   // Focus the panel on mount and restore focus on unmount
   useEffect(() => {
+    if (!open) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
     panelRef.current?.focus();
     return () => { previouslyFocused?.focus(); };
-  }, []);
+  }, [open]);
 
   // Trap focus inside the dialog
   useEffect(() => {
     const panel = panelRef.current;
-    if (!panel) return;
+    if (!open || !panel) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") { onCancel(); return; }
@@ -51,7 +59,9 @@ export default function ConfirmDialog({
 
     panel.addEventListener("keydown", handleKeyDown);
     return () => panel.removeEventListener("keydown", handleKeyDown);
-  }, [onCancel]);
+  }, [open, onCancel]);
+
+  if (!open) return null;
 
   return (
     <div
@@ -105,7 +115,13 @@ export default function ConfirmDialog({
           <button type="button" onClick={onCancel} disabled={loading} style={{ minWidth: 80 }}>
             Cancel
           </button>
-          <button type="button" className="btn-success" onClick={onConfirm} disabled={loading} style={{ minWidth: 100 }}>
+          <button
+            type="button"
+            className={danger ? "btn-danger" : "btn-success"}
+            onClick={onConfirm}
+            disabled={loading}
+            style={{ minWidth: 100 }}
+          >
             {loading ? "Sending…" : confirmLabel}
           </button>
         </div>

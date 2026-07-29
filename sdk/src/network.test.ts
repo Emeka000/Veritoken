@@ -154,6 +154,71 @@ describe("resolveNetworkConfig", () => {
       allowHttp: true,
     });
   });
+
+  // ── Custom (unknown-named) networks — #451 ─────────────────────────────────
+
+  it("accepts a genuinely unknown network name when rpcUrl and networkPassphrase are both explicit", () => {
+    const config = resolveNetworkConfig({
+      network: "my-private-devnet",
+      rpcUrl: "https://rpc.my-devnet.internal",
+      networkPassphrase: "My Private Devnet ; 2026",
+    });
+    expect(config).toEqual({
+      network: "my-private-devnet",
+      rpcUrl: "https://rpc.my-devnet.internal",
+      networkPassphrase: "My Private Devnet ; 2026",
+      allowHttp: false,
+    });
+  });
+
+  it("still rejects an unknown network name missing rpcUrl", () => {
+    expect(() =>
+      resolveNetworkConfig({ network: "my-private-devnet", networkPassphrase: "Custom ; 2026" }),
+    ).toThrow(/Unknown network/);
+  });
+
+  it("still rejects an unknown network name missing networkPassphrase", () => {
+    expect(() =>
+      resolveNetworkConfig({ network: "my-private-devnet", rpcUrl: "https://rpc.example.com" }),
+    ).toThrow(/Unknown network/);
+  });
+
+  it("defaults allowHttp to false for a custom network even though standalone defaults to true", () => {
+    const config = resolveNetworkConfig({
+      network: "my-private-devnet",
+      rpcUrl: "https://rpc.my-devnet.internal",
+      networkPassphrase: "Custom ; 2026",
+    });
+    expect(config.allowHttp).toBe(false);
+  });
+
+  it("still rejects plaintext HTTP on a custom network unless allowHttp is explicit", () => {
+    expect(() =>
+      resolveNetworkConfig({
+        network: "my-private-devnet",
+        rpcUrl: "http://rpc.my-devnet.internal",
+        networkPassphrase: "Custom ; 2026",
+      }),
+    ).toThrow(/plain HTTP/);
+  });
+
+  it("allows plaintext HTTP on a custom network when allowHttp is explicitly true", () => {
+    const config = resolveNetworkConfig({
+      network: "my-private-devnet",
+      rpcUrl: "http://rpc.my-devnet.internal",
+      networkPassphrase: "Custom ; 2026",
+      allowHttp: true,
+    });
+    expect(config.rpcUrl).toBe("http://rpc.my-devnet.internal");
+  });
+
+  it("resolves a custom network's rpcUrl/networkPassphrase from environment variables", () => {
+    process.env.VERITOKEN_RPC_URL = "https://rpc.from-env.internal";
+    process.env.VERITOKEN_NETWORK_PASSPHRASE = "From Env ; 2026";
+    const config = resolveNetworkConfig({ network: "my-private-devnet" });
+    expect(config.rpcUrl).toBe("https://rpc.from-env.internal");
+    expect(config.networkPassphrase).toBe("From Env ; 2026");
+  });
 });
 
 describe("createServer", () => {
