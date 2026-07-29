@@ -1129,3 +1129,179 @@ fn test_risk_scoring_does_not_affect_paused_engine() {
     // Pause takes precedence; risk scores never evaluated
     assert!(!ce.can_transfer(&alice, &bob, &100));
 }
+
+// ── evaluate_transfer / TransferDecision tests ────────────────────────────────
+
+#[test]
+fn test_evaluate_transfer_approved_kyc_returns_allow() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Allow);
+    let _ = DenyReason::CompliancePaused; // ensure type is importable
+}
+
+#[test]
+fn test_evaluate_transfer_missing_kyc_from_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Only bob is approved; alice has no KYC record.
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycMissing));
+}
+
+#[test]
+fn test_evaluate_transfer_missing_kyc_to_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Only alice is approved; bob has no KYC record.
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::ToKycMissing));
+}
+
+#[test]
+fn test_evaluate_transfer_expired_kyc_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Alice's KYC has an expiry in the past (timestamp = 1).
+    kyc.approve(&verifier, &alice, &0, &1, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    // Advance ledger time past alice's expiry.
+    env.ledger().set_timestamp(100);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycExpired));
+}
+
+#[test]
+fn test_evaluate_transfer_revoked_kyc_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    // Revoke alice's KYC.
+    kyc.revoke(&verifier, &alice);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycRevoked));
+}
+
+#[test]
+fn test_evaluate_transfer_rejected_kyc_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    // reject() creates a default Pending record then sets status to Rejected.
+    kyc.reject(&verifier, &alice);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromKycRejected));
+}
+
+#[test]
+fn test_evaluate_transfer_paused_returns_compliance_paused() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.pause();
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::CompliancePaused));
+}
+
+#[test]
+fn test_evaluate_transfer_blocklisted_from_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.add_to_blocklist(&alice);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromBlocklisted));
+}
+
+#[test]
+fn test_evaluate_transfer_blocklisted_to_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.add_to_blocklist(&bob);
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::ToBlocklisted));
+}
+
+#[test]
+fn test_evaluate_transfer_blocked_jurisdiction_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "IR"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.add_blocked_jurisdiction(&String::from_str(&env, "IR"));
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &100);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::FromJurisdictionBlocked));
+}
+
+#[test]
+fn test_evaluate_transfer_amount_exceeded_denied() {
+    use crate::{DenyReason, TransferDecision};
+    let (env, ce, kyc, verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+    kyc.approve(&verifier, &bob, &0, &0, &String::from_str(&env, "US"));
+    ce.set_rules(&ComplianceRules {
+        max_transfer_amount: 500,
+        min_holding_period: 0,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+        max_holding_period: 0,
+    });
+
+    let decision = ce.evaluate_transfer(&alice, &bob, &501);
+    assert_eq!(decision, TransferDecision::Deny(DenyReason::AmountExceeded));
+}
+
+#[test]
+fn test_can_transfer_ignores_kyc_for_backward_compat() {
+    // `can_transfer` must not check KYC state — only `evaluate_transfer` does.
+    // An address with no KYC record should still pass `can_transfer`.
+    let (env, ce, _kyc, _verifier, _admin) = setup_with_kyc_registry();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    // Neither alice nor bob have KYC records — can_transfer must still return true.
+    assert!(ce.can_transfer(&alice, &bob, &100));
+}

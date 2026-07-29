@@ -1189,3 +1189,102 @@ fn test_get_full_record_log_entries_match_verifier_log_count() {
     let full = client.get_full_record(&subject, &subject);
     assert_eq!(full.log_entries.len(), 4);
 }
+
+// ── get_kyc_state tests ───────────────────────────────────────────────────────
+
+#[test]
+fn test_get_kyc_state_missing_returns_missing() {
+    use crate::KycState;
+    let (env, client, _admin) = setup();
+    let subject = Address::generate(&env);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Missing);
+}
+
+#[test]
+fn test_get_kyc_state_approved_returns_approved() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    assert_eq!(client.get_kyc_state(&subject), KycState::Approved);
+}
+
+#[test]
+fn test_get_kyc_state_approved_but_expired_returns_expired() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    // Approve with an expiry timestamp in the past.
+    client.approve(&verifier, &subject, &0, &1, &js(&env, "US"));
+    // Move ledger time beyond the expiry.
+    env.ledger().set_timestamp(100);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Expired);
+}
+
+#[test]
+fn test_get_kyc_state_revoked_returns_revoked() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &subject);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Revoked);
+}
+
+#[test]
+fn test_get_kyc_state_rejected_returns_rejected() {
+    use crate::KycState;
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    // reject() creates a default record then sets status to Rejected.
+    client.reject(&verifier, &subject);
+    assert_eq!(client.get_kyc_state(&subject), KycState::Rejected);
+}
+
+// ── get_record_opt tests ──────────────────────────────────────────────────────
+
+#[test]
+fn test_get_record_opt_missing_returns_none() {
+    let (env, client, _admin) = setup();
+    let subject = Address::generate(&env);
+    assert!(client.get_record_opt(&subject).is_none());
+}
+
+#[test]
+fn test_get_record_opt_approved_returns_some() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "DE"));
+
+    let record = client.get_record_opt(&subject).expect("record must exist");
+    assert_eq!(record.tier, 1);
+    assert_eq!(record.jurisdiction, js(&env, "DE"));
+}
+
+#[test]
+fn test_get_record_opt_never_panics_for_any_state() {
+    // Verify get_record_opt returns None/Some deterministically without panicking,
+    // even for records in Revoked or Rejected state.
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    client.approve(&verifier, &alice, &0, &0, &js(&env, "US"));
+    client.revoke(&verifier, &alice);
+    assert!(client.get_record_opt(&alice).is_some());
+
+    client.reject(&verifier, &bob);
+    assert!(client.get_record_opt(&bob).is_some());
+}
