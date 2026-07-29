@@ -26,6 +26,10 @@ pub enum KycError {
     EmptyAdminList = 7,
     /// Caller is neither the subject nor an admin.
     NotAuthorized = 8,
+    /// Migration target version equals the current schema version.
+    AlreadyAtSchemaVersion = 9,
+    /// Migration must increment schema version by exactly one.
+    MigrationVersionNotSequential = 10,
 }
 
 /// Composite key for per-subject lifecycle history entries.
@@ -55,6 +59,25 @@ pub enum DataKey {
     LifecycleEntry(HistoryKey),
     /// Monotonically increasing count of transitions recorded for a subject.
     LifecycleCount(Address),
+    // ── Storage versioning ────────────────────────────────────────────────────
+    /// Current schema version number.  Set to 1 on initialize; incremented by
+    /// each successful `migrate_schema` call.  Missing = legacy pre-versioned
+    /// deployment (treated as version 0 inside `migrate_schema`).
+    StorageVersion,
+    /// How many migrations have been applied (length of the migration log).
+    MigrationCount,
+    /// Indexed migration history; key is the zero-based migration index.
+    Migration(u32),
+}
+
+/// On-chain record of a single admin-initiated schema migration.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct KycMigrationRecord {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub timestamp: u64,
+    pub description: String,
 }
 
 // ── Lifecycle model ───────────────────────────────────────────────────────────
@@ -95,7 +118,7 @@ pub struct KycTransition {
 // ── Supporting storage types ──────────────────────────────────────────────────
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VerifierLogEntry {
     pub verifier: Address,
     pub subject: Address,
@@ -128,15 +151,36 @@ pub struct ExpiringRecord {
 /// - `registry`    — the contract's own address, so the caller can anchor the
 ///                   export to a specific on-chain registry instance.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KycFullRecord {
     pub record: KycRecord,
     pub log_entries: Vec<VerifierLogEntry>,
     pub registry: Address,
 }
 
+/// Resolved KYC state for an address, distinguishing all non-approved cases.
+///
+/// Returned by [`KycRegistry::get_kyc_state`] — never panics regardless of
+/// whether a record exists.
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum KycState {
+    /// No record exists for this address.
+    Missing,
+    /// Record exists, status = Approved, and the expiry has not passed.
+    Approved,
+    /// Record exists, status = Approved, but the expiry timestamp has passed.
+    Expired,
+    /// Record exists, status = Revoked.
+    Revoked,
+    /// Record exists, status = Rejected.
+    Rejected,
+    /// Record exists, status = Pending (not yet reviewed).
+    Pending,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
 pub enum KycStatus {
     Pending,
     Approved,
@@ -145,7 +189,7 @@ pub enum KycStatus {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KycRecord {
     pub status: KycStatus,
     pub verifier: Address,
@@ -175,6 +219,9 @@ impl KycRegistry {
         let mut list: Vec<Address> = Vec::new(&env);
         list.push_back(admin);
         env.storage().instance().set(&DataKey::AdminList, &list);
+        // Set the initial schema version so new deployments start at v1.
+        env.storage().instance().set(&DataKey::StorageVersion, &1u32);
+        env.storage().instance().set(&DataKey::MigrationCount, &0u32);
     }
 
     // ── Admin management ─────────────────────────────────────────────────────
@@ -560,14 +607,63 @@ impl KycRegistry {
     }
 
     /// Returns the current canonical KYC record for a subject.
+    ///
+    /// Panics with `expect` when no record exists. Callers that need a
+    /// non-panicking variant should use [`get_record_opt`].
     pub fn get_record(env: Env, addr: Address) -> KycRecord {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         Self::fetch_record(&env, addr)
     }
 
+    /// Returns the KYC record for an address, or `None` if no record exists.
+    ///
+    /// Unlike [`get_record`] this never panics. Named `get_record_opt` rather
+    /// than `try_get_record` to avoid colliding with the `try_` prefix that the
+    /// Soroban SDK auto-generates for every contract method's client wrapper.
+    pub fn get_record_opt(env: Env, addr: Address) -> Option<KycRecord> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .persistent()
+            .get::<DataKey, KycRecord>(&DataKey::KycStatus(addr))
+    }
+
+    /// Resolves the full KYC state for an address without panicking.
+    ///
+    /// Returns [`KycState::Missing`] when no record exists,
+    /// [`KycState::Expired`] when the record has passed its expiry timestamp,
+    /// and the appropriately named state otherwise.
+    pub fn get_kyc_state(env: Env, addr: Address) -> KycState {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let key = DataKey::KycStatus(addr);
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, KycRecord>(&key)
+        {
+            None => KycState::Missing,
+            Some(record) => match record.status {
+                KycStatus::Approved => {
+                    if record.expiry != 0 && record.expiry < env.ledger().timestamp() {
+                        KycState::Expired
+                    } else {
+                        KycState::Approved
+                    }
+                }
+                KycStatus::Revoked => KycState::Revoked,
+                KycStatus::Rejected => KycState::Rejected,
+                KycStatus::Pending => KycState::Pending,
+            },
+        }
+    }
+
+    /// Returns the KYC tier of `addr`, or `0` when no record exists.
     pub fn get_tier(env: Env, addr: Address) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::fetch_record(&env, addr).tier
+        env.storage()
+            .persistent()
+            .get::<DataKey, KycRecord>(&DataKey::KycStatus(addr))
+            .map(|r| r.tier)
+            .unwrap_or(0)
     }
 
     /// Paged query of subjects approved by a given verifier.
@@ -780,6 +876,114 @@ impl KycRegistry {
 
     pub fn version(env: Env) -> String {
         String::from_str(&env, env!("CARGO_PKG_VERSION"))
+    }
+
+    // ── Storage versioning / migration ────────────────────────────────────────
+
+    /// Returns the current numeric schema version.
+    ///
+    /// Returns `0` for legacy deployments that were initialized before schema
+    /// versioning was introduced (i.e. where the `StorageVersion` key is absent).
+    /// New deployments set this to `1` during `initialize`.
+    pub fn schema_version(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0)
+    }
+
+    /// Returns the number of migrations that have been applied.
+    pub fn migration_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::MigrationCount)
+            .unwrap_or(0)
+    }
+
+    /// Returns the migration record at `index`, or panics if out of range.
+    pub fn get_migration_record(env: Env, index: u32) -> KycMigrationRecord {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::Migration(index))
+            .expect("migration record not found")
+    }
+
+    /// Admin-only upgrade hook.  Advances the schema from `current + 1` to
+    /// `to_version` and appends an immutable migration record.
+    ///
+    /// Rules:
+    /// - Caller must be a registered admin.
+    /// - `to_version` must equal `current_schema_version + 1` (no skipping,
+    ///   no repeating).
+    /// - For legacy deployments where no `StorageVersion` key exists, the
+    ///   current version is treated as `0`, so the first valid call is
+    ///   `migrate_schema(caller, 1, ...)` (the bootstrap migration).
+    ///
+    /// After all data-structure changes for this version have been applied in
+    /// the body below, add the new schema number to this function's match arm.
+    pub fn migrate_schema(
+        env: Env,
+        caller: Address,
+        to_version: u32,
+        description: String,
+    ) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let current: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0);
+
+        if to_version == current {
+            panic_with_error!(env, KycError::AlreadyAtSchemaVersion);
+        }
+        if to_version != current + 1 {
+            panic_with_error!(env, KycError::MigrationVersionNotSequential);
+        }
+
+        // ── Per-version migration hooks ────────────────────────────────────
+        // Add a new `to_version =>` arm here when the storage schema changes.
+        // Keep completed arms for auditability; they will never re-execute.
+        match to_version {
+            1 => {
+                // Bootstrap: record that this deployment is now at schema v1.
+                // No data transformation needed — v0 layout == v1 layout.
+            }
+            _ => {
+                // Future versions: implement data migrations here.
+            }
+        }
+
+        // Record the migration.
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationCount)
+            .unwrap_or(0);
+        let record = KycMigrationRecord {
+            from_version: current,
+            to_version,
+            timestamp: env.ledger().timestamp(),
+            description,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::Migration(count), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationCount, &(count + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &to_version);
+
+        env.events()
+            .publish((symbol_short!("migrated"),), (current, to_version));
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

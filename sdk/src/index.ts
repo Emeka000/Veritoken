@@ -18,6 +18,27 @@ export {
 } from "./clients/base.js";
 export type { SignTx, BuildTxOptions } from "./clients/base.js";
 
+// Shared read/write transaction lifecycle. Frontend and other workspace
+// consumers import these public exports instead of copying the implementation.
+export {
+  TxPipeline,
+  SequenceCache,
+  TxError,
+  SequenceError,
+  SimulationError,
+  SigningError,
+  SubmissionError,
+  ConfirmError,
+  TimeoutError,
+  TransientError,
+  isTransientError,
+} from "./pipeline.js";
+export type {
+  PipelineOptions,
+  ReadResult,
+  WriteResult,
+} from "./pipeline.js";
+
 // Scalar and struct ScVal encoders
 export {
   encodeAddress,

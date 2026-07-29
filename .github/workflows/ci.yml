@@ -37,7 +37,6 @@ jobs:
           components: rustfmt
 
       - name: cargo fmt --check
-        working-directory: Veritoken
         run: cargo fmt --all -- --check
 
   # ── Rust: clippy ────────────────────────────────────────────────────────────
@@ -59,12 +58,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            Veritoken/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Veritoken/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: cargo clippy
-        working-directory: Veritoken
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # ── Rust: tests ─────────────────────────────────────────────────────────────
@@ -83,12 +81,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            Veritoken/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Veritoken/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: cargo test
-        working-directory: Veritoken
         run: cargo test --all --features testutils
 
   # ── Rust: WASM build + artifact verification ────────────────────────────────
@@ -109,33 +106,27 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            Veritoken/target
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('Veritoken/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-wasm-
 
       - name: Fuzz / property-based tests
-        working-directory: Veritoken
         run: cargo test -p fuzz-tests --features testutils
 
       - name: Dividend regression tests
-        working-directory: Veritoken
         run: cargo test -p dividend-regression-tests --features testutils
 
       - name: Cross-contract integration tests
-        working-directory: Veritoken
         run: cargo test -p integration-tests --features testutils
 
       - name: Build WASM (release)
-        working-directory: Veritoken
         run: cargo build --release --target wasm32-unknown-unknown
 
       - name: Verify artifacts (existence, magic bytes, size bounds)
-        working-directory: Veritoken
         shell: bash
         run: bash scripts/verify-artifacts.sh
 
       - name: Check WASM sizes against CI threshold
-        working-directory: Veritoken
         shell: bash
         run: |
           # ── Configurable threshold ─────────────────────────────────────────
@@ -183,7 +174,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wasm-release
-          path: Veritoken/target/wasm32-unknown-unknown/release/*.wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
           retention-days: 7
 
   # ── Frontend: lint ───────────────────────────────────────────────────────────
@@ -192,7 +183,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: Veritoken/frontend
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
@@ -201,7 +192,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: Veritoken/frontend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -215,7 +206,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: Veritoken/frontend
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
@@ -224,7 +215,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: Veritoken/frontend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -238,7 +229,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: Veritoken/frontend
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
@@ -247,7 +238,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: Veritoken/frontend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -270,7 +261,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check for env / contract ID drift
-        working-directory: Veritoken
         shell: bash
         run: |
           if [[ ! -f "deploy-manifest.json" ]]; then

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { Contract, scValToNative, TransactionBuilder, Account, xdr } from "@stellar/stellar-sdk";
 import { useWallet } from "../lib/wallet";
-import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
+import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
 import { EventFeed } from "../components/EventFeed";
 import { CopyButton } from "../components/CopyButton";
@@ -93,26 +92,7 @@ export default function AdminPage() {
     setLoading(true);
     setFetchError(null);
     try {
-      const contract = new Contract(CONTRACT_IDS.complianceEngine);
-      const dummyAccount = new Account(
-        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-        "0"
-      );
-      const tx = new TransactionBuilder(dummyAccount, {
-        fee: "100",
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call("get_rules"))
-        .setTimeout(30)
-        .build();
-
-      const simResult = await server.simulateTransaction(tx);
-      if ("error" in simResult && simResult.error) {
-        throw new Error(`Simulation error: ${simResult.error}`);
-      }
-      const returnVal = (simResult as { result?: { retval: xdr.ScVal } }).result?.retval;
-      if (!returnVal) throw new Error("No return value from get_rules simulation");
-      const decoded = scValToNative(returnVal) as ComplianceRules;
+      const decoded = await contracts.compliance.getRules();
       setRules({
         max_transfer_amount: String(decoded.max_transfer_amount ?? 0),
         min_holding_period: String(decoded.min_holding_period ?? 0),
@@ -208,12 +188,12 @@ export default function AdminPage() {
         try {
           const newRules: ComplianceRules = {
             max_transfer_amount: BigInt(rules.max_transfer_amount),
-            min_holding_period: Number(rules.min_holding_period),
+            min_holding_period: BigInt(rules.min_holding_period),
             max_holders: Number(rules.max_holders),
             require_same_jurisdiction: rules.require_same_jurisdiction,
             paused: rules.paused,
             allowlist_mode: false,
-            max_holding_period: 0,
+            max_holding_period: 0n,
           };
           if (proposeMode && ruleChangeDelay > 0 && address) {
             await contracts.compliance.proposeRules(address, newRules, signTx);
@@ -440,7 +420,7 @@ export default function AdminPage() {
             </div>
             <div>
               <p style={styles.ruleLabel}>Min Holding Period</p>
-              <p style={styles.ruleVal}>{pendingRules.rules.min_holding_period === 0 ? "None" : `${pendingRules.rules.min_holding_period}s`}</p>
+              <p style={styles.ruleVal}>{pendingRules.rules.min_holding_period === 0n ? "None" : `${pendingRules.rules.min_holding_period}s`}</p>
             </div>
             <div>
               <p style={styles.ruleLabel}>Max Holders</p>

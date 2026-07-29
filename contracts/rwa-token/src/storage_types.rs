@@ -66,6 +66,10 @@ pub enum DataKey {
     ContractSemver,
     MigrationCount,
     Migration(u32),
+    // ── Numeric schema versioning (STABLE) ───────────────────────────────
+    SchemaVersion,
+    SchemaMigrationCount,
+    SchemaMigration(u32),
     // ── Multi-admin recovery (#343) (STABLE) ──────────────────────────────
     RecoveryConfig,
     RecoveryMembers,

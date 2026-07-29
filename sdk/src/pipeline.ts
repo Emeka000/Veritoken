@@ -25,12 +25,12 @@
 
 import {
   TransactionBuilder,
-  Account,
-  Contract,
   rpc,
+  scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import type { BuildTxOptions, SignTx } from "./clients/base.js";
+import type { SignTx } from "./clients/base.js";
+import { buildContractTx } from "./transaction.js";
 
 // ── Error hierarchy ───────────────────────────────────────────────────────────
 
@@ -67,7 +67,13 @@ export class SimulationError extends TxError {
     public readonly detail: string,
     cause?: unknown,
   ) {
-    super(`Simulation failed for ${method}: ${detail}`, "simulation", cause);
+    super(
+      detail === "no return value"
+        ? `No return value from ${method}`
+        : `Simulation error calling ${method}: ${detail}`,
+      "simulation",
+      cause,
+    );
     this.name = "SimulationError";
   }
 }
@@ -85,7 +91,7 @@ export class SubmissionError extends TxError {
     detail: string,
     cause?: unknown,
   ) {
-    super(`Transaction submission failed: ${detail}`, "submission", cause);
+    super(`Transaction rejected by network: ${detail}`, "submission", cause);
     this.name = "SubmissionError";
   }
 }
@@ -392,16 +398,18 @@ export class TxPipeline {
     source: string,
     sequence: string,
   ): string {
-    const account = new Account(source, sequence);
-    const contract = new Contract(contractId);
-    const tx = new TransactionBuilder(account, {
-      fee: this.opts.fee,
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(this.opts.timeoutSeconds)
-      .build();
-    return tx.toXDR();
+    return buildContractTx(
+      contractId,
+      method,
+      args,
+      this.networkPassphrase,
+      source,
+      sequence,
+      {
+        fee: this.opts.fee,
+        timeoutSeconds: this.opts.timeoutSeconds,
+      },
+    );
   }
 
   // ── Read ────────────────────────────────────────────────────────────────────
@@ -436,7 +444,6 @@ export class TxPipeline {
       throw new SimulationError(method, "no return value");
     }
 
-    const { scValToNative } = await import("@stellar/stellar-sdk");
     return {
       value: scValToNative(successSim.result.retval) as T,
       simulation: successSim,

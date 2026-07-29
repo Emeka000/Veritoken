@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import AdminPage from "../../pages/AdminPage";
 import { ToastProvider } from "../../lib/toast";
+import { contracts } from "../../lib/contracts/index";
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
 vi.mock("../../lib/wallet", () => ({
   useWallet: () => ({
     connected: true,
-    address: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+    address: "GBQG2SJ7MXUH34SI3MJ2I256I5UMGM2QSQZM77YFX5S6JOHXUQJEPC3A",
     signTx: vi.fn(),
   }),
 }));
@@ -23,6 +24,22 @@ vi.mock("../../lib/stellar", () => ({
 vi.mock("../../lib/contracts/index", () => ({
   contracts: {
     compliance: {
+      getRules: vi.fn().mockResolvedValue({
+        max_transfer_amount: 0n,
+        min_holding_period: 0n,
+        max_holders: 0,
+        require_same_jurisdiction: false,
+        paused: false,
+        allowlist_mode: false,
+        max_holding_period: 0n,
+      }),
+      getRuleChangeDelay: vi.fn().mockResolvedValue(0),
+      getPendingRules: vi.fn().mockResolvedValue(null),
+      pause: vi.fn().mockResolvedValue(undefined),
+      unpause: vi.fn().mockResolvedValue(undefined),
+      proposeRules: vi.fn().mockResolvedValue(undefined),
+      setRules: vi.fn().mockResolvedValue(undefined),
+      activateRules: vi.fn().mockResolvedValue(undefined),
       getBlocklist: vi.fn().mockResolvedValue([]),
       blocklistCount: vi.fn().mockResolvedValue(0),
       addToBlocklist: vi.fn().mockResolvedValue(undefined),
@@ -57,22 +74,22 @@ describe("AdminPage – compliance rules form", () => {
     expect(screen.getByText("Compliance Rules")).toBeDefined();
   });
 
-  it("renders all four rule fields", () => {
+  it("renders all four rule fields", async () => {
     renderAdminPage();
-    expect(screen.getByText(/Max Transfer Amount/i)).toBeDefined();
+    expect(await screen.findByText(/Max Transfer Amount/i)).toBeDefined();
     expect(screen.getByText(/Min Holding Period/i)).toBeDefined();
     expect(screen.getByText(/Max Holders/i)).toBeDefined();
     expect(screen.getByText(/same jurisdiction/i)).toBeDefined();
   });
 
-  it("renders the Save Rules button", () => {
+  it("renders the Save Rules button", async () => {
     renderAdminPage();
-    expect(screen.getByRole("button", { name: /Save Rules/i })).toBeDefined();
+    expect(await screen.findByRole("button", { name: /Save Rules/i })).toBeDefined();
   });
 
   it("shows a confirmation dialog when Save Rules is submitted", async () => {
     renderAdminPage();
-    const btn = screen.getByRole("button", { name: /Save Rules/i });
+    const btn = await screen.findByRole("button", { name: /Save Rules/i });
     fireEvent.click(btn);
     await waitFor(() => {
       expect(screen.getByRole("dialog")).toBeDefined();
@@ -81,18 +98,19 @@ describe("AdminPage – compliance rules form", () => {
 
   it("confirmation dialog contains max transfer and holding period details", async () => {
     renderAdminPage();
-    const btn = screen.getByRole("button", { name: /Save Rules/i });
+    const btn = await screen.findByRole("button", { name: /Save Rules/i });
     fireEvent.click(btn);
     await waitFor(() => {
       expect(screen.getByRole("dialog")).toBeDefined();
     });
-    expect(screen.getByText(/Max transfer/i)).toBeDefined();
-    expect(screen.getByText(/Min holding/i)).toBeDefined();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/Max transfer/i)).toBeDefined();
+    expect(within(dialog).getByText(/Min holding/i)).toBeDefined();
   });
 
   it("cancelling the dialog removes it from the DOM", async () => {
     renderAdminPage();
-    const btn = screen.getByRole("button", { name: /Save Rules/i });
+    const btn = await screen.findByRole("button", { name: /Save Rules/i });
     fireEvent.click(btn);
     await waitFor(() => screen.getByRole("dialog"));
     const cancelBtn = screen.getByRole("button", { name: /Cancel/i });
@@ -123,17 +141,30 @@ describe("AdminPage – emergency controls", () => {
     renderAdminPage();
     fireEvent.click(screen.getByRole("button", { name: /Pause All Transfers/i }));
     await waitFor(() => {
-      expect(screen.getByRole("dialog")).toBeDefined();
-      expect(screen.getByText(/Pause All Transfers/i)).toBeDefined();
+      const dialog = screen.getByRole("dialog");
+      expect(within(dialog).getByText(/Pause All Transfers/i)).toBeDefined();
     });
   });
 
   it("clicking Unpause opens a confirmation dialog", async () => {
+    vi.mocked(contracts.compliance.getRules).mockResolvedValueOnce({
+      max_transfer_amount: 0n,
+      min_holding_period: 0n,
+      max_holders: 0,
+      require_same_jurisdiction: false,
+      paused: true,
+      allowlist_mode: false,
+      max_holding_period: 0n,
+    });
     renderAdminPage();
-    fireEvent.click(screen.getByRole("button", { name: /Unpause Transfers/i }));
+    const unpause = await screen.findByRole("button", { name: /Unpause Transfers/i });
     await waitFor(() => {
-      expect(screen.getByRole("dialog")).toBeDefined();
-      expect(screen.getByText(/Unpause Transfers/i)).toBeDefined();
+      expect((unpause as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(unpause);
+    await waitFor(() => {
+      const dialog = screen.getByRole("dialog");
+      expect(within(dialog).getByText(/Unpause Transfers/i)).toBeDefined();
     });
   });
 });
@@ -155,23 +186,23 @@ describe("AdminPage – blocklist management", () => {
     });
   });
 
-  it("renders the Add to Blocklist form", () => {
+  it("renders the Add to Blocklist form", async () => {
     renderAdminPage();
-    expect(screen.getByRole("button", { name: /Add to Blocklist/i })).toBeDefined();
+    expect(await screen.findByRole("button", { name: /Add to Blocklist/i })).toBeDefined();
   });
 
-  it("Add to Blocklist button is disabled when input is empty", () => {
+  it("Add to Blocklist button is disabled when input is empty", async () => {
     renderAdminPage();
-    const btn = screen.getByRole("button", { name: /Add to Blocklist/i });
+    const btn = await screen.findByRole("button", { name: /Add to Blocklist/i });
     expect((btn as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("Add to Blocklist button becomes enabled when an address is entered", async () => {
     renderAdminPage();
-    const input = screen.getByPlaceholderText(/G… \(Stellar address\)/i);
+    const input = await screen.findByPlaceholderText(/G… \(Stellar address\)/i);
     fireEvent.change(input, {
       target: {
-        value: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        value: "GBQG2SJ7MXUH34SI3MJ2I256I5UMGM2QSQZM77YFX5S6JOHXUQJEPC3A",
       },
     });
     await waitFor(() => {

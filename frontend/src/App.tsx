@@ -10,9 +10,22 @@ import AdminPage from "./pages/AdminPage";
 import AttestationPage from "./pages/AttestationPage";
 import DeployPage from "./pages/DeployPage";
 import DocsPage from "./pages/DocsPage";
-import OperatorDashboard from "./pages/OperatorDashboard";
+import ComplianceConfigIOPage from "./pages/ComplianceConfigIOPage";  // #436
+import MarketplacePage from "./pages/MarketplacePage";                // #439
 import ErrorBoundary from "./components/ErrorBoundary";
+import { AdminOnly, VerifierOnly } from "./components/PermissionGate";
 import { ToastProvider } from "./lib/toast";
+
+function AccessDenied({ role }: { role: string }) {
+  return (
+    <div style={{ textAlign: "center", padding: "4rem 1rem", color: "var(--text-muted)" }}>
+      <p style={{ fontSize: "1.1rem", marginBottom: "0.5rem" }}>Access restricted</p>
+      <p style={{ fontSize: "0.875rem" }}>
+        You need {role} permissions to view this page.
+      </p>
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -25,10 +38,30 @@ export default function App() {
           <Route path="/carbon" element={<ErrorBoundary><CarbonPage /></ErrorBoundary>} />
           <Route path="/kyc" element={<ErrorBoundary><KycPage /></ErrorBoundary>} />
           <Route path="/kyc/timeline" element={<ErrorBoundary><KycTimelinePage /></ErrorBoundary>} />
-          <Route path="/admin" element={<ErrorBoundary><AdminPage /></ErrorBoundary>} />
+          <Route
+            path="/admin"
+            element={
+              <ErrorBoundary>
+                <AdminOnly fallback={<AccessDenied role="admin" />}>
+                  <AdminPage />
+                </AdminOnly>
+              </ErrorBoundary>
+            }
+          />
           <Route path="/attestations" element={<ErrorBoundary><AttestationPage /></ErrorBoundary>} />
-          <Route path="/deploy" element={<ErrorBoundary><DeployPage /></ErrorBoundary>} />
+          <Route
+            path="/deploy"
+            element={
+              <ErrorBoundary>
+                <AdminOnly fallback={<AccessDenied role="admin" />}>
+                  <DeployPage />
+                </AdminOnly>
+              </ErrorBoundary>
+            }
+          />
           <Route path="/docs" element={<ErrorBoundary><DocsPage /></ErrorBoundary>} />
+          <Route path="/compliance-config" element={<ErrorBoundary><ComplianceConfigIOPage /></ErrorBoundary>} />
+          <Route path="/marketplace" element={<ErrorBoundary><MarketplacePage /></ErrorBoundary>} />
         </Routes>
       </Layout>
     </ToastProvider>

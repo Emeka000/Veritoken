@@ -1,14 +1,13 @@
 import { useState, useEffect } from "react";
-import { Contract, scValToNative, TransactionBuilder, Account, xdr } from "@stellar/stellar-sdk";
 import { useWallet } from "../lib/wallet";
-import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
+import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
 import { AddressInput } from "../components/AddressInput";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
 import { contracts } from "../lib/contracts";
-import type { ComplianceRules, ContractEvent } from "../types";
+import type { ContractEvent } from "../types";
 
 interface RulesFormState {
   max_transfer_amount: string;
@@ -53,26 +52,7 @@ export default function AdminPage() {
       setLoading(true);
       setFetchError(null);
       try {
-        const contract = new Contract(CONTRACT_IDS.complianceEngine);
-        const dummyAccount = new Account(
-          "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-          "0"
-        );
-        const tx = new TransactionBuilder(dummyAccount, {
-          fee: "100",
-          networkPassphrase: NETWORK_PASSPHRASE,
-        })
-          .addOperation(contract.call("get_rules"))
-          .setTimeout(30)
-          .build();
-
-        const simResult = await server.simulateTransaction(tx);
-        if ("error" in simResult && simResult.error) {
-          throw new Error(`Simulation error: ${simResult.error}`);
-        }
-        const returnVal = (simResult as { result?: { retval: xdr.ScVal } }).result?.retval;
-        if (!returnVal) throw new Error("No return value from get_rules simulation");
-        const decoded = scValToNative(returnVal) as ComplianceRules;
+        const decoded = await contracts.compliance.getRules();
         if (!cancelled) {
           setRules({
             max_transfer_amount: String(decoded.max_transfer_amount ?? 0),

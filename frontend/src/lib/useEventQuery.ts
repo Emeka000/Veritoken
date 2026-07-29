@@ -97,8 +97,9 @@ export function useEventQuery({
         const pageEvents = fetched.slice(0, pageSize);
 
         // If the next-page cursor hasn't been saved yet, record it.
-        if (nextExists && pageEvents.at(-1)?.pagingToken) {
-          cursorStack.current[pageNum] = pageEvents.at(-1)!.pagingToken;
+        const lastEvent = pageEvents[pageEvents.length - 1];
+        if (nextExists && lastEvent?.pagingToken) {
+          cursorStack.current[pageNum] = lastEvent.pagingToken;
         }
 
         setHasNextPage(nextExists);
