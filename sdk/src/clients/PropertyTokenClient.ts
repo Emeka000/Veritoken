@@ -5,7 +5,6 @@ import {
   encodeAddress,
   encodeI128,
   encodeU32,
-  encodePropertyMeta,
 } from "../codec.js";
 
 export class PropertyTokenClient extends BaseContractClient {
@@ -31,16 +30,9 @@ export class PropertyTokenClient extends BaseContractClient {
     return this.read<bigint>("total_shares", []);
   }
 
-  async getMeta(): Promise<PropertyMeta> { return this.read<PropertyMeta>("get_meta", []); }
-  async balance(addr: string): Promise<bigint> { return this.read<bigint>("balance", [encodeAddress(addr)]); }
-  async totalShares(): Promise<bigint> { return this.read<bigint>("total_shares", []); }
   async pendingDividend(holder: string): Promise<bigint> {
     return this.read<bigint>("pending_dividend", [encodeAddress(holder)]);
   }
-  async name(): Promise<string> { return this.read<string>("name", []); }
-  async symbol(): Promise<string> { return this.read<string>("symbol", []); }
-  async decimals(): Promise<number> { return this.read<number>("decimals", []); }
-
   async name(): Promise<string> {
     return this.read<string>("name", []);
   }

@@ -214,8 +214,6 @@ export async function simulateAndSend(
   // rebuild it with the correct sequence number managed by the sequence cache.
   // For legacy callers that pass an already-built XDR we fall back to the
   // direct simulate-assemble-sign-submit path with a one-shot pipeline.
-  const { TxPipeline, SequenceCache, SimulationError, SubmissionError, ConfirmError } = await import("./txPipeline");
-
   const tx = TransactionBuilder.fromXDR(xdrStr, NETWORK_PASSPHRASE);
   const activeServer = getServer();
 

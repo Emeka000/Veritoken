@@ -102,7 +102,7 @@ describe("KycPage – approve form", () => {
     if (!subjectInput) throw new Error("subject input not found");
     fireEvent.change(subjectInput, {
       target: {
-        value: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        value: "GBQG2SJ7MXUH34SI3MJ2I256I5UMGM2QSQZM77YFX5S6JOHXUQJEPC3A",
       },
     });
     const btn = screen.getByRole("button", { name: /Approve KYC/i });
@@ -127,7 +127,7 @@ describe("KycPage – approve form", () => {
     if (!subjectInput) throw new Error("subject input not found");
     fireEvent.change(subjectInput, {
       target: {
-        value: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        value: "GBQG2SJ7MXUH34SI3MJ2I256I5UMGM2QSQZM77YFX5S6JOHXUQJEPC3A",
       },
     });
     // Fill jurisdiction

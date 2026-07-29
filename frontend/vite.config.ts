@@ -1,6 +1,7 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   plugins: [react()],
@@ -10,6 +11,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": "/src",
+      "@veritoken/sdk": fileURLToPath(
+        new URL("../sdk/src/index.ts", import.meta.url),
+      ),
     },
   },
   test: {
