@@ -64,7 +64,7 @@ export default function InvoicePage() {
   // ── Timeline ─────────────────────────────────────────────────────────────
   const [journal, setJournal] = useState<JournalEntry[] | null>(null);
   const [journalLoading, setJournalLoading] = useState(false);
-  const [journalError, setJournalError] = useState<string | null>(null);
+  const [, setJournalError] = useState<string | null>(null);
 
   const [confirm, setConfirm] = useState<{
     title: string;

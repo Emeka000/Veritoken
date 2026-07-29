@@ -10,7 +10,8 @@ import AdminPage from "./pages/AdminPage";
 import AttestationPage from "./pages/AttestationPage";
 import DeployPage from "./pages/DeployPage";
 import DocsPage from "./pages/DocsPage";
-import OperatorDashboard from "./pages/OperatorDashboard";
+import ComplianceConfigIOPage from "./pages/ComplianceConfigIOPage";  // #436
+import MarketplacePage from "./pages/MarketplacePage";                // #439
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./lib/toast";
 
@@ -29,6 +30,8 @@ export default function App() {
           <Route path="/attestations" element={<ErrorBoundary><AttestationPage /></ErrorBoundary>} />
           <Route path="/deploy" element={<ErrorBoundary><DeployPage /></ErrorBoundary>} />
           <Route path="/docs" element={<ErrorBoundary><DocsPage /></ErrorBoundary>} />
+          <Route path="/compliance-config" element={<ErrorBoundary><ComplianceConfigIOPage /></ErrorBoundary>} />
+          <Route path="/marketplace" element={<ErrorBoundary><MarketplacePage /></ErrorBoundary>} />
         </Routes>
       </Layout>
     </ToastProvider>

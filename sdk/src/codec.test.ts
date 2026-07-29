@@ -225,6 +225,7 @@ describe("encodeInvoiceMeta", () => {
     ipfs_doc_hash: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
     transfer_fee_bps: 50,
     fee_recipient: null,
+    notification_webhook: "https://hooks.example.com/invoices",
   };
 
   it("round-trips all string and numeric fields", () => {
@@ -233,6 +234,9 @@ describe("encodeInvoiceMeta", () => {
     expect(decoded.currency).toBe("USD");
     expect(decoded.discount_rate_bps).toBe(200);
     expect(decoded.transfer_fee_bps).toBe(50);
+    expect(decoded.notification_webhook).toBe(
+      "https://hooks.example.com/invoices",
+    );
     expect(decoded.face_value_usd).toBe(1_000_000n);
     expect(decoded.issuer).toBe(ADDR);
     expect(decoded.debtor).toBe(ADDR2);
@@ -273,6 +277,8 @@ describe("encodeProjectMeta", () => {
     country: "BR",
     verifier: "Verra",
     ipfs_cert_hash: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+    registry_url: "https://registry.verra.org",
+    registry_project_id: "VCS-1234",
   };
 
   it("round-trips all fields", () => {
@@ -281,5 +287,7 @@ describe("encodeProjectMeta", () => {
     expect(decoded.standard).toBe("VCS");
     expect(decoded.vintage_year).toBe(2023);
     expect(decoded.country).toBe("BR");
+    expect(decoded.registry_url).toBe("https://registry.verra.org");
+    expect(decoded.registry_project_id).toBe("VCS-1234");
   });
 });

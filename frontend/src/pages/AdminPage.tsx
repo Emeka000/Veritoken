@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { Contract, scValToNative, TransactionBuilder, Account, xdr } from "@stellar/stellar-sdk";
 import { useWallet } from "../lib/wallet";
-import { server, CONTRACT_IDS, NETWORK_PASSPHRASE, fetchContractEvents } from "../lib/stellar";
+import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
 import { EventFeed } from "../components/EventFeed";
 import { CopyButton } from "../components/CopyButton";
@@ -88,41 +87,11 @@ export default function AdminPage() {
   const [removeLoading, setRemoveLoading] = useState<string | null>(null);
 
   const fetchRules = useCallback(async () => {
-  const fetchEvents = useCallback(async () => {
-    if (!CONTRACT_IDS.complianceEngine) return;
-    try {
-      const fetched = await fetchContractEvents(CONTRACT_IDS.complianceEngine, 10);
-      setEvents(fetched);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
     if (!CONTRACT_IDS.complianceEngine) return;
     setLoading(true);
     setFetchError(null);
     try {
-      const contract = new Contract(CONTRACT_IDS.complianceEngine);
-      const dummyAccount = new Account(
-        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-        "0"
-      );
-      const tx = new TransactionBuilder(dummyAccount, {
-        fee: "100",
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call("get_rules"))
-        .setTimeout(30)
-        .build();
-
-      const simResult = await server.simulateTransaction(tx);
-      if ("error" in simResult && simResult.error) {
-        throw new Error(`Simulation error: ${simResult.error}`);
-      }
-      const returnVal = (simResult as { result?: { retval: xdr.ScVal } }).result?.retval;
-      if (!returnVal) throw new Error("No return value from get_rules simulation");
-      const decoded = scValToNative(returnVal) as ComplianceRules;
+      const decoded = await contracts.compliance.getRules();
       setRules({
         max_transfer_amount: String(decoded.max_transfer_amount ?? 0),
         min_holding_period: String(decoded.min_holding_period ?? 0),
@@ -135,6 +104,16 @@ export default function AdminPage() {
       setFetchError(err instanceof Error ? err.message : "Failed to fetch compliance rules.");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const fetchEvents = useCallback(async () => {
+    if (!CONTRACT_IDS.complianceEngine) return;
+    try {
+      const fetched = await fetchContractEvents(CONTRACT_IDS.complianceEngine, 10);
+      setEvents(fetched);
+    } catch {
+      // ignore
     }
   }, []);
 
@@ -208,11 +187,12 @@ export default function AdminPage() {
         try {
           const newRules: ComplianceRules = {
             max_transfer_amount: BigInt(rules.max_transfer_amount),
-            min_holding_period: Number(rules.min_holding_period),
+            min_holding_period: BigInt(rules.min_holding_period),
             max_holders: Number(rules.max_holders),
             require_same_jurisdiction: rules.require_same_jurisdiction,
             paused: rules.paused,
             allowlist_mode: false,
+            max_holding_period: 0n,
           };
           if (proposeMode && ruleChangeDelay > 0 && address) {
             await contracts.compliance.proposeRules(address, newRules, signTx);
@@ -431,7 +411,7 @@ export default function AdminPage() {
             </div>
             <div>
               <p style={styles.ruleLabel}>Min Holding Period</p>
-              <p style={styles.ruleVal}>{pendingRules.rules.min_holding_period === 0 ? "None" : `${pendingRules.rules.min_holding_period}s`}</p>
+              <p style={styles.ruleVal}>{pendingRules.rules.min_holding_period === 0n ? "None" : `${pendingRules.rules.min_holding_period}s`}</p>
             </div>
             <div>
               <p style={styles.ruleLabel}>Max Holders</p>
@@ -625,44 +605,6 @@ export default function AdminPage() {
         />
       )}
     </div>
-  );
-}
-function RecentTransactions({ events, loading }: { events: ContractEvent[]; loading: boolean }) {
-  return (
-    <Card title="Recent Transactions" style={{ marginTop: "1.25rem" }}>
-      {loading ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {[1, 2, 3].map((i) => (
-            <div key={i} style={{ display: "flex", gap: "1rem", padding: "0.75rem 0" }}>
-              <Skeleton width="80px" height="1.25rem" />
-              <Skeleton width="100px" height="1.25rem" />
-              <Skeleton width="150px" height="1.25rem" />
-              <Skeleton width="120px" height="1.25rem" />
-            </div>
-          ))}
-        </div>
-      ) : events.length === 0 ? (
-        <p className="muted" style={{ fontSize: "0.875rem" }}>No recent events found.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
-              <th style={th}>Type</th><th style={th}>Amount</th><th style={th}>Counterparty</th><th style={th}>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={td}>{ev.type}</td>
-                <td style={td}>{ev.amount}</td>
-                <td style={{ ...td, fontFamily: "monospace", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.counterparty}</td>
-                <td style={td}>{ev.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Card>
   );
 }
 

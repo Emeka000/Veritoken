@@ -113,9 +113,8 @@ function FieldError({ result }: { result: ValidationResult }) {
   return <p style={styles.fieldError}>{result.error}</p>;
 }
 
-function CommandOutput({ command }: { command: string }) {
-  const hasContent = Object.values({ command }).some((v) => v.includes('"" ') === false);
-  if (!hasContent) return null;
+function CommandOutput({ command, ready }: { command: string; ready: boolean }) {
+  if (!ready) return null;
   return (
     <div style={styles.outputWrap}>
       <div style={styles.outputHeader}>

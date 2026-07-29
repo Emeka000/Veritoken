@@ -421,12 +421,14 @@ select {
   .card {
     padding: 1.1rem;
   }
+}
 
-  /* Stack header wallet/network controls on very small screens */
-  @media (max-width: 480px) {
-    .container {
-      padding: 0 0.75rem;
-    }
+/* Stack header wallet/network controls on very small screens */
+@media (max-width: 480px) {
+  .container {
+    padding: 0 0.75rem;
+  }
+}
 /* ── Focus management ───────────────────────────────────────────────────── */
 
 button:focus-visible,

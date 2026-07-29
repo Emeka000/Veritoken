@@ -1,160 +1,132 @@
 /**
- * Shared helpers used by every frontend contract client.
- *
- * Reads:  build a dummy-source transaction → simulateTransaction → decode retval.
- * Writes: delegate to TxPipeline for the full lifecycle with retry and sequence cache.
- *
- * ScVal scalar encoders are kept here for backward compat with existing clients.
+ * Compatibility adapters from the frontend contract API to the canonical SDK
+ * client core. The frontend keeps its existing method signatures, while XDR
+ * construction, simulation decoding, sequence management, signed writes, and
+ * contract errors all execute through `@veritoken/sdk`.
  */
 
+import type { rpc, xdr } from "@stellar/stellar-sdk";
 import {
-  Contract,
-  TransactionBuilder,
-  Account,
-  xdr,
-  scValToNative,
-  nativeToScVal,
-  type rpc,
-} from "@stellar/stellar-sdk";
+  TxPipeline,
+  buildContractTx,
+  SIM_SOURCE,
+  parseContractError,
+} from "@veritoken/sdk";
+import type {
+  ContractName,
+  SignTx as SdkSignTx,
+} from "@veritoken/sdk";
 import { NETWORK_PASSPHRASE, getServer } from "../stellar";
-import { parseContractError, type ContractName } from "../contractErrors";
-import { TxPipeline, SequenceCache } from "../txPipeline";
 
-// Stable dummy address used only for read simulations (no auth needed).
-const DUMMY_SOURCE = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+export type SignTx = SdkSignTx;
 
-export type SignTx = (xdr: string) => Promise<string>;
+// A pipeline is shared by every client using the same RPC server. WeakMap
+// avoids retaining replaced test/network instances after a network switch.
+let pipelines = new WeakMap<rpc.Server, TxPipeline>();
 
-// ── Lazy singleton pipeline (shared across all contract clients) ──────────────
-// Using a getter so it picks up the live server from the network store.
-
-let _pipeline: TxPipeline | null = null;
-let _seqCache: SequenceCache | null = null;
-
-/** Returns the shared TxPipeline instance, creating it if needed. */
-export function getPipeline(): TxPipeline {
-  if (!_pipeline) {
-    _seqCache = new SequenceCache();
-    _pipeline = new TxPipeline(getServer(), NETWORK_PASSPHRASE, {}, _seqCache);
+/** Return the canonical pipeline for a server, creating it lazily. */
+export function getPipeline(server: rpc.Server = getServer()): TxPipeline {
+  let pipeline = pipelines.get(server);
+  if (!pipeline) {
+    pipeline = new TxPipeline(server, NETWORK_PASSPHRASE);
+    pipelines.set(server, pipeline);
   }
-  return _pipeline;
+  return pipeline;
 }
 
-/**
- * Reset the pipeline (call when the network or server changes).
- * The next call to getPipeline() will create a fresh instance.
- */
+/** Drop all shared pipelines after a network/server change. */
 export function resetPipeline(): void {
-  _pipeline = null;
-  _seqCache = null;
+  pipelines = new WeakMap<rpc.Server, TxPipeline>();
 }
 
-// ── Transaction builder ───────────────────────────────────────────────────────
-
-/** Build a single-operation transaction ready for simulation or submission. */
+/** Build a single-operation transaction through the SDK's shared builder. */
 export function buildTx(
   contractId: string,
   method: string,
   args: xdr.ScVal[],
   source: string,
-  sequence: string
+  sequence: string,
 ): string {
-  const account = new Account(source, sequence);
-  const contract = new Contract(contractId);
-  const tx = new TransactionBuilder(account, {
-    fee: "100",
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(30)
-    .build();
-  return tx.toXDR();
+  return buildContractTx(
+    contractId,
+    method,
+    args,
+    NETWORK_PASSPHRASE,
+    source,
+    sequence,
+  );
 }
 
-// ── Read path ─────────────────────────────────────────────────────────────────
-
-/** Simulate a read-only call and return the decoded native JS value. */
+/** Simulate and decode a read through the SDK's canonical decoder. */
 export async function readCall<T>(
   server: rpc.Server,
   contractId: string,
   method: string,
-  args: xdr.ScVal[]
+  args: xdr.ScVal[],
 ): Promise<T> {
-  const xdrTx = buildTx(contractId, method, args, DUMMY_SOURCE, "0");
-  const sim = await server.simulateTransaction(
-    TransactionBuilder.fromXDR(xdrTx, NETWORK_PASSPHRASE)
+  const { value } = await getPipeline(server).read<T>(
+    contractId,
+    method,
+    args,
+    SIM_SOURCE,
   );
-
-  if ("error" in sim && sim.error) {
-    throw new Error(`Simulation error calling ${method}: ${sim.error}`);
-  }
-
-  const result = (sim as { result?: { retval: xdr.ScVal } }).result;
-  if (!result?.retval) {
-    throw new Error(`No return value from ${method}`);
-  }
-  return scValToNative(result.retval) as T;
+  return value;
 }
 
-// ── Write path ────────────────────────────────────────────────────────────────
-
 /**
- * Full write pipeline via TxPipeline: sequence cache → simulate → assemble
- * → sign → submit → poll.  Retries transient failures automatically.
+ * Execute a signed write through the SDK pipeline.
+ *
+ * `senderSequence` remains in the signature for compatibility. Existing
+ * callers prefetch it through `fetchSequence`, which warms this same
+ * pipeline's sequence cache; the pipeline remains the sole authority that
+ * selects and advances the value used in the transaction.
  */
 export async function writeCall(
-  _server: rpc.Server,
+  server: rpc.Server,
   contractId: string,
   method: string,
   args: xdr.ScVal[],
   senderAddress: string,
-  _senderSequence: string, // kept for API compat; pipeline manages sequence internally
-  signTx: SignTx
+  _senderSequence: string,
+  signTx: SignTx,
 ): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
-  const { response } = await getPipeline().write(
-    contractId, method, args, senderAddress, signTx,
+  const { response } = await getPipeline(server).write(
+    contractId,
+    method,
+    args,
+    senderAddress,
+    signTx,
   );
   return response;
 }
 
-// ── Account helpers ───────────────────────────────────────────────────────────
-
-/** Fetch the current sequence number for a Stellar account. */
-export async function fetchSequence(
+/** Warm and return the sequence from the shared SDK sequence cache. */
+export function fetchSequence(
   server: rpc.Server,
-  address: string
+  address: string,
 ): Promise<string> {
-  const account = await server.getAccount(address);
-  return (account as unknown as { sequence: string }).sequence;
+  return getPipeline(server).sequenceCache.next(server, address);
 }
 
-// ── Error enrichment ──────────────────────────────────────────────────────────
-
+/** Enrich a raw Soroban error using the SDK's single error table. */
 export function enrichError(contract: ContractName, err: unknown): Error {
   const raw = err instanceof Error ? err.message : String(err);
   const parsed = parseContractError(contract, raw);
   if (parsed) {
-    return new Error(`${parsed.message} (${parsed.name} #${parsed.code}): ${raw}`);
+    return new Error(
+      `${parsed.message} (${parsed.name} #${parsed.code}): ${raw}`,
+    );
   }
   return err instanceof Error ? err : new Error(raw);
 }
 
-// ── ScVal scalar encoders (backward compat re-exports) ────────────────────────
-
-export const toAddress = (addr: string): xdr.ScVal =>
-  nativeToScVal(addr, { type: "address" });
-
-export const toU32 = (n: number): xdr.ScVal =>
-  nativeToScVal(n, { type: "u32" });
-
-export const toU64 = (n: bigint | number): xdr.ScVal =>
-  nativeToScVal(BigInt(n), { type: "u64" });
-
-export const toI128 = (n: bigint | number): xdr.ScVal =>
-  nativeToScVal(BigInt(n), { type: "i128" });
-
-export const toString = (s: string): xdr.ScVal =>
-  nativeToScVal(s, { type: "string" });
-
-export const toBool = (b: boolean): xdr.ScVal =>
-  nativeToScVal(b, { type: "bool" });
+// Stable compatibility names for existing frontend clients. These are direct
+// aliases, not local implementations.
+export {
+  encodeAddress as toAddress,
+  encodeU32 as toU32,
+  encodeU64 as toU64,
+  encodeI128 as toI128,
+  encodeString as toString,
+  encodeBool as toBool,
+} from "@veritoken/sdk";
