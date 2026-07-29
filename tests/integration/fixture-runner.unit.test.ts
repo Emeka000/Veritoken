@@ -12,6 +12,7 @@ import {
 } from "./fixtures/fixture-runner";
 
 class RecordingTransport implements FixtureTransport {
+  readonly deployments: DeployContractRequest[] = [];
   readonly events: string[] = [];
   readonly salts: Buffer[] = [];
   failDeployment?: string;
@@ -22,6 +23,7 @@ class RecordingTransport implements FixtureTransport {
   }
 
   async deployContract(request: DeployContractRequest): Promise<string> {
+    this.deployments.push(request);
     this.events.push(`deploy:${request.label}`);
     this.salts.push(request.salt);
     if (request.label.endsWith(`/${this.failDeployment}`)) {
@@ -40,7 +42,6 @@ const threeContractPlan = (): FixturePlan => ({
   name: "ordered-stack",
   steps: [
     {
-      constructorArgs: () => [],
       name: "kyc",
       wasmPath: "kyc.wasm",
     },
@@ -97,6 +98,7 @@ describe("FixtureRunner", () => {
       "invoke:ordered-stack/asset.initialize",
     ]);
     expect(transport.salts).toHaveLength(3);
+    expect(transport.deployments[0].constructorArgs).toBeUndefined();
     expect(transport.salts.every((salt) => salt.length === 32)).toBe(true);
     expect(new Set(transport.salts.map((salt) => salt.toString("hex"))).size).toBe(
       3,

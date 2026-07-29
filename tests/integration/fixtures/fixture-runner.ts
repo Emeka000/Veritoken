@@ -9,7 +9,7 @@ export interface UploadWasmRequest {
 }
 
 export interface DeployContractRequest {
-  constructorArgs: xdr.ScVal[];
+  constructorArgs?: xdr.ScVal[];
   label: string;
   salt: Buffer;
   source: Keypair;
@@ -32,7 +32,7 @@ export interface FixtureTransport {
 
 export interface FixtureStep {
   afterDeploy?(context: FixtureContext): Promise<void>;
-  constructorArgs(context: FixtureContext): xdr.ScVal[];
+  constructorArgs?(context: FixtureContext): xdr.ScVal[];
   dependsOn?: string[];
   name: string;
   sourceAccount?: string;
@@ -215,7 +215,7 @@ export class FixtureRunner {
           wasmPath: step.wasmPath,
         });
         const contractId = await this.transport.deployContract({
-          constructorArgs: step.constructorArgs(context),
+          constructorArgs: step.constructorArgs?.(context),
           label: `${plan.name}/${step.name}`,
           salt: this.saltFor(context.id, step.name),
           source,

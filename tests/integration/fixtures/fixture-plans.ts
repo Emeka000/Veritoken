@@ -116,17 +116,10 @@ export const invoiceMetadata = (
 const kycStep = {
   name: "kyc",
   wasmPath: wasmPath("kyc_registry.wasm"),
-  constructorArgs: (context: Parameters<FixturePlan["steps"][number]["constructorArgs"]>[0]) => [
-    accountAddress(context.account("admin")),
-  ],
-  afterDeploy: async (
-    context: Parameters<
-      NonNullable<FixturePlan["steps"][number]["afterDeploy"]>
-    >[0],
-  ) => {
-    await context.invoke("kyc", "add_verifier", [
-      accountAddress(context.account("admin")),
-    ]);
+  afterDeploy: async (context) => {
+    const admin = accountAddress(context.account("admin"));
+    await context.invoke("kyc", "initialize", [admin]);
+    await context.invoke("kyc", "add_verifier", [admin, admin]);
   },
 } satisfies FixturePlan["steps"][number];
 
@@ -134,10 +127,13 @@ const complianceStep = {
   name: "compliance",
   wasmPath: wasmPath("compliance_engine.wasm"),
   dependsOn: ["kyc"],
-  constructorArgs: (context: Parameters<FixturePlan["steps"][number]["constructorArgs"]>[0]) => [
-    accountAddress(context.account("admin")),
-    contractAddress(context.contract("kyc")),
-  ],
+  afterDeploy: async (context) => {
+    await context.invoke("compliance", "initialize", [
+      accountAddress(context.account("admin")),
+      contractAddress(context.contract("kyc")),
+      xdr.ScVal.scvU64(xdr.Uint64.fromString("0")),
+    ]);
+  },
 } satisfies FixturePlan["steps"][number];
 
 export const kycFixturePlan = (): FixturePlan => ({
@@ -168,6 +164,7 @@ export const rwaFixturePlan = (): FixturePlan => ({
         contractAddress(context.contract("kyc")),
         contractAddress(context.contract("compliance")),
         xdr.ScVal.scvVoid(),
+        i128("0"),
       ],
     },
   ],

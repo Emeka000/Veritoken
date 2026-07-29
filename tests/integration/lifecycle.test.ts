@@ -6,7 +6,7 @@
  * Prerequisites:
  *   - A Stellar standalone node on http://localhost:8000
  *     (`docker-compose up -d` from the repository root)
- *   - WASM binaries under target/wasm32-unknown-unknown/release/
+ *   - WASM binaries under target/wasm32v1-none/release/
  *
  * Run: npm run test:lifecycle
  */

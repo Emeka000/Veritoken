@@ -183,7 +183,9 @@ export class SorobanTransport implements FixtureTransport {
         .addOperation(
           Operation.createCustomContract({
             address: new Address(request.source.publicKey()),
-            constructorArgs: request.constructorArgs,
+            ...(request.constructorArgs
+              ? { constructorArgs: request.constructorArgs }
+              : {}),
             salt: request.salt,
             wasmHash: Buffer.from(request.wasmHash, "hex"),
           }),

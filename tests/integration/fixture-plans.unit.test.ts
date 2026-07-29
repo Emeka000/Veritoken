@@ -66,8 +66,13 @@ describe("integration fixture plans", () => {
     const { contextOrder, transport } = await setupPlan(kycFixturePlan());
 
     expect(contextOrder).toEqual(["kyc"]);
-    expect(transport.invocations).toHaveLength(1);
+    expect(transport.deployments[0].constructorArgs).toBeUndefined();
+    expect(transport.invocations).toHaveLength(2);
     expect(transport.invocations[0]).toMatchObject({
+      label: "kyc-lifecycle/kyc.initialize",
+      method: "initialize",
+    });
+    expect(transport.invocations[1]).toMatchObject({
       label: "kyc-lifecycle/kyc.add_verifier",
       method: "add_verifier",
     });
@@ -79,15 +84,19 @@ describe("integration fixture plans", () => {
     );
 
     expect(contextOrder).toEqual(["kyc", "compliance"]);
-    expect(transport.deployments[1].constructorArgs).toHaveLength(2);
+    expect(transport.deployments[1].constructorArgs).toBeUndefined();
+    expect(transport.invocations.at(-1)).toMatchObject({
+      label: "compliance-lifecycle/compliance.initialize",
+      method: "initialize",
+    });
   });
 
   it("deploys the complete RWA dependency chain with typed constructor args", async () => {
     const { contextOrder, transport } = await setupPlan(rwaFixturePlan());
 
     expect(contextOrder).toEqual(["kyc", "compliance", "rwa"]);
-    expect(transport.deployments[2].constructorArgs).toHaveLength(8);
-    expect(transport.deployments[2].constructorArgs[2].str().toString()).toBe(
+    expect(transport.deployments[2].constructorArgs).toHaveLength(9);
+    expect(transport.deployments[2].constructorArgs?.[2].str().toString()).toBe(
       "Veritoken RWA",
     );
   });
@@ -98,6 +107,6 @@ describe("integration fixture plans", () => {
     expect(contextOrder).toEqual(["kyc", "compliance", "invoice"]);
     const invoiceArgs = transport.deployments[2].constructorArgs;
     expect(invoiceArgs).toHaveLength(4);
-    expect(invoiceArgs[3].map()).toHaveLength(10);
+    expect(invoiceArgs?.[3].map()).toHaveLength(10);
   });
 });
