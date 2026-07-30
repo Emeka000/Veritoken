@@ -18,6 +18,7 @@ from .models import (
 )
 from .orchestrator import DeploymentOrchestrator, verify_manifest
 from .runner import StellarCliClient
+from .upgrade_simulation import simulate_upgrade
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -124,6 +125,60 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(os.environ.get("DEPLOY_MANIFEST", "deploy-manifest.json")),
     )
+
+    simulate = subparsers.add_parser(
+        "simulate-upgrade",
+        help=(
+            "simulate a contract upgrade offline: diff the new artifact's "
+            "interface against the deployed one and check schema-version "
+            "sequencing, without deploying or changing live state"
+        ),
+    )
+    simulate.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path(os.environ.get("DEPLOY_MANIFEST", "deploy-manifest.json")),
+        help="canonical manifest recording the currently deployed artifact",
+    )
+    simulate.add_argument(
+        "--contract",
+        required=True,
+        help="contract name as it appears in the manifest (e.g. compliance_engine)",
+    )
+    simulate.add_argument(
+        "--new-artifact",
+        type=Path,
+        required=True,
+        help="path to the candidate WASM artifact to simulate upgrading to",
+    )
+    simulate.add_argument(
+        "--to-schema-version",
+        type=int,
+        default=None,
+        help="optional: the schema_version migrate_schema would be called with",
+    )
+    simulate.add_argument(
+        "--report",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "UPGRADE_SIMULATION_REPORT", "upgrade-simulation-report.json"
+            )
+        ),
+    )
+    simulate.add_argument(
+        "--identity",
+        default=os.environ.get("STELLAR_IDENTITY"),
+        help=(
+            "optional: perform a read-only live schema_version check against "
+            "this identity (no state is changed). Omit to simulate fully offline."
+        ),
+    )
+    _add_network_options(simulate)
+    simulate.add_argument(
+        "--stellar-bin",
+        default=os.environ.get("STELLAR_BIN", "stellar"),
+    )
     return parser
 
 
@@ -140,6 +195,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _plan(args, repo_root)
         if args.command == "validate-manifest":
             return _validate_manifest(args, repo_root)
+        if args.command == "simulate-upgrade":
+            return _simulate_upgrade(args, repo_root)
         parser.error(f"unknown command: {args.command}")
     except VerificationFailed as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -273,6 +330,42 @@ def _validate_manifest(args: argparse.Namespace, repo_root: Path) -> int:
         f"({len(contracts)} contracts)."
     )
     return 0
+
+
+def _simulate_upgrade(args: argparse.Namespace, repo_root: Path) -> int:
+    manifest_path = _resolve(args.manifest, repo_root)
+    new_artifact = _resolve(args.new_artifact, repo_root)
+    report_path = _resolve(args.report, repo_root)
+
+    client = None
+    network = None
+    if args.identity:
+        client = StellarCliClient(args.stellar_bin)
+        network = _network_from_args(args)
+
+    report = simulate_upgrade(
+        contract_name=args.contract,
+        manifest_path=manifest_path,
+        new_artifact=new_artifact,
+        repo_root=repo_root,
+        to_schema_version=args.to_schema_version,
+        client=client,
+        identity=args.identity,
+        network=network,
+    )
+    atomic_write_json(report_path, report)
+
+    summary = report["summary"]
+    print(
+        f"Upgrade simulation for {args.contract}: {report['status']} "
+        f"({summary['critical_risk_count']} critical risk(s), "
+        f"{summary['removed_function_count']} removed function(s), "
+        f"{summary['added_function_count']} added function(s))."
+    )
+    for risk in report["risks"]:
+        print(f"  [{risk['level']}] {risk['message']}")
+    print(f"Report: {report_path}")
+    return 0 if report["status"] == "ok" else 1
 
 
 def _add_common_config(

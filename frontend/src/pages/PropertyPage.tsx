@@ -5,6 +5,7 @@ import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
 import { EventFeed } from "../components/EventFeed";
+import LockupStatusCard from "../components/LockupStatusCard";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
@@ -324,6 +325,9 @@ export default function PropertyPage() {
           </p>
         )}
       </Card>
+
+      {/* ── Lockup status panel ─────────────────────────────────────────── */}
+      {connected && address && <LockupStatusCard address={address} />}
 
       {/* ── Pending dividend panel ──────────────────────────────────────── */}
       {connected && address && (

@@ -321,6 +321,26 @@ wasm-opt -Oz \
   -o target/wasm32-unknown-unknown/release/invoice_token_opt.wasm
 ```
 
+### Step 3.5 — Simulate the upgrade
+
+Before spending a transaction on Step 4, check what the new build actually
+changes. `simulate-upgrade` runs entirely offline (no chain access needed
+unless you pass `--identity`) and flags breaking interface changes or an
+invalid schema-version bump before you deploy:
+
+```bash
+python3 scripts/deployment_cli.py simulate-upgrade \
+  --manifest deploy-manifest.json \
+  --contract invoice_token \
+  --new-artifact target/wasm32-unknown-unknown/release/invoice_token_opt.wasm \
+  --to-schema-version <NEXT_SCHEMA_VERSION> \
+  --identity "$ADMIN_KEY" --network "$NETWORK"
+```
+
+See [`docs/deployment-automation.md`](deployment-automation.md#upgrade-simulation)
+for the full report format. Resolve any `critical` risk in the output before
+continuing to Step 4.
+
 ### Step 4 — Deploy new contracts
 
 ```bash

@@ -50,6 +50,16 @@ The default development config is
 `deployment/config.testnet.json`. Its metadata values are valid contract
 fixtures rather than rejected zero-value or empty placeholders.
 
+## Example deployment bundles
+
+[`deployment/examples/`](../deployment/examples/) contains a runnable,
+single-asset-type bundle for each asset type (invoice, property, carbon
+credit) — a smaller starting point than the combined testnet config above
+when you only need one asset type. See
+[`deployment/examples/README.md`](../deployment/examples/README.md) for the
+common configuration points across bundles and how to adapt one to a real
+environment and contract ID set.
+
 ## Commands
 
 Print and validate the operation plan without contacting Stellar:
@@ -84,7 +94,51 @@ The Python entry point exposes the same operations directly:
 python3 scripts/deployment_cli.py deploy --help
 python3 scripts/deployment_cli.py verify --help
 python3 scripts/deployment_cli.py validate-manifest --help
+python3 scripts/deployment_cli.py simulate-upgrade --help
 ```
+
+## Upgrade simulation
+
+Soroban contracts here are immutable — an "upgrade" is a full
+snapshot-and-redeploy (see [`docs/incident-response.md`](incident-response.md)
+§4), which is expensive to get wrong. `simulate-upgrade` models the outcome
+of a candidate upgrade **offline**, before you spend a transaction on it:
+
+```bash
+python3 scripts/deployment_cli.py simulate-upgrade \
+  --manifest deploy-manifest.json \
+  --contract compliance_engine \
+  --new-artifact target/wasm32-unknown-unknown/release/compliance_engine.wasm \
+  --to-schema-version 2
+```
+
+It diffs the candidate WASM's exported function interface against the
+currently deployed artifact (recorded in `--manifest`) and flags any
+function that's present today but missing from the new build as a critical
+risk — that's a breaking change for the frontend, SDK, or any other
+contract that calls it. If `--to-schema-version` is given, it also checks
+that value against the contract's own sequential-migration rule
+(`to_version == current + 1`, enforced by `migrate_schema` on-chain).
+
+By default the schema-version check is skipped (there's no live state to
+compare against without a network call). Pass `--identity` to additionally
+perform a **read-only** `schema_version` invoke against the deployed
+contract and validate sequencing against live state — this never mutates
+anything on-chain:
+
+```bash
+python3 scripts/deployment_cli.py simulate-upgrade \
+  --manifest deploy-manifest.json \
+  --contract compliance_engine \
+  --new-artifact target/wasm32-unknown-unknown/release/compliance_engine.wasm \
+  --to-schema-version 2 \
+  --identity veritoken-dev --network testnet
+```
+
+The command exits non-zero and writes a JSON report (default
+`upgrade-simulation-report.json`, override with `--report`) whenever a
+critical risk is found — wire it into a pre-upgrade checklist or CI step
+the same way `verify` is used after a deploy.
 
 ## Configuration model
 

@@ -5,6 +5,7 @@ import { CONTRACT_IDS, fetchContractEvents } from "../lib/stellar";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon, Skeleton } from "../components/ui";
 import { EventFeed } from "../components/EventFeed";
+import LockupStatusCard from "../components/LockupStatusCard";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
@@ -234,6 +235,9 @@ export default function InvoicePage() {
         title="Invoice Token"
         description="Tokenize an accounts-receivable invoice. Each token unit represents one stroop (10⁻⁷ USD) of face value."
       />
+
+      {/* ── Lockup status panel ─────────────────────────────────────────── */}
+      {connected && address && <LockupStatusCard address={address} />}
 
       {/* ── Invoice metadata panel ─────────────────────────────────────── */}
       <Card title="Invoice Details" style={{ marginBottom: "1.25rem" }}>

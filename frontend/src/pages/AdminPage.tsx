@@ -94,6 +94,9 @@ export default function AdminPage() {
   const [addLoading, setAddLoading] = useState(false);
   const [removeLoading, setRemoveLoading] = useState<string | null>(null);
 
+  // Automated alerting for compliance rule violations and suspicious activity (#444)
+  useEffect(() => startComplianceAlertMonitor(), []);
+
   const fetchRules = useCallback(async () => {
     if (!CONTRACT_IDS.complianceEngine) return;
     setLoading(true);

@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "profile": "development",
+  "contracts": [
+    {
+      "name": "kyc_registry",
+      "artifact": "${wasm_dir}/kyc_registry.wasm",
+      "env_key": "VITE_KYC_REGISTRY_ID",
+      "dependencies": [],
+      "deployment_mode": "initialize",
+      "initialize_function": "initialize",
+      "initialize_args": {
+        "admin": "${admin}"
+      },
+      "declared_metadata": {
+        "package": "kyc-registry",
+        "role": "identity_registry"
+      },
+      "health_check": {
+        "function": "verifier_count",
+        "expectation": "integer"
+      }
+    },
+    {
+      "name": "compliance_engine",
+      "artifact": "${wasm_dir}/compliance_engine.wasm",
+      "env_key": "VITE_COMPLIANCE_ENGINE_ID",
+      "dependencies": [
+        "kyc_registry"
+      ],
+      "deployment_mode": "initialize",
+      "initialize_function": "initialize",
+      "initialize_args": {
+        "admin": "${admin}",
+        "kyc_registry": "${contract.kyc_registry}",
+        "rule_change_delay": 0
+      },
+      "declared_metadata": {
+        "package": "compliance-engine",
+        "role": "transfer_policy"
+      },
+      "health_check": {
+        "function": "holder_count",
+        "expectation": "integer"
+      }
+    },
+    {
+      "name": "carbon_credit_token",
+      "artifact": "${wasm_dir}/carbon_credit_token.wasm",
+      "env_key": "VITE_CARBON_TOKEN_ID",
+      "dependencies": [
+        "kyc_registry",
+        "compliance_engine"
+      ],
+      "deployment_mode": "constructor",
+      "constructor_args": {
+        "admin": "${admin}",
+        "kyc_registry": "${contract.kyc_registry}",
+        "compliance_engine": "${contract.compliance_engine}",
+        "meta": {
+          "project_id": "EXAMPLE-CARBON-001",
+          "standard": "VCS",
+          "vintage_year": 2025,
+          "project_name": "Example Reforestation Project",
+          "project_type": "forestry",
+          "country": "BR",
+          "verifier": "Example Verification Body",
+          "ipfs_cert_hash": "",
+          "registry_url": "",
+          "registry_project_id": "EXAMPLE-001"
+        }
+      },
+      "declared_metadata": {
+        "package": "carbon-credit-token",
+        "role": "carbon_asset",
+        "fixture_project_id": "EXAMPLE-CARBON-001"
+      },
+      "health_check": {
+        "function": "total_supply",
+        "expectation": "integer"
+      }
+    }
+  ]
+}
