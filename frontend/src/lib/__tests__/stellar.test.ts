@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Hoist mock functions so they are available inside vi.mock factory (which is
 // hoisted to the top of the module before variable declarations).
@@ -40,7 +40,6 @@ vi.mock("../networkStore", () => ({
   useNetworkStore: {
     getState: () => ({ network: "testnet" }),
   },
-  getNetworkRpcUrl: () => "https://soroban-testnet.stellar.org",
 }));
 
 import {
@@ -49,6 +48,8 @@ import {
   validateStellarAddress,
   fetchContractEvents,
   normalizeContractEvent,
+  getRpcUrl,
+  getNetworkPassphrase,
 } from "../stellar";
 
 beforeEach(() => {
@@ -56,6 +57,27 @@ beforeEach(() => {
   mockIsSimError.mockReturnValue(false);
   mockAssemble.mockReturnValue({ build: () => ({ toXDR: () => "assembled-xdr" }) });
   mockScValToNative.mockImplementation((value) => value);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe("network config resolution (#451 custom RPC support)", () => {
+  it("resolves the built-in testnet RPC URL and passphrase by default", () => {
+    expect(getRpcUrl()).toBe("https://soroban-testnet.stellar.org");
+    expect(getNetworkPassphrase()).toBe("Test SDF Network ; September 2015");
+  });
+
+  it("honors a VITE_SOROBAN_RPC_URL override", () => {
+    vi.stubEnv("VITE_SOROBAN_RPC_URL", "https://custom-rpc.example.com");
+    expect(getRpcUrl()).toBe("https://custom-rpc.example.com");
+  });
+
+  it("honors a VITE_STELLAR_NETWORK_PASSPHRASE override", () => {
+    vi.stubEnv("VITE_STELLAR_NETWORK_PASSPHRASE", "Custom Network ; 2026");
+    expect(getNetworkPassphrase()).toBe("Custom Network ; 2026");
+  });
 });
 
 describe("decodeContractError", () => {

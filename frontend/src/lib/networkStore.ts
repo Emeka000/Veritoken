@@ -23,8 +23,8 @@ export const useNetworkStore = create<NetworkStore>()(
   )
 );
 
-export const getNetworkRpcUrl = (network: Network): string => {
-  return network === "mainnet"
-    ? "https://mainnet.sorobanrpc.com"
-    : "https://soroban-testnet.stellar.org";
-};
+// RPC URL / passphrase resolution (including custom RPC overrides, #451) now
+// lives in `@veritoken/sdk`'s `resolveNetworkConfig` — see `stellar.ts`'s
+// `getRpcUrl`/`getNetworkPassphrase`, which bridge this store's `network`
+// plus `VITE_SOROBAN_RPC_URL` / `VITE_STELLAR_NETWORK_PASSPHRASE` /
+// `VITE_RPC_ALLOW_HTTP` into it.

@@ -75,7 +75,7 @@ export type { NetworkConfig, NetworkOverrides } from "./network.js";
 export type {
   KycStatus, KycRecord, InvoiceMeta, PropertyMeta, ProjectMeta,
   RetirementReceipt, ComplianceRules, TokenExportMetadata,
-  TierPolicy, RiskConfig, KycStatusMirror, KycSyncStatus, Network,
+  TierPolicy, RiskConfig, KycStatusMirror, KycSyncStatus, Network, KnownNetwork,
 } from "./types.js";
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -119,6 +119,10 @@ export type { Role } from "./auth.js";
 // ── Client factory & dependency injection (#395) ────────────────────────────────
 export { createClients, ClientFactory } from "./factory.js";
 export type { ClientMap, ClientKey, CreateClientsConfig } from "./factory.js";
+
+// ── Contract metadata discovery (#452) ──────────────────────────────────────────
+export { CONTRACT_METADATA, discoverContracts } from "./metadata.js";
+export type { ContractMetadata, ContractMetadataEntry, ContractDiscoveryReport } from "./metadata.js";
 
 // Note: the mock RPC test harness (#396, sdk/src/testing/mockRpc.ts) is
 // intentionally NOT re-exported here. It imports `vi` from vitest (a

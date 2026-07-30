@@ -3,7 +3,18 @@ import { Link } from "react-router-dom";
 import { Icon, Skeleton } from "../components/ui";
 import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS } from "../lib/stellar";
+import { getContractDiscovery } from "../lib/contractMetadata";
+import { CopyButton } from "../components/CopyButton";
 import StatusCard from "../components/StatusCard";
+
+const ROLE_LABELS: Record<string, string> = {
+  identity_registry: "Identity registry",
+  transfer_policy: "Transfer policy",
+  invoice_asset: "Invoice asset",
+  property_asset: "Property asset",
+  carbon_asset: "Carbon asset",
+  generic_rwa_asset: "Generic RWA asset",
+};
 
 const CARDS = [
   {
@@ -62,6 +73,7 @@ function TokenInfoRow({ label, value, mono }: { label: string; value: string; mo
 }
 
 export default function Dashboard() {
+  const discovery = getContractDiscovery();
   const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
   const [tokenInfoLoading, setTokenInfoLoading] = useState(false);
   const [tokenInfoError, setTokenInfoError] = useState<string | null>(null);
@@ -172,6 +184,62 @@ export default function Dashboard() {
         </section>
       )}
 
+      {/* Deployed Contracts — #452 contract metadata discovery */}
+      <section className="card" style={{ marginBottom: "2.75rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.7rem", marginBottom: "1.25rem" }}>
+          <div style={styles.complianceIcon}>
+            <Icon.shield size={22} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: "1.05rem", fontWeight: 700 }}>Deployed Contracts</h2>
+            <p className="muted" style={{ fontSize: "0.85rem", marginTop: "0.2rem" }}>
+              Contract addresses, types, and roles for {discovery.network}
+            </p>
+          </div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+                <th style={dashTh}>Role</th>
+                <th style={dashTh}>Package</th>
+                <th style={dashTh}>Contract ID</th>
+                <th style={{ ...dashTh, textAlign: "right" }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {discovery.contracts.map((c) => (
+                <tr key={c.key} style={{ borderBottom: "1px solid var(--border)" }}>
+                  <td style={dashTd}>{ROLE_LABELS[c.role] ?? c.role}</td>
+                  <td style={{ ...dashTd, fontFamily: "monospace", color: "var(--text-muted)" }}>{c.package}</td>
+                  <td style={{ ...dashTd, fontFamily: "monospace" }}>
+                    {c.contractId ? (
+                      <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                        {c.contractId.slice(0, 6)}…{c.contractId.slice(-6)}
+                        <CopyButton text={c.contractId} label={`Copy ${c.key} contract ID`} style={{ padding: "0.15rem 0.4rem", fontSize: "0.65rem" }} />
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td style={{ ...dashTd, textAlign: "right" }}>
+                    <span
+                      className="badge"
+                      style={{
+                        background: c.configured ? "var(--success-soft)" : "var(--warning-soft)",
+                        color: c.configured ? "var(--success)" : "var(--warning)",
+                      }}
+                    >
+                      {c.configured ? "Deployed" : "Not configured"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       {/* My Status */}
       <StatusCard />
 
@@ -236,6 +304,9 @@ export default function Dashboard() {
     </div>
   );
 }
+
+const dashTh: React.CSSProperties = { padding: "0.4rem 0.5rem", fontWeight: 600, color: "var(--muted)" };
+const dashTd: React.CSSProperties = { padding: "0.45rem 0.5rem" };
 
 const styles: Record<string, React.CSSProperties> = {
   hero: { padding: "1.5rem 0 2.75rem", maxWidth: 760 },

@@ -1,5 +1,6 @@
-import { Networks, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
-import { useNetworkStore, getNetworkRpcUrl } from "./networkStore";
+import { TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
+import { resolveNetworkConfig } from "@veritoken/sdk";
+import { useNetworkStore } from "./networkStore";
 import type { ContractEvent } from "../types";
 
 export const getNetwork = () => useNetworkStore.getState().network;
@@ -11,17 +12,32 @@ export function validateStellarAddress(addr: string): boolean {
   return /^G[A-Z2-7]{55}$/.test(addr);
 }
 
-export const getRpcUrl = () => {
-  const network = getNetwork();
-  return getNetworkRpcUrl(network);
-};
+/**
+ * Resolves the active network's RPC URL / passphrase / transport via the
+ * SDK's `resolveNetworkConfig` (#394, custom networks #451), bridging Vite's
+ * `import.meta.env.VITE_*` vars into the SDK's override layer — the SDK
+ * itself only reads `process.env`, which doesn't exist in the browser.
+ */
+function resolveActiveNetworkConfig() {
+  return resolveNetworkConfig({
+    network: getNetwork(),
+    rpcUrl: import.meta.env.VITE_SOROBAN_RPC_URL || undefined,
+    networkPassphrase: import.meta.env.VITE_STELLAR_NETWORK_PASSPHRASE || undefined,
+    allowHttp:
+      import.meta.env.VITE_RPC_ALLOW_HTTP === undefined
+        ? undefined
+        : import.meta.env.VITE_RPC_ALLOW_HTTP === "true",
+  });
+}
 
-export const getNetworkPassphrase = () => {
-  const network = getNetwork();
-  return network === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
-};
+export const getRpcUrl = () => resolveActiveNetworkConfig().rpcUrl;
 
-export const getServer = () => new rpc.Server(getRpcUrl(), { allowHttp: false });
+export const getNetworkPassphrase = () => resolveActiveNetworkConfig().networkPassphrase;
+
+export const getServer = () => {
+  const config = resolveActiveNetworkConfig();
+  return new rpc.Server(config.rpcUrl, { allowHttp: config.allowHttp });
+};
 
 // For backwards compatibility, export these as functions that return the current values
 export const NETWORK = getNetwork();

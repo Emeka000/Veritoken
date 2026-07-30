@@ -10,6 +10,7 @@
  */
 
 import type { ComplianceRules, TierPolicy, RiskConfig } from "../types";
+import { contracts, type SignTx } from "./contracts/index";
 
 // ── Versioned envelope ────────────────────────────────────────────────────────
 
@@ -168,5 +169,111 @@ export function configToRules(config: ComplianceConfigExport): ComplianceRules {
     require_same_jurisdiction: r.require_same_jurisdiction,
     paused: r.paused,
     allowlist_mode: r.allowlist_mode,
+  };
+}
+
+/** Convert a parsed export's tier-policy entries back to typed domain objects. */
+export function configToTierPolicies(
+  config: ComplianceConfigExport,
+): Array<{ fromTier: number; toTier: number; policy: TierPolicy }> {
+  return config.tierPolicies.map((e) => ({
+    fromTier: e.fromTier,
+    toTier: e.toTier,
+    policy: {
+      blocked: e.policy.blocked,
+      max_transfer_amount: BigInt(e.policy.max_transfer_amount),
+      min_from_tier: e.policy.min_from_tier,
+      min_to_tier: e.policy.min_to_tier,
+    },
+  }));
+}
+
+// ── Validation before apply (#454) ──────────────────────────────────────────────
+
+/**
+ * Semantic validation of a parsed config before it's applied on-chain.
+ * Mirrors the stateless guards in `compliance-engine`'s `validate_rules`
+ * (min holding period ≤ 365 days, non-negative amounts) plus the range
+ * checks implicit in `RiskConfig`/`TierPolicy` (scores 0–100, non-negative
+ * tiers). Returns a list of human-readable errors — empty means safe to
+ * apply. Does not (and cannot, without an RPC round-trip) replicate stateful
+ * on-chain checks like "max_holders below the current holder count".
+ */
+export function validateConfigForApply(config: ComplianceConfigExport): string[] {
+  const errors: string[] = [];
+  const r = config.rules;
+
+  let maxTransfer: bigint;
+  let minHolding: bigint;
+  let maxHolding: bigint;
+  try {
+    maxTransfer = BigInt(r.max_transfer_amount);
+    minHolding = BigInt(r.min_holding_period);
+    maxHolding = BigInt(r.max_holding_period);
+  } catch {
+    return ["Rules contain a non-numeric amount or duration."];
+  }
+
+  if (maxTransfer < 0n) errors.push("Max transfer amount cannot be negative.");
+  if (minHolding < 0n) errors.push("Min holding period cannot be negative.");
+  if (minHolding > 31_536_000n) errors.push("Min holding period cannot exceed 365 days (31,536,000 seconds).");
+  if (maxHolding < 0n) errors.push("Max holding period cannot be negative.");
+  if (r.max_holders < 0) errors.push("Max holders cannot be negative.");
+
+  for (const entry of config.tierPolicies) {
+    const label = `Tier policy ${entry.fromTier}→${entry.toTier}`;
+    let amt: bigint;
+    try {
+      amt = BigInt(entry.policy.max_transfer_amount);
+    } catch {
+      errors.push(`${label}: max transfer amount is not numeric.`);
+      continue;
+    }
+    if (amt < 0n) errors.push(`${label}: max transfer amount cannot be negative.`);
+    if (entry.policy.min_from_tier < 0) errors.push(`${label}: min_from_tier cannot be negative.`);
+    if (entry.policy.min_to_tier < 0) errors.push(`${label}: min_to_tier cannot be negative.`);
+  }
+
+  if (config.riskConfig) {
+    const { max_score, default_score } = config.riskConfig;
+    if (max_score < 0 || max_score > 100) errors.push("Risk config max_score must be between 0 and 100.");
+    if (default_score < 0 || default_score > 100) errors.push("Risk config default_score must be between 0 and 100.");
+  }
+
+  return errors;
+}
+
+// ── Apply on-chain (#453, #454) ──────────────────────────────────────────────────
+
+export interface ApplyComplianceConfigResult {
+  tierPoliciesApplied: number;
+  riskConfigApplied: boolean;
+}
+
+/**
+ * Apply a config's rules, tier policies, and risk config on-chain, in that
+ * order. Shared by the Compliance Config I/O "Apply" flow (#454) and the
+ * policy-template picker (#453) so both paths write through the exact same
+ * sequence of admin calls. Callers should run `validateConfigForApply`
+ * first and block on any errors — this function does not re-validate.
+ */
+export async function applyComplianceConfig(
+  config: ComplianceConfigExport,
+  adminAddress: string,
+  signTx: SignTx,
+): Promise<ApplyComplianceConfigResult> {
+  await contracts.compliance.setRules(adminAddress, configToRules(config), signTx);
+
+  for (const entry of configToTierPolicies(config)) {
+    await contracts.compliance.setTierPolicy(adminAddress, entry.fromTier, entry.toTier, entry.policy, signTx);
+  }
+
+  if (config.riskConfig) {
+    await contracts.compliance.setRiskConfig(adminAddress, config.riskConfig, signTx);
+  }
+
+  return {
+    tierPoliciesApplied: config.tierPolicies.length,
+    riskConfigApplied: config.riskConfig !== null,
   };
 }

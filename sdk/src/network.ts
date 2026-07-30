@@ -1,21 +1,25 @@
 /**
- * Multi-network configuration for the SDK (#394).
+ * Multi-network configuration for the SDK (#394, custom networks #451).
  *
  * Host applications need to target different Stellar/Soroban networks
  * (testnet during development, mainnet in production, futurenet or a local
- * standalone node for contract work) without editing SDK call sites. This
- * module resolves a full `NetworkConfig` (RPC URL + passphrase + transport)
- * from three layers, in priority order:
+ * standalone node for contract work) — or a fully custom network/RPC of
+ * their own (a private Soroban node, a forked testnet, CI infrastructure) —
+ * without editing SDK call sites. This module resolves a full
+ * `NetworkConfig` (RPC URL + passphrase + transport) from three layers, in
+ * priority order:
  *
  *   1. Explicit overrides passed by the caller
  *   2. Environment variables (Node `process.env`, or Vite's `VITE_`-prefixed
  *      equivalents for frontend builds)
  *   3. Built-in defaults for the four known networks
  *
- * `resolveNetworkConfig` validates the result — unknown network names and
- * plaintext-HTTP RPC URLs on a network that doesn't expect them both raise
- * `InvalidNetworkConfigError` — so misconfiguration fails fast instead of
- * surfacing as an opaque RPC error later.
+ * `resolveNetworkConfig` validates the result — plaintext-HTTP RPC URLs on a
+ * network that doesn't expect them raise `InvalidNetworkConfigError`, and an
+ * unrecognized network name is only accepted when both `rpcUrl` and
+ * `networkPassphrase` are supplied explicitly (there's no built-in default to
+ * fall back to for a name the SDK doesn't know) — so misconfiguration fails
+ * fast instead of surfacing as an opaque RPC error later.
  *
  * @example Switch networks with no code changes
  * ```ts
@@ -31,29 +35,38 @@
  *   rpcUrl: "http://localhost:8000/soroban/rpc",
  * });
  * ```
+ *
+ * @example A fully custom network (any name works, given rpcUrl + networkPassphrase)
+ * ```ts
+ * const server = createServer({
+ *   network: "my-private-devnet",
+ *   rpcUrl: "https://rpc.my-devnet.internal",
+ *   networkPassphrase: "My Private Devnet ; 2026",
+ * });
+ * ```
  */
 
 import { Networks, rpc } from "@stellar/stellar-sdk";
-import type { Network } from "./types.js";
+import type { KnownNetwork, Network } from "./types.js";
 
 // ── Known networks and their defaults ───────────────────────────────────────────
 
 /** Every network the SDK ships built-in defaults for. */
-export const KNOWN_NETWORKS: readonly Network[] = [
+export const KNOWN_NETWORKS: readonly KnownNetwork[] = [
   "testnet",
   "mainnet",
   "futurenet",
   "standalone",
 ];
 
-export const RPC_URLS: Record<Network, string> = {
+export const RPC_URLS: Record<KnownNetwork, string> = {
   testnet: "https://soroban-testnet.stellar.org",
   mainnet: "https://mainnet.sorobanrpc.com",
   futurenet: "https://rpc-futurenet.stellar.org",
   standalone: "http://localhost:8000/soroban/rpc",
 };
 
-export const NETWORK_PASSPHRASES: Record<Network, string> = {
+export const NETWORK_PASSPHRASES: Record<KnownNetwork, string> = {
   testnet: Networks.TESTNET,
   mainnet: Networks.PUBLIC,
   futurenet: Networks.FUTURENET,
@@ -61,10 +74,10 @@ export const NETWORK_PASSPHRASES: Record<Network, string> = {
 };
 
 /** Networks whose default RPC endpoint is a local/ephemeral node reached over plain HTTP. */
-const ALLOW_HTTP_NETWORKS: ReadonlySet<Network> = new Set(["standalone"]);
+const ALLOW_HTTP_NETWORKS: ReadonlySet<KnownNetwork> = new Set(["standalone"]);
 
 /** True if `value` is one of `KNOWN_NETWORKS`. Doubles as a type guard. */
-export function isValidNetwork(value: string): value is Network {
+export function isValidNetwork(value: string): value is KnownNetwork {
   return (KNOWN_NETWORKS as readonly string[]).includes(value);
 }
 
@@ -124,9 +137,11 @@ export interface NetworkConfig {
  * - networkPassphrase: `VERITOKEN_NETWORK_PASSPHRASE`, `STELLAR_NETWORK_PASSPHRASE`, `VITE_STELLAR_NETWORK_PASSPHRASE`
  * - allowHttp: `VERITOKEN_RPC_ALLOW_HTTP` (`"true"` / `"false"`)
  *
- * @throws InvalidNetworkConfigError if the network name is unrecognized, if
- * `rpcUrl`/`networkPassphrase` resolve to an empty string, or if the
- * resolved RPC URL is plain HTTP on a network that doesn't allow it.
+ * @throws InvalidNetworkConfigError if the network name is unrecognized and
+ * no explicit `rpcUrl` + `networkPassphrase` pair was supplied to configure
+ * it as a custom network, if `rpcUrl`/`networkPassphrase` resolve to an
+ * empty string, or if the resolved RPC URL is plain HTTP on a network that
+ * doesn't allow it.
  */
 export function resolveNetworkConfig(overrides: NetworkOverrides = {}): NetworkConfig {
   const networkName =
@@ -134,25 +149,22 @@ export function resolveNetworkConfig(overrides: NetworkOverrides = {}): NetworkC
     readEnv("VERITOKEN_NETWORK", "STELLAR_NETWORK", "VITE_STELLAR_NETWORK") ??
     "testnet";
 
-  if (!isValidNetwork(networkName)) {
+  const explicitRpcUrl =
+    overrides.rpcUrl ?? readEnv("VERITOKEN_RPC_URL", "SOROBAN_RPC_URL", "VITE_SOROBAN_RPC_URL");
+  const explicitPassphrase =
+    overrides.networkPassphrase ??
+    readEnv("VERITOKEN_NETWORK_PASSPHRASE", "STELLAR_NETWORK_PASSPHRASE", "VITE_STELLAR_NETWORK_PASSPHRASE");
+
+  const known = isValidNetwork(networkName);
+  if (!known && !(explicitRpcUrl && explicitPassphrase)) {
     throw new InvalidNetworkConfigError(
-      `Unknown network "${networkName}". Expected one of: ${KNOWN_NETWORKS.join(", ")}.`,
+      `Unknown network "${networkName}". Expected one of: ${KNOWN_NETWORKS.join(", ")}, ` +
+        `or supply both rpcUrl and networkPassphrase to configure it as a custom network.`,
     );
   }
 
-  const rpcUrl =
-    overrides.rpcUrl ??
-    readEnv("VERITOKEN_RPC_URL", "SOROBAN_RPC_URL", "VITE_SOROBAN_RPC_URL") ??
-    RPC_URLS[networkName];
-
-  const networkPassphrase =
-    overrides.networkPassphrase ??
-    readEnv(
-      "VERITOKEN_NETWORK_PASSPHRASE",
-      "STELLAR_NETWORK_PASSPHRASE",
-      "VITE_STELLAR_NETWORK_PASSPHRASE",
-    ) ??
-    NETWORK_PASSPHRASES[networkName];
+  const rpcUrl = explicitRpcUrl ?? RPC_URLS[networkName as KnownNetwork];
+  const networkPassphrase = explicitPassphrase ?? NETWORK_PASSPHRASES[networkName as KnownNetwork];
 
   if (!rpcUrl.trim()) {
     throw new InvalidNetworkConfigError("rpcUrl cannot be empty.");
@@ -166,7 +178,7 @@ export function resolveNetworkConfig(overrides: NetworkOverrides = {}): NetworkC
     allowHttp = overrides.allowHttp;
   } else {
     const envAllowHttp = readEnv("VERITOKEN_RPC_ALLOW_HTTP");
-    allowHttp = envAllowHttp !== undefined ? envAllowHttp === "true" : ALLOW_HTTP_NETWORKS.has(networkName);
+    allowHttp = envAllowHttp !== undefined ? envAllowHttp === "true" : known && ALLOW_HTTP_NETWORKS.has(networkName as KnownNetwork);
   }
 
   if (!allowHttp && rpcUrl.startsWith("http://")) {
