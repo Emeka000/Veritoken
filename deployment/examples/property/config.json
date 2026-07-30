@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "profile": "development",
+  "contracts": [
+    {
+      "name": "kyc_registry",
+      "artifact": "${wasm_dir}/kyc_registry.wasm",
+      "env_key": "VITE_KYC_REGISTRY_ID",
+      "dependencies": [],
+      "deployment_mode": "initialize",
+      "initialize_function": "initialize",
+      "initialize_args": {
+        "admin": "${admin}"
+      },
+      "declared_metadata": {
+        "package": "kyc-registry",
+        "role": "identity_registry"
+      },
+      "health_check": {
+        "function": "verifier_count",
+        "expectation": "integer"
+      }
+    },
+    {
+      "name": "compliance_engine",
+      "artifact": "${wasm_dir}/compliance_engine.wasm",
+      "env_key": "VITE_COMPLIANCE_ENGINE_ID",
+      "dependencies": [
+        "kyc_registry"
+      ],
+      "deployment_mode": "initialize",
+      "initialize_function": "initialize",
+      "initialize_args": {
+        "admin": "${admin}",
+        "kyc_registry": "${contract.kyc_registry}",
+        "rule_change_delay": 0
+      },
+      "declared_metadata": {
+        "package": "compliance-engine",
+        "role": "transfer_policy"
+      },
+      "health_check": {
+        "function": "holder_count",
+        "expectation": "integer"
+      }
+    },
+    {
+      "name": "property_token",
+      "artifact": "${wasm_dir}/property_token.wasm",
+      "env_key": "VITE_PROPERTY_TOKEN_ID",
+      "dependencies": [
+        "kyc_registry",
+        "compliance_engine"
+      ],
+      "deployment_mode": "constructor",
+      "constructor_args": {
+        "admin": "${admin}",
+        "kyc_registry": "${contract.kyc_registry}",
+        "compliance_engine": "${contract.compliance_engine}",
+        "meta": {
+          "property_id": "EXAMPLE-PROPERTY-001",
+          "legal_name": "Example Property Holdings LLC",
+          "jurisdiction": "US",
+          "address": "123 Example Street, Example City",
+          "total_valuation_usd": 25000000,
+          "total_shares": 2500000,
+          "property_type": "residential",
+          "ipfs_title_hash": "",
+          "kyc_tier_required": 1
+        }
+      },
+      "declared_metadata": {
+        "package": "property-token",
+        "role": "property_asset",
+        "fixture_property_id": "EXAMPLE-PROPERTY-001"
+      },
+      "health_check": {
+        "function": "total_shares",
+        "expectation": "integer"
+      }
+    }
+  ]
+}

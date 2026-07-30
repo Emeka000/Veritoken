@@ -6,6 +6,7 @@ import { useAddressValidation } from "../lib/useAddressValidation";
 import { useAmountValidation } from "../lib/validation";
 import { PageHeader, Card, Field, Icon } from "../components/ui";
 import { EventFeed } from "../components/EventFeed";
+import LockupStatusCard from "../components/LockupStatusCard";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../lib/toast";
@@ -365,6 +366,9 @@ export default function CarbonPage() {
         title="Carbon Credit Token"
         description="Issue verified carbon credits (1 token = 1 tonne CO₂e) and retire them with permanent on-chain receipts."
       />
+
+      {/* ── Lockup status panel ─────────────────────────────────────────── */}
+      {connected && address && <LockupStatusCard address={address} />}
 
       {registryUrl && (
         <div style={{ marginBottom: "1rem", fontSize: "0.85rem" }}>

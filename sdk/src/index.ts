@@ -54,6 +54,7 @@ export {
   encodeInvoiceMeta,
   encodePropertyMeta,
   encodeProjectMeta,
+  decodeTransferDecision,
 } from "./codec.js";
 
 // Typed error model
@@ -76,7 +77,19 @@ export type {
   KycStatus, KycRecord, InvoiceMeta, PropertyMeta, ProjectMeta,
   RetirementReceipt, ComplianceRules, TokenExportMetadata,
   TierPolicy, RiskConfig, KycStatusMirror, KycSyncStatus, Network, KnownNetwork,
+  LockupStatus, DenyReason, TransferDecision,
 } from "./types.js";
+
+// ── Alert detection (#444) ────────────────────────────────────────────────────
+export {
+  classifyDenyReason,
+  alertForDeniedTransfer,
+  alertForComplianceEvent,
+  isUnusualAmount,
+  alertForUnusualAmount,
+  ViolationTracker,
+} from "./alerts.js";
+export type { Alert, AlertSeverity, AlertCategory } from "./alerts.js";
 
 // ── Events ────────────────────────────────────────────────────────────────────
 export {

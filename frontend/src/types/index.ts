@@ -15,6 +15,12 @@ export type {
   RiskConfig,
   KycStatusMirror,
   KycSyncStatus,
+  LockupStatus,
+  DenyReason,
+  TransferDecision,
+  Alert,
+  AlertSeverity,
+  AlertCategory,
 } from "@veritoken/sdk";
 
 /** One recorded entry in the per-invoice state transition journal. */

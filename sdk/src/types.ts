@@ -1,5 +1,47 @@
 export type KycStatus = "Pending" | "Approved" | "Rejected" | "Revoked";
 
+/**
+ * Mirror of the compliance engine's `DenyReason` enum — the reason a
+ * transfer failed `evaluate_transfer`. All variants are fieldless, so (like
+ * `KycStatus`) each decodes to a plain string.
+ */
+export type DenyReason =
+  | "CompliancePaused"
+  | "FromBlocklisted"
+  | "ToBlocklisted"
+  | "FromKycMissing"
+  | "ToKycMissing"
+  | "FromKycExpired"
+  | "ToKycExpired"
+  | "FromKycRevoked"
+  | "ToKycRevoked"
+  | "FromKycRejected"
+  | "ToKycRejected"
+  | "FromKycPending"
+  | "ToKycPending"
+  | "FromJurisdictionBlocked"
+  | "ToJurisdictionBlocked"
+  | "SameJurisdictionRequired"
+  | "AmountExceeded"
+  | "HoldingPeriodNotMet"
+  | "MaxHoldersReached"
+  | "RecipientHoldingPeriodExceeded"
+  | "TierPolicyBlocked"
+  | "TierFromBelowMin"
+  | "TierToBelowMin"
+  | "TierAmountExceeded"
+  | "RiskScoreTooHigh";
+
+/**
+ * Decoded result of `ComplianceEngineClient.evaluateTransfer()` — the same
+ * check the compliance engine runs internally before a transfer executes,
+ * exposed as a read call so callers can pre-flight a transfer and explain
+ * *why* it would be denied instead of just getting a reverted transaction.
+ */
+export type TransferDecision =
+  | { allowed: true }
+  | { allowed: false; reason: DenyReason };
+
 export interface KycRecord {
   status: KycStatus;
   verifier: string;
@@ -64,6 +106,39 @@ export interface ComplianceRules {
   paused: boolean;
   allowlist_mode: boolean;
   max_holding_period: bigint;
+}
+
+/**
+ * A point-in-time view of an address's holding-period ("lockup") status,
+ * returned by `ComplianceEngineClient.getLockupStatus()`.
+ *
+ * All `bigint` timestamp/duration fields use `0n` to mean "not applicable" —
+ * mirroring the `ComplianceRules` convention where `0` means a rule is
+ * disabled — so callers never have to null-check.
+ */
+export interface LockupStatus {
+  /** Whether the address is a currently registered holder (has a balance). */
+  is_holder: boolean;
+  /** Unix timestamp the address became a holder, or `0n` if not a holder. */
+  holder_since: bigint;
+  /** The active `min_holding_period` rule, in seconds (`0n` = disabled). */
+  min_holding_period: bigint;
+  /** The active `max_holding_period` rule, in seconds (`0n` = disabled). */
+  max_holding_period: bigint;
+  /**
+   * Unix timestamp the address may transfer out, or `0n` if not locked by a
+   * minimum holding period.
+   */
+  min_release_at: bigint;
+  /**
+   * Unix timestamp by which the address must transfer out, or `0n` if no
+   * maximum holding period applies.
+   */
+  max_release_at: bigint;
+  /** `true` if the address is currently blocked from transferring out. */
+  locked: boolean;
+  /** Seconds remaining until `min_release_at`, or `0n` if not locked. */
+  seconds_until_unlock: bigint;
 }
 
 /**

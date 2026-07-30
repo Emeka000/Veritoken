@@ -21,6 +21,8 @@ import type {
   InvoiceMeta,
   PropertyMeta,
   ProjectMeta,
+  DenyReason,
+  TransferDecision,
 } from "./types.js";
 
 // ── Scalar helpers ────────────────────────────────────────────────────────────
@@ -176,4 +178,23 @@ export function encodeProjectMeta(meta: ProjectMeta): xdr.ScVal {
     ["verifier",       encodeString(meta.verifier)],
     ["vintage_year",   encodeU32(meta.vintage_year)],
   ]);
+}
+
+// ── Decode helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Decode the native value of `TransferDecision` returned by
+ * `evaluate_transfer` into a discriminated `{ allowed }` shape.
+ *
+ * Soroban encodes a Rust enum with a data-carrying variant (here,
+ * `Deny(DenyReason)`) as an XDR vec of `[variantName, ...fields]`;
+ * `scValToNative` mirrors that as a plain JS array, so the raw decoded value
+ * is `["Allow"]` or `["Deny", "SomeReason"]`.
+ */
+export function decodeTransferDecision(raw: unknown): TransferDecision {
+  const [tag, reason] = Array.isArray(raw) ? raw : [raw];
+  if (tag === "Deny" && typeof reason === "string") {
+    return { allowed: false, reason: reason as DenyReason };
+  }
+  return { allowed: true };
 }

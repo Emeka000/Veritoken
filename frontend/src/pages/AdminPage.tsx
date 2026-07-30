@@ -13,6 +13,7 @@ import { contracts } from "../lib/contracts/index";
 import { GovernanceLog, recordGovernanceAction } from "../components/GovernanceLog";
 import { SessionHistory } from "../components/SessionHistory";
 import { useRateLimitedAction } from "../lib/rateLimit";
+import { startComplianceAlertMonitor } from "../lib/alertMonitor";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -87,6 +88,9 @@ export default function AdminPage() {
   const [addAddress, setAddAddress] = useState("");
   const [addLoading, setAddLoading] = useState(false);
   const [removeLoading, setRemoveLoading] = useState<string | null>(null);
+
+  // Automated alerting for compliance rule violations and suspicious activity (#444)
+  useEffect(() => startComplianceAlertMonitor(), []);
 
   const fetchRules = useCallback(async () => {
     if (!CONTRACT_IDS.complianceEngine) return;

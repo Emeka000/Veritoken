@@ -1,6 +1,6 @@
 import type { rpc } from "@stellar/stellar-sdk";
 import { BaseContractClient, type SignTx } from "./base.js";
-import type { ComplianceRules, TierPolicy, RiskConfig } from "../types.js";
+import type { ComplianceRules, TierPolicy, RiskConfig, LockupStatus, TransferDecision } from "../types.js";
 import { checkHealth, type ContractHealth, type HealthCheckOptions } from "../health.js";
 import {
   encodeAddress,
@@ -10,6 +10,7 @@ import {
   encodeComplianceRules,
   encodeTierPolicy,
   encodeRiskConfig,
+  decodeTransferDecision,
 } from "../codec.js";
 
 export class ComplianceEngineClient extends BaseContractClient {
@@ -63,8 +64,36 @@ export class ComplianceEngineClient extends BaseContractClient {
     ]);
   }
 
+  /**
+   * Pre-flight a transfer against every compliance rule and return *why* it
+   * would be denied, if it would be. Unlike `canTransfer()` (which only
+   * returns a boolean), this is the basis for actionable alerting — callers
+   * can surface the specific `DenyReason` instead of a generic failure.
+   */
+  async evaluateTransfer(
+    from: string,
+    to: string,
+    amount: bigint,
+  ): Promise<TransferDecision> {
+    const raw = await this.read<unknown>("evaluate_transfer", [
+      encodeAddress(from),
+      encodeAddress(to),
+      encodeI128(amount),
+    ]);
+    return decodeTransferDecision(raw);
+  }
+
   async holderCount(): Promise<number> {
     return this.read<number>("holder_count", []);
+  }
+
+  /**
+   * Read `addr`'s holding-period ("lockup") status: whether it is currently
+   * locked by `min_holding_period`, when it unlocks, and (if
+   * `max_holding_period` is set) the deadline by which it must transfer out.
+   */
+  async getLockupStatus(addr: string): Promise<LockupStatus> {
+    return this.read<LockupStatus>("lockup_status", [encodeAddress(addr)]);
   }
 
   async blocklistCount(): Promise<number> {

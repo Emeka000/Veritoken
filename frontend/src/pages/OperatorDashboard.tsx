@@ -18,6 +18,7 @@ import { fetchContractEvents, CONTRACT_IDS } from "../lib/stellar";
 import { contracts } from "../lib/contracts/index";
 import { Card, Icon, Skeleton } from "../components/ui";
 import { EventFeed } from "../components/EventFeed";
+import { startComplianceAlertMonitor } from "../lib/alertMonitor";
 import type { ContractEvent } from "../types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -233,6 +234,9 @@ const AUTO_REFRESH_MS = 30_000;
 export default function OperatorDashboard() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>();
+
+  // Automated alerting for compliance rule violations and suspicious activity (#444)
+  useEffect(() => startComplianceAlertMonitor(), []);
 
   // Per-contract health signals
   const [signals, setSignals] = useState<ContractHealthSignal[]>([

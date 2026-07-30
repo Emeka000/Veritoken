@@ -9,7 +9,7 @@
  */
 
 import type { rpc } from "@stellar/stellar-sdk";
-import type { ComplianceRules, TierPolicy, RiskConfig } from "../../types";
+import type { ComplianceRules, TierPolicy, RiskConfig, LockupStatus, TransferDecision } from "../../types";
 import {
   readCall,
   writeCall,
@@ -24,6 +24,7 @@ import {
   encodeComplianceRules,
   encodeRiskConfig,
   encodeTierPolicy,
+  decodeTransferDecision,
 } from "@veritoken/sdk";
 
 // ── Internal map builder ──────────────────────────────────────────────────────
@@ -70,6 +71,21 @@ export class ComplianceEngineClient {
   /** Returns the current count of registered holders. */
   async holderCount(): Promise<number> {
     return readCall<number>(this.server, this.contractId, "holder_count", []);
+  }
+
+  /**
+   * Pre-flight a transfer against every compliance rule and return *why* it
+   * would be denied, if it would be. Unlike `canTransfer()` (which only
+   * returns a boolean), this is the basis for actionable alerting — callers
+   * can surface the specific reason instead of a generic failure.
+   */
+  async evaluateTransfer(from: string, to: string, amount: bigint): Promise<TransferDecision> {
+    const raw = await readCall<unknown>(this.server, this.contractId, "evaluate_transfer", [
+      toAddress(from),
+      toAddress(to),
+      toI128(amount),
+    ]);
+    return decodeTransferDecision(raw);
   }
 
   /**
@@ -122,6 +138,17 @@ export class ComplianceEngineClient {
     return readCall<string[]>(this.server, this.contractId, "get_blocklist", [
       toU32(start),
       toU32(limit),
+    ]);
+  }
+
+  /**
+   * Returns `addr`'s holding-period ("lockup") status: whether it is
+   * currently locked by `min_holding_period`, when it unlocks, and (if
+   * `max_holding_period` is set) the deadline by which it must transfer out.
+   */
+  async getLockupStatus(addr: string): Promise<LockupStatus> {
+    return readCall<LockupStatus>(this.server, this.contractId, "lockup_status", [
+      toAddress(addr),
     ]);
   }
 

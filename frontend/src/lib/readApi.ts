@@ -22,6 +22,7 @@ import type {
   TierPolicy,
   RiskConfig,
   TokenExportMetadata,
+  LockupStatus,
 } from "../types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ export interface HolderSnapshot {
   rwaBalance: bigint;
   rwaFrozen: boolean;
   kycSyncStatus: KycSyncStatus | null;
+  lockupStatus: LockupStatus | null;
   fetchedAt: string;
 }
 
@@ -173,7 +175,7 @@ async function globalSnapshot(): Promise<GlobalSnapshot> {
  */
 async function holderSnapshot(address: string): Promise<HolderSnapshot> {
   const fetchedAt = new Date().toISOString();
-  const [kycRecord, kycSyncStatus, rwaBalance, rwaFrozen] = await Promise.all([
+  const [kycRecord, kycSyncStatus, rwaBalance, rwaFrozen, lockupStatus] = await Promise.all([
     safeCall(() => contracts.kyc.getRecord(address), null),
     safeCall(
       () => (CONTRACT_IDS.rwaToken ? contracts.rwa.checkKycStatus(address) : Promise.resolve(null)),
@@ -187,6 +189,7 @@ async function holderSnapshot(address: string): Promise<HolderSnapshot> {
     ),
     // Freeze status is not yet available via a read call — return safe default.
     Promise.resolve(false),
+    safeCall(() => contracts.compliance.getLockupStatus(address), null),
   ]);
 
   return {
@@ -198,6 +201,7 @@ async function holderSnapshot(address: string): Promise<HolderSnapshot> {
     rwaBalance,
     rwaFrozen,
     kycSyncStatus,
+    lockupStatus,
     fetchedAt,
   };
 }

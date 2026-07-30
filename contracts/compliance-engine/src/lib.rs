@@ -109,6 +109,35 @@ pub struct ComplianceRules {
     pub max_holding_period: u64,
 }
 
+/// A point-in-time view of an address's holding-period ("lockup") status.
+///
+/// All `u64` timestamp/duration fields use `0` to mean "not applicable" —
+/// mirroring the `ComplianceRules` convention where `0` means a rule is
+/// disabled — so callers never have to unwrap an `Option`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LockupStatus {
+    /// Whether the address is a currently registered holder (has a balance).
+    pub is_holder: bool,
+    /// Unix timestamp the address became a holder, or `0` if not a holder.
+    pub holder_since: u64,
+    /// The active `min_holding_period` rule, in seconds (`0` = disabled).
+    pub min_holding_period: u64,
+    /// The active `max_holding_period` rule, in seconds (`0` = disabled).
+    pub max_holding_period: u64,
+    /// Unix timestamp the address may transfer out, or `0` if not locked by a
+    /// minimum holding period.
+    pub min_release_at: u64,
+    /// Unix timestamp by which the address must transfer out, or `0` if no
+    /// maximum holding period applies.
+    pub max_release_at: u64,
+    /// `true` if the address is currently blocked from transferring out by
+    /// `min_holding_period`.
+    pub locked: bool,
+    /// Seconds remaining until `min_release_at`, or `0` if not locked.
+    pub seconds_until_unlock: u64,
+}
+
 // ── Versioned policy history types ───────────────────────────────────────────
 
 /// The kind of state change that produced a policy version entry.
@@ -642,6 +671,47 @@ impl ComplianceEngine {
     pub fn holder_count(env: Env) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage().instance().get(&DataKey::HolderCount).unwrap_or(0)
+    }
+
+    /// Read the holding-period ("lockup") status for `addr`: whether it is
+    /// currently locked by `min_holding_period`, when it unlocks, and (if
+    /// `max_holding_period` is set) the deadline by which it must transfer
+    /// out. See [`LockupStatus`] for field semantics.
+    pub fn lockup_status(env: Env, addr: Address) -> LockupStatus {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let key = DataKey::HolderSince(addr);
+        let is_holder = env.storage().persistent().has(&key);
+        let since: u64 = if is_holder {
+            env.storage().persistent().get(&key).unwrap_or(0)
+        } else {
+            0
+        };
+        let rules: ComplianceRules = env.storage().instance().get(&DataKey::Rules).unwrap();
+        let now = env.ledger().timestamp();
+
+        let min_release_at = if is_holder && rules.min_holding_period > 0 {
+            since.saturating_add(rules.min_holding_period)
+        } else {
+            0
+        };
+        let max_release_at = if is_holder && rules.max_holding_period > 0 {
+            since.saturating_add(rules.max_holding_period)
+        } else {
+            0
+        };
+        let locked = min_release_at > 0 && now < min_release_at;
+        let seconds_until_unlock = if locked { min_release_at - now } else { 0 };
+
+        LockupStatus {
+            is_holder,
+            holder_since: since,
+            min_holding_period: rules.min_holding_period,
+            max_holding_period: rules.max_holding_period,
+            min_release_at,
+            max_release_at,
+            locked,
+            seconds_until_unlock,
+        }
     }
 
     // ── Policy history query surface ──────────────────────────────────────────
