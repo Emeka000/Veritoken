@@ -3,6 +3,7 @@ import { useWallet } from "../lib/wallet";
 import { contracts } from "../lib/contracts/index";
 import { CONTRACT_IDS } from "../lib/stellar";
 import { Card, Skeleton } from "./ui";
+import { formatTokenAmount, formatStroops, getPrecisionWarning } from "../lib/numericFormat";
 import type { KycRecord } from "../types";
 
 const THIRTY_DAYS_S = 30 * 24 * 60 * 60;
@@ -167,12 +168,18 @@ export default function StatusCard() {
 
 function BalanceCell({ label, value, stroops }: { label: string; value: bigint; stroops?: boolean }) {
   const display = stroops
-    ? `${(Number(value) / 1e7).toFixed(7)} XLM`
-    : value.toString();
+    ? formatStroops(value)
+    : formatTokenAmount(value, 7);
+  const warning = getPrecisionWarning(value);
   return (
     <div style={{ padding: "0.6rem 0.75rem", borderRadius: 10, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
       <div className="muted" style={{ fontSize: "0.72rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</div>
       <div style={{ fontSize: "1.1rem", fontWeight: 700, marginTop: "0.25rem" }}>{display}</div>
+      {warning && (
+        <div style={{ fontSize: "0.65rem", color: "var(--warning, #f59e0b)", marginTop: "0.2rem" }} title={warning}>
+          ⚠ precision note
+        </div>
+      )}
     </div>
   );
 }

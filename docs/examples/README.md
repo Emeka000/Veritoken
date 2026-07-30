@@ -66,3 +66,8 @@ export VITE_RWA_TOKEN_ID=C...
 
 Or copy `frontend/.env` values and `source` the file after prefixing with
 `export`.
+
+---
+
+Looking for community-built integrations or more advanced usage patterns?
+See [docs/community-showcase.md](../community-showcase.md).
