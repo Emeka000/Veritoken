@@ -12,6 +12,7 @@ import { useToast } from "../lib/toast";
 import { contracts } from "../lib/contracts/index";
 import { GovernanceLog, recordGovernanceAction } from "../components/GovernanceLog";
 import { SessionHistory } from "../components/SessionHistory";
+import { useRateLimitedAction } from "../lib/rateLimit";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -174,7 +175,7 @@ export default function AdminPage() {
     onConfirm: () => void;
   } | null>(null);
 
-  const handleSaveRules = (e: React.FormEvent) => {
+  const saveRulesAction = (e: React.FormEvent) => {
     e.preventDefault();
     const actionLabel = proposeMode && ruleChangeDelay > 0 ? "Propose Rule Change" : "Save Rules (Immediate)";
     const delayNote = proposeMode && ruleChangeDelay > 0
@@ -235,7 +236,7 @@ export default function AdminPage() {
     });
   };
 
-  const handlePause = () =>
+  const pauseAction = () =>
     setConfirm({
       title: "Pause All Transfers",
       description: "This will immediately halt every token transfer across all asset contracts. The pause state is coordinated through the compliance engine — all contracts check it before allowing transfers.",
@@ -258,7 +259,7 @@ export default function AdminPage() {
       },
     });
 
-  const handleUnpause = () =>
+  const unpauseAction = () =>
     setConfirm({
       title: "Unpause Transfers",
       description: "This will re-enable token transfers across all asset contracts.",
@@ -294,7 +295,7 @@ export default function AdminPage() {
     }
   };
 
-  const handleAddToBlocklist = async (e: React.FormEvent) => {
+  const addToBlocklistAction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!addAddress || !address) return;
     setAddLoading(true);
@@ -325,6 +326,16 @@ export default function AdminPage() {
       setRemoveLoading(null);
     }
   };
+
+  // Rate limiting / spam protection (#449) — throttle the transaction-triggering
+  // entry points to this panel so accidental rapid re-submission is suppressed
+  // with visible cooldown feedback rather than firing duplicate transactions.
+  const suppressedToast = () =>
+    addToast("Please wait a few seconds before trying again.", "info");
+  const saveRules = useRateLimitedAction(saveRulesAction, { onSuppressed: suppressedToast });
+  const pause = useRateLimitedAction(pauseAction, { onSuppressed: suppressedToast });
+  const unpause = useRateLimitedAction(unpauseAction, { onSuppressed: suppressedToast });
+  const addToBlocklist = useRateLimitedAction(addToBlocklistAction, { onSuppressed: suppressedToast });
 
   const canActivateNow = pendingRules !== null &&
     Math.floor(Date.now() / 1000) >= pendingRules.activateAt;
@@ -361,21 +372,29 @@ export default function AdminPage() {
         >
           <div style={{ display: "flex", gap: "1rem", marginBottom: "1.25rem" }}>
             <button
-              onClick={handlePause}
+              onClick={pause.run}
               className="btn-danger"
               style={{ flex: 1 }}
-              disabled={isPaused || pauseLoading}
+              disabled={isPaused || pauseLoading || pause.isCoolingDown}
             >
               <Icon.bolt size={15} style={{ display: "inline", verticalAlign: "-2px", marginRight: 6 }} />
-              {pauseLoading && !isPaused ? "Pausing…" : "Pause All Transfers"}
+              {pauseLoading && !isPaused
+                ? "Pausing…"
+                : pause.isCoolingDown
+                ? `Wait ${Math.ceil(pause.remainingMs / 1000)}s`
+                : "Pause All Transfers"}
             </button>
             <button
-              onClick={handleUnpause}
+              onClick={unpause.run}
               className="btn-success"
               style={{ flex: 1 }}
-              disabled={!isPaused || pauseLoading}
+              disabled={!isPaused || pauseLoading || unpause.isCoolingDown}
             >
-              {pauseLoading && isPaused ? "Unpausing…" : "Unpause Transfers"}
+              {pauseLoading && isPaused
+                ? "Unpausing…"
+                : unpause.isCoolingDown
+                ? `Wait ${Math.ceil(unpause.remainingMs / 1000)}s`
+                : "Unpause Transfers"}
             </button>
           </div>
           <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.75rem" }}>
@@ -485,7 +504,7 @@ export default function AdminPage() {
             <SkeletonForm fields={5} />
           </div>
         ) : (
-          <form onSubmit={handleSaveRules}>
+          <form onSubmit={saveRules.run}>
             <Field
               label="Max Transfer Amount (0 = unlimited, in stroops)"
               type="number"
@@ -516,8 +535,10 @@ export default function AdminPage() {
               </span>
             </label>
             <WalletGuard>
-              <button type="submit" className="btn-block">
-                {proposeMode && ruleChangeDelay > 0 ? "Propose Rule Change" : "Save Rules"}
+              <button type="submit" className="btn-block" disabled={saveRules.isCoolingDown}>
+                {saveRules.isCoolingDown
+                  ? `Wait ${Math.ceil(saveRules.remainingMs / 1000)}s`
+                  : proposeMode && ruleChangeDelay > 0 ? "Propose Rule Change" : "Save Rules"}
               </button>
             </WalletGuard>
           </form>
@@ -573,7 +594,7 @@ export default function AdminPage() {
             )}
 
             <WalletGuard>
-              <form onSubmit={handleAddToBlocklist} style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <form onSubmit={addToBlocklist.run} style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                 <AddressInput
                   label="Add address to blocklist"
                   value={addAddress}
@@ -584,10 +605,14 @@ export default function AdminPage() {
                 <button
                   type="submit"
                   className="btn-danger"
-                  disabled={addLoading || !addAddress}
+                  disabled={addLoading || !addAddress || addToBlocklist.isCoolingDown}
                   style={{ alignSelf: "flex-start" }}
                 >
-                  {addLoading ? "Adding…" : "Add to Blocklist"}
+                  {addLoading
+                    ? "Adding…"
+                    : addToBlocklist.isCoolingDown
+                    ? `Wait ${Math.ceil(addToBlocklist.remainingMs / 1000)}s`
+                    : "Add to Blocklist"}
                 </button>
               </form>
             </WalletGuard>

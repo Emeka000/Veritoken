@@ -5,14 +5,15 @@ interface CopyButtonProps {
   label?: string;
   className?: string;
   style?: React.CSSProperties;
+  onCopy?: () => void;
 }
 
-export function CopyButton({ text, label, className, style }: CopyButtonProps) {
+export function CopyButton({ text, label, className, style, onCopy }: CopyButtonProps) {
   const { copied, copy } = useClipboard();
 
   return (
     <button
-      onClick={() => copy(text)}
+      onClick={() => copy(text).then((ok) => ok && onCopy?.())}
       aria-label={label ?? `Copy ${text}`}
       className={className}
       style={{

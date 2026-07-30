@@ -69,6 +69,10 @@ pub enum RwaError {
     BatchAmountOverflow = 21,
     /// The complete transfer plan would exceed the configured holder cap.
     HolderLimitExceeded = 22,
+    /// A migration was attempted with the same version that is already stored.
+    MigrationVersionConflict = 23,
+    /// A numeric schema migration must increment the version by exactly one.
+    MigrationVersionNotSequential = 24,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -705,7 +709,7 @@ impl RwaToken {
         admin::consume_nonce(&env, nonce);
         let current = versioning::read_version(&env);
         if new_version == current {
-            panic_with_error!(env, RwaError::MigrationVersionConflict);
+            panic_with_error!(env, RwaError::MigrationVersionConflict)
         }
         versioning::apply_migration(&env, new_version.clone(), description);
         env.events()

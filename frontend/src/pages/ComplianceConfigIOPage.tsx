@@ -12,6 +12,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import HelpPanel from "../components/HelpPanel";
 import { useToast } from "../lib/toast";
 import { readApi } from "../lib/readApi";
+import { contracts } from "../lib/contracts/index";
 import {
   exportConfig,
   downloadConfigJson,
@@ -19,6 +20,13 @@ import {
   configToRules,
   type ComplianceConfigExport,
 } from "../lib/complianceConfig";
+import {
+  createSnapshot,
+  addSnapshot,
+  removeSnapshot,
+  listSnapshots,
+  type AdminSnapshot,
+} from "../lib/snapshots";
 import { useNetworkStore } from "../lib/networkStore";
 import type { ComplianceRules, TierPolicy } from "../types";
 
@@ -40,6 +48,10 @@ const HELP_ITEMS = [
   {
     heading: "Is the paused flag included?",
     body: "Yes — the exported file captures the full rule set, including the paused flag. Importing into a live environment while paused is true will immediately pause that environment when applied.",
+  },
+  {
+    heading: "How do state snapshots and restore work? (issue #448)",
+    body: "\"Take snapshot now\" captures the live compliance rules, tier policies, risk config, and blocklist into a local, timestamped record you can come back to later. Restoring a snapshot loads it into the same preview/apply flow used for file import above — it never writes on-chain by itself. Before applying, review the preview, confirm your wallet is connected to the intended network, and note that a paused=true snapshot will immediately re-pause transfers on apply (the same warning shown for file imports). Snapshots are stored only in this browser; they are not shared across devices.",
   },
 ];
 
@@ -115,6 +127,12 @@ export default function ComplianceConfigIOPage() {
   const [applyLoading, setApplyLoading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
+  // Snapshot state (issue #448)
+  const [snapshots, setSnapshots] = useState<AdminSnapshot[]>(() => listSnapshots());
+  const [snapshotLabel, setSnapshotLabel] = useState("Snapshot");
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+
   // ── Export ──────────────────────────────────────────────────────────────
   const handleExport = async () => {
     setExportLoading(true);
@@ -137,6 +155,46 @@ export default function ComplianceConfigIOPage() {
     } finally {
       setExportLoading(false);
     }
+  };
+
+  // ── Snapshots (issue #448) ────────────────────────────────────────────────
+  const handleTakeSnapshot = async () => {
+    setSnapshotLoading(true);
+    try {
+      const [compSnap, polSnap, blocklist] = await Promise.all([
+        readApi.complianceSnapshot(),
+        readApi.policySnapshot(),
+        contracts.compliance.getBlocklist(0, 50),
+      ]);
+      if (!compSnap.rules) throw new Error("Compliance rules not available — is the contract deployed?");
+      const snapshot = createSnapshot(
+        snapshotLabel.trim() || "Snapshot",
+        network,
+        compSnap.rules,
+        polSnap.tierPolicies,
+        polSnap.riskConfig,
+        blocklist,
+      );
+      addSnapshot(snapshot);
+      setSnapshots(listSnapshots());
+      addToast("Snapshot captured.", "success");
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Snapshot failed.", "error");
+    } finally {
+      setSnapshotLoading(false);
+    }
+  };
+
+  const handleDeleteSnapshot = (id: string) => {
+    removeSnapshot(id);
+    setSnapshots(listSnapshots());
+    if (previewId === id) setPreviewId(null);
+  };
+
+  const handleRestoreSnapshot = (snapshot: AdminSnapshot) => {
+    setImportError(null);
+    setImportedConfig(snapshot.config);
+    addToast("Snapshot loaded — review it below, then Apply.", "info");
   };
 
   // ── Import (file pick) ──────────────────────────────────────────────────
@@ -272,6 +330,81 @@ export default function ComplianceConfigIOPage() {
                   </button>
                 </WalletGuard>
               </>
+            )}
+          </div>
+        </Card>
+
+        {/* ── State snapshots card (issue #448) ───────────────────────── */}
+        <Card
+          title="State Snapshots"
+          subtitle="Capture and restore the compliance rules, tier policies, risk config, and blocklist at a point in time."
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+            <div style={{ display: "flex", gap: "0.6rem", alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div className="field" style={{ flex: 1, minWidth: 200, margin: 0 }}>
+                <label htmlFor="snapshot-label">Snapshot label</label>
+                <input
+                  id="snapshot-label"
+                  type="text"
+                  value={snapshotLabel}
+                  onChange={(e) => setSnapshotLabel(e.target.value)}
+                  placeholder="e.g. Pre-migration baseline"
+                  maxLength={80}
+                />
+              </div>
+              <button onClick={handleTakeSnapshot} disabled={snapshotLoading}>
+                {snapshotLoading ? "Capturing…" : "Take snapshot now"}
+              </button>
+            </div>
+
+            {snapshots.length === 0 ? (
+              <p className="muted" style={{ fontSize: "0.845rem" }}>
+                No snapshots yet. Snapshots are stored in this browser only.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                {snapshots.map((s) => (
+                  <div key={s.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "0.7rem 0.85rem" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontSize: "0.9rem", fontWeight: 600 }}>{s.label}</div>
+                        <div style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
+                          {s.network} · {new Date(s.createdAt).toLocaleString()}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: "0.4rem" }}>
+                        <button
+                          className="btn-ghost"
+                          style={{ fontSize: "0.78rem", padding: "0.3rem 0.7rem" }}
+                          onClick={() => setPreviewId(previewId === s.id ? null : s.id)}
+                        >
+                          {previewId === s.id ? "Hide" : "Preview"}
+                        </button>
+                        <WalletGuard>
+                          <button
+                            style={{ fontSize: "0.78rem", padding: "0.3rem 0.7rem" }}
+                            onClick={() => handleRestoreSnapshot(s)}
+                          >
+                            Restore
+                          </button>
+                        </WalletGuard>
+                        <button
+                          className="btn-danger"
+                          style={{ fontSize: "0.78rem", padding: "0.3rem 0.7rem" }}
+                          onClick={() => handleDeleteSnapshot(s.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                    {previewId === s.id && (
+                      <div style={{ marginTop: "0.75rem", borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
+                        <ConfigPreview config={s.config} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </Card>

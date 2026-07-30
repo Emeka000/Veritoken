@@ -38,8 +38,8 @@ export interface ComplianceConfigExport {
   network: string;
   rules: {
     max_transfer_amount: string; // decimal string
-    min_holding_period: number;
-    max_holding_period: number;
+    min_holding_period: string; // decimal string
+    max_holding_period: string; // decimal string
     max_holders: number;
     require_same_jurisdiction: boolean;
     paused: boolean;
@@ -64,8 +64,8 @@ export function exportConfig(
     network: opts.network ?? "unknown",
     rules: {
       max_transfer_amount: String(rules.max_transfer_amount),
-      min_holding_period: Number(rules.min_holding_period),
-      max_holding_period: Number(rules.max_holding_period),
+      min_holding_period: String(rules.min_holding_period),
+      max_holding_period: String(rules.max_holding_period),
       max_holders: rules.max_holders,
       require_same_jurisdiction: rules.require_same_jurisdiction,
       paused: rules.paused,

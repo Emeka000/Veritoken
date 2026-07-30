@@ -105,6 +105,10 @@ export type {
 } from "./eventParser.js";
 export type { GetContractEventsOptions } from "./clients/base.js";
 
+// ── Health and analytics (#400) ────────────────────────────────────────────────
+export { checkHealth } from "./health.js";
+export type { ContractHealth, HealthCheckOptions } from "./health.js";
+
 // ── Auth helpers (#397) ─────────────────────────────────────────────────────────
 export {
   isValidAddress, assertValidAddress, isUnauthorizedError,

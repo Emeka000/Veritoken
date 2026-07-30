@@ -1,6 +1,7 @@
 import type { rpc } from "@stellar/stellar-sdk";
 import { BaseContractClient, type SignTx } from "./base.js";
 import type { TokenExportMetadata, KycSyncStatus } from "../types.js";
+import { checkHealth, type ContractHealth, type HealthCheckOptions } from "../health.js";
 import {
   encodeAddress,
   encodeI128,
@@ -16,6 +17,22 @@ export class RwaTokenClient extends BaseContractClient {
     networkPassphrase: string,
   ) {
     super(contractId, server, networkPassphrase, "rwa");
+  }
+
+  // ── Health / analytics (#400) ─────────────────────────────────────────────
+
+  /**
+   * Return operational health signals for the RWA token.
+   * Extends the base signals with `totalSupply`.
+   */
+  async health(opts: HealthCheckOptions = {}): Promise<ContractHealth & { totalSupply: bigint | null }> {
+    const base = await checkHealth(this.server, this.contractId, opts);
+    if (!base.reachable) return { ...base, totalSupply: null };
+    const result = await Promise.allSettled([this.totalSupply()]);
+    return {
+      ...base,
+      totalSupply: result[0].status === "fulfilled" ? result[0].value : null,
+    };
   }
 
   // ── Read API ──────────────────────────────────────────────────────────────
