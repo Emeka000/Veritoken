@@ -8,11 +8,17 @@ import { SkeletonCard, SkeletonForm } from "../components/SkeletonPatterns";
 import { AddressInput } from "../components/AddressInput";
 import WalletGuard from "../components/WalletGuard";
 import ConfirmDialog from "../components/ConfirmDialog";
+import ConflictWarningBanner from "../components/ConflictWarningBanner";
 import { useToast } from "../lib/toast";
 import { contracts } from "../lib/contracts/index";
 import { GovernanceLog, recordGovernanceAction } from "../components/GovernanceLog";
 import { SessionHistory } from "../components/SessionHistory";
 import { useRateLimitedAction } from "../lib/rateLimit";
+import {
+  detectConflicts,
+  registerPendingAction,
+  resolveAction,
+} from "../lib/conflictDetection";
 import type { ComplianceRules, ContractEvent } from "../types";
 
 interface RulesFormState {
@@ -236,51 +242,67 @@ export default function AdminPage() {
     });
   };
 
-  const pauseAction = () =>
+  const pauseAction = () => {
+    const conflicts = detectConflicts("pause", isPaused, pendingRules !== null);
+    if (conflicts.some((w) => w.severity === "blocking")) return;
     setConfirm({
       title: "Pause All Transfers",
       description: "This will immediately halt every token transfer across all asset contracts. The pause state is coordinated through the compliance engine — all contracts check it before allowing transfers.",
       onConfirm: async () => {
         setConfirm(null);
         setPauseLoading(true);
+        if (address) {
+          registerPendingAction({ type: "pause", initiatedBy: address, initiatedAt: Date.now(), description: "Emergency pause" });
+        }
         try {
           if (address) {
             await contracts.compliance.pause(address, signTx);
             recordGovernanceAction("pause", address, "All transfers paused across every asset contract.");
           }
+          resolveAction("pause");
           setIsPaused(true);
           addToast("All transfers paused.", "info");
           await fetchRules();
         } catch (err) {
+          resolveAction("pause");
           addToast(err instanceof Error ? err.message : "Failed to pause transfers.", "error");
         } finally {
           setPauseLoading(false);
         }
       },
     });
+  };
 
-  const unpauseAction = () =>
+  const unpauseAction = () => {
+    const conflicts = detectConflicts("unpause", isPaused, pendingRules !== null);
+    if (conflicts.some((w) => w.severity === "blocking")) return;
     setConfirm({
       title: "Unpause Transfers",
       description: "This will re-enable token transfers across all asset contracts.",
       onConfirm: async () => {
         setConfirm(null);
         setPauseLoading(true);
+        if (address) {
+          registerPendingAction({ type: "unpause", initiatedBy: address, initiatedAt: Date.now(), description: "Unpause transfers" });
+        }
         try {
           if (address) {
             await contracts.compliance.unpause(address, signTx);
             recordGovernanceAction("unpause", address, "Transfers re-enabled across every asset contract.");
           }
+          resolveAction("unpause");
           setIsPaused(false);
           addToast("Transfers unpaused.", "success");
           await fetchRules();
         } catch (err) {
+          resolveAction("unpause");
           addToast(err instanceof Error ? err.message : "Failed to unpause transfers.", "error");
         } finally {
           setPauseLoading(false);
         }
       },
     });
+  };
 
   const refreshBlocklist = async () => {
     try {
@@ -370,6 +392,7 @@ export default function AdminPage() {
           subtitle="Pause coordinates across all asset contracts via the compliance engine"
           style={{ marginBottom: "1.25rem" }}
         >
+          <ConflictWarningBanner warnings={detectConflicts("pause", isPaused, pendingRules !== null)} />
           <div style={{ display: "flex", gap: "1rem", marginBottom: "1.25rem" }}>
             <button
               onClick={pause.run}
@@ -466,6 +489,7 @@ export default function AdminPage() {
       )}
 
       <Card title="Compliance Rules">
+        <ConflictWarningBanner warnings={detectConflicts(proposeMode ? "rules_propose" : "rules_immediate", isPaused, pendingRules !== null)} />
         {/* #368 — rule-change delay info + mode toggle */}
         <div style={styles.delayInfo}>
           <span style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
