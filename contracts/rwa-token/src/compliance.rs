@@ -220,6 +220,14 @@ mod compliance_interface {
     #[allow(dead_code)]
     pub trait ComplianceEngineInterface {
         fn can_transfer(env: soroban_sdk::Env, from: Address, to: Address, amount: i128) -> bool;
+        /// Evaluates a transfer against all compliance rules including KYC state.
+        /// Returns `TransferDecision::Allow` or `TransferDecision::Deny(reason)`.
+        fn evaluate_transfer(
+            env: soroban_sdk::Env,
+            from: Address,
+            to: Address,
+            amount: i128,
+        ) -> TransferDecision;
         fn get_rules(env: soroban_sdk::Env) -> super::ComplianceRulesMirror;
         fn register_holder(env: soroban_sdk::Env, addr: &Address);
         fn unregister_holder(env: soroban_sdk::Env, addr: &Address);

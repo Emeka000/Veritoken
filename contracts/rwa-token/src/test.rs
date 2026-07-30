@@ -1605,3 +1605,280 @@ fn test_migrate_schema_state_continuity() {
     assert_eq!(h.token.balance(&user), 1_000);
     assert_eq!(h.token.schema_version(), 2u32);
 }
+
+// ── Atomic batch invariant regression suite ───────────────────────────────────
+// These tests directly verify the acceptance criteria from the batch-atomicity
+// refactor: a failed batch leaves token balances, allowances, and holder state
+// completely unchanged.
+
+/// Frozen recipient in the *middle* of a 3-entry batch.
+/// The first entry (bob) would succeed on its own; the second (eve, frozen)
+/// fails during the validation pass; the third (carol) never executes.
+/// All balances and holder-count must be untouched.
+#[test]
+fn test_batch_transfer_frozen_recipient_in_middle_leaves_no_partial_state() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let eve = Address::generate(&h.env); // frozen — sits in the middle
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&eve);
+    h.approve_kyc(&carol);
+    h.mint(&alice, 1_000);
+    h.freeze(&eve);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 200 },
+        RecipientEntry { to: eve.clone(), amount: 100 }, // frozen → validation fails
+        RecipientEntry { to: carol.clone(), amount: 300 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    // Invariant: no balance or holder state must have changed.
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&eve), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.token.total_supply(), 1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+/// Expired-KYC recipient in the middle of a 3-entry batch.
+/// KYC is approved with a near-future expiry, then the ledger is advanced
+/// past the expiry. The batch must be rejected entirely.
+#[test]
+fn test_batch_transfer_expired_kyc_recipient_in_middle_leaves_no_partial_state() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let eve = Address::generate(&h.env); // KYC will expire
+    let carol = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+
+    // Give eve a short-lived KYC that expires at t=1_000.
+    h.env.ledger().set_timestamp(500);
+    h.kyc.approve(
+        &h.verifier,
+        &eve,
+        &1,
+        &1_000, // expires at t=1000
+        &String::from_str(&h.env, "US"),
+    );
+
+    h.mint(&alice, 1_000);
+
+    // Advance time past eve's expiry.
+    h.env.ledger().set_timestamp(1_500);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 200 },
+        RecipientEntry { to: eve.clone(), amount: 100 }, // expired KYC → fails
+        RecipientEntry { to: carol.clone(), amount: 300 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&eve), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.token.total_supply(), 1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+/// Integration invariant: total supply, per-account balances, and holder count
+/// are all consistent after a batch that fails due to insufficient balance.
+#[test]
+fn test_batch_transfer_insufficient_balance_invariants_total_supply_and_holder_count() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let carol = Address::generate(&h.env);
+    let dave = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.approve_kyc(&dave);
+
+    h.mint(&alice, 500); // deliberately less than the 600 total below
+
+    let supply_before = h.token.total_supply();
+    let holders_before = h.compliance.holder_count();
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 200 },
+        RecipientEntry { to: carol.clone(), amount: 200 },
+        RecipientEntry { to: dave.clone(), amount: 200 }, // total 600 > 500
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    // All three invariants must hold after the failed batch.
+    assert_eq!(h.token.total_supply(), supply_before);
+    assert_eq!(h.token.balance(&alice), 500);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.token.balance(&dave), 0);
+    assert_eq!(h.compliance.holder_count(), holders_before);
+}
+
+/// `batch_transfer_from`: a mid-batch KYC failure must leave the allowance,
+/// all balances, and holder count unchanged.
+#[test]
+fn test_batch_transfer_from_mid_batch_kyc_failure_preserves_all_state() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let eve = Address::generate(&h.env); // no KYC — sits in the middle
+    let carol = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&carol);
+    h.mint(&alice, 1_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &700, &expiration);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 200 },
+        RecipientEntry { to: eve.clone(), amount: 100 }, // no KYC → validation fails
+        RecipientEntry { to: carol.clone(), amount: 300 },
+    ];
+    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+
+    // All state must be untouched.
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&eve), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.token.allowance(&alice, &spender), 700); // allowance not consumed
+    assert_eq!(h.token.total_supply(), 1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+/// `batch_transfer_from`: a mid-batch frozen-recipient failure must leave the
+/// allowance unchanged, matching the same invariant as `batch_transfer`.
+#[test]
+fn test_batch_transfer_from_mid_batch_frozen_recipient_preserves_allowance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let eve = Address::generate(&h.env); // frozen — sits in the middle
+    let carol = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&eve);
+    h.approve_kyc(&carol);
+    h.mint(&alice, 1_000);
+    h.freeze(&eve);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &700, &expiration);
+
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 200 },
+        RecipientEntry { to: eve.clone(), amount: 100 }, // frozen → validation fails
+        RecipientEntry { to: carol.clone(), amount: 300 },
+    ];
+    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.token.balance(&eve), 0);
+    assert_eq!(h.token.balance(&carol), 0);
+    assert_eq!(h.token.allowance(&alice, &spender), 700);
+    assert_eq!(h.token.total_supply(), 1_000);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+/// Single transfer and batch transfer must enforce the same freeze rule for
+/// the *sender*: a frozen sender is rejected by both paths identically.
+#[test]
+fn test_single_and_batch_transfer_enforce_same_freeze_rule_for_sender() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+    h.freeze(&alice);
+
+    // Single transfer: frozen sender rejected.
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
+
+    // Batch transfer: same frozen sender rejected.
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    // Both balances and holder count unchanged.
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+/// Single transfer and batch transfer must enforce the same KYC rule for
+/// the *sender*: a revoked sender is rejected by both paths identically.
+#[test]
+fn test_single_and_batch_transfer_enforce_same_kyc_rule_for_sender() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+
+    // Revoke alice's KYC.
+    h.kyc.revoke(&h.verifier, &alice);
+
+    // Single transfer: revoked-KYC sender rejected.
+    assert!(h.token.try_transfer(&alice, &bob, &100).is_err());
+
+    // Batch transfer: same rule enforced.
+    let recipients = vec![
+        &h.env,
+        RecipientEntry { to: bob.clone(), amount: 100 },
+    ];
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    // Balances and holder count unchanged.
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.balance(&bob), 0);
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+/// Over-limit recipient count (11 entries) must be rejected before any
+/// validation or state mutation occurs. The sender balance is untouched.
+#[test]
+fn test_batch_transfer_11_recipients_rejected_before_validation() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.mint(&alice, 10_000);
+
+    let supply_before = h.token.total_supply();
+
+    // 11 recipients, all KYC-approved and valid — still over the cap.
+    let mut recipients = soroban_sdk::Vec::new(&h.env);
+    for _ in 0..11 {
+        let addr = Address::generate(&h.env);
+        h.approve_kyc(&addr);
+        recipients.push_back(RecipientEntry { to: addr, amount: 1 });
+    }
+    assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
+
+    assert_eq!(h.token.balance(&alice), 10_000);
+    assert_eq!(h.token.total_supply(), supply_before);
+    assert_eq!(h.compliance.holder_count(), 1); // only alice registered
+}
