@@ -178,6 +178,7 @@ For a full reference of every public method, data structure, and error code acro
 - [x] Storage patterns reference — see [docs/storage-patterns.md](docs/storage-patterns.md)
 - [x] Troubleshooting guide for common contributor and operator problems — see [docs/troubleshooting.md](docs/troubleshooting.md)
 - [x] Language-specific integration examples (Python, JavaScript) — see [docs/examples/](docs/examples/)
+- [x] Community showcase and contribution examples — see [docs/community-showcase.md](docs/community-showcase.md)
 - [x] Gas and performance report with profiling script — see [docs/gas-report.md](docs/gas-report.md)
 - [x] Security review checklist and hardening playbook — see [docs/security-checklist.md](docs/security-checklist.md)
 - [x] TypeScript SDK wrapping contract clients for frontend developers — see [sdk/README.md](sdk/README.md)
@@ -245,6 +246,7 @@ Veritoken/
 | [docs/incident-response.md](docs/incident-response.md) | Operational runbook: pause, key rotation, compromised verifier, upgrade |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common problems and fixes for contributors and operators |
 | [docs/examples/](docs/examples/) | Language-specific integration examples (Python, JavaScript) |
+| [docs/community-showcase.md](docs/community-showcase.md) | Community integrations, extensions, and reference implementations built on Veritoken |
 | [docs/gas-report.md](docs/gas-report.md) | Baseline gas and performance measurements |
 | [docs/security-checklist.md](docs/security-checklist.md) | Security review checklist and hardening playbook |
 | [sdk/README.md](sdk/README.md) | TypeScript SDK guide: getting started, multi-network configuration, per-contract reference, error/event handling, adding a new contract client |
