@@ -25,6 +25,7 @@ const NAV: NavItem[] = [
   { to: "/batch", label: "Batch" },
   { to: "/onboarding", label: "Onboarding" },
   { to: "/deploy", label: "Deploy" },
+  { to: "/status", label: "Status" },  // #458
   { to: "/docs", label: "Docs" },
 ];
 
