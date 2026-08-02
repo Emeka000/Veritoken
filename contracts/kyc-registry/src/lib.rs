@@ -5,8 +5,8 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
-    Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, String, Vec,
 };
 
 // Version tag stored on every lifecycle transition so readers can detect
@@ -220,8 +220,12 @@ impl KycRegistry {
         list.push_back(admin);
         env.storage().instance().set(&DataKey::AdminList, &list);
         // Set the initial schema version so new deployments start at v1.
-        env.storage().instance().set(&DataKey::StorageVersion, &1u32);
-        env.storage().instance().set(&DataKey::MigrationCount, &0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &1u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationCount, &0u32);
     }
 
     // ── Admin management ─────────────────────────────────────────────────────
@@ -231,8 +235,11 @@ impl KycRegistry {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         caller.require_auth();
         Self::require_admin(&env, &caller);
-        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
-        env.events().publish((symbol_short!("proposed"),), new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.events()
+            .publish((symbol_short!("proposed"),), new_admin);
     }
 
     /// The pending admin accepts and is added to the AdminList.
@@ -263,7 +270,8 @@ impl KycRegistry {
             list.push_back(new_admin.clone());
             env.storage().instance().set(&DataKey::AdminList, &list);
         }
-        env.events().publish((symbol_short!("admin_add"),), new_admin);
+        env.events()
+            .publish((symbol_short!("admin_add"),), new_admin);
     }
 
     /// Remove an admin from the list. Panics if it would leave the list empty.
@@ -370,7 +378,7 @@ impl KycRegistry {
         }
         let end = (start + effective_limit).min(total);
         for i in start..end {
-            result.push_back(list.get(i).unwrap());
+            result.push_back(list.get(i).expect("index in bounds"));
         }
         result
     }
@@ -411,11 +419,7 @@ impl KycRegistry {
             .publish((symbol_short!("approved"), subject), verifier);
     }
 
-    pub fn approve_batch(
-        env: Env,
-        verifier: Address,
-        subjects: Vec<(Address, u32, u64, String)>,
-    ) {
+    pub fn approve_batch(env: Env, verifier: Address, subjects: Vec<(Address, u32, u64, String)>) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         verifier.require_auth();
         Self::require_verifier(&env, &verifier);
@@ -442,8 +446,10 @@ impl KycRegistry {
             };
             Self::write_record(&env, subject.clone(), record);
             Self::append_log(&env, &verifier, &subject, "approve");
-            env.events()
-                .publish((symbol_short!("approved"), subject.clone()), verifier.clone());
+            env.events().publish(
+                (symbol_short!("approved"), subject.clone()),
+                verifier.clone(),
+            );
         }
     }
 
@@ -510,8 +516,10 @@ impl KycRegistry {
             );
             Self::write_record(&env, subject.clone(), record);
             Self::append_log(&env, &verifier, &subject, "revoke");
-            env.events()
-                .publish((symbol_short!("revoked"), subject.clone()), verifier.clone());
+            env.events().publish(
+                (symbol_short!("revoked"), subject.clone()),
+                verifier.clone(),
+            );
         }
     }
 
@@ -559,11 +567,9 @@ impl KycRegistry {
         let count = subjects.len().min(cap);
         let mut revoked: u32 = 0;
         for i in 0..count {
-            let subject = subjects.get(i).unwrap();
+            let subject = subjects.get(i).expect("index in bounds");
             let sk = DataKey::KycStatus(subject.clone());
-            if let Some(mut record) =
-                env.storage().persistent().get::<DataKey, KycRecord>(&sk)
-            {
+            if let Some(mut record) = env.storage().persistent().get::<DataKey, KycRecord>(&sk) {
                 if record.status == KycStatus::Approved {
                     record.status = KycStatus::Revoked;
                     Self::record_transition(
@@ -635,11 +641,7 @@ impl KycRegistry {
     pub fn get_kyc_state(env: Env, addr: Address) -> KycState {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let key = DataKey::KycStatus(addr);
-        match env
-            .storage()
-            .persistent()
-            .get::<DataKey, KycRecord>(&key)
-        {
+        match env.storage().persistent().get::<DataKey, KycRecord>(&key) {
             None => KycState::Missing,
             Some(record) => match record.status {
                 KycStatus::Approved => {
@@ -690,7 +692,7 @@ impl KycRegistry {
         }
         let end = (start + effective_limit).min(total);
         for i in start..end {
-            result.push_back(subjects.get(i).unwrap());
+            result.push_back(subjects.get(i).expect("index in bounds"));
         }
         result
     }
@@ -763,9 +765,11 @@ impl KycRegistry {
                 .get::<DataKey, ExpiryEntry>(&DataKey::ExpiryIndex(i))
             {
                 if entry.expiry > now && entry.expiry <= now + within_seconds {
-                    if let Some(record) = env.storage().persistent().get::<DataKey, KycRecord>(
-                        &DataKey::KycStatus(entry.addr.clone()),
-                    ) {
+                    if let Some(record) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, KycRecord>(&DataKey::KycStatus(entry.addr.clone()))
+                    {
                         if record.status == KycStatus::Approved {
                             out.push_back(ExpiringRecord {
                                 addr: entry.addr,
@@ -924,12 +928,7 @@ impl KycRegistry {
     ///
     /// After all data-structure changes for this version have been applied in
     /// the body below, add the new schema number to this function's match arm.
-    pub fn migrate_schema(
-        env: Env,
-        caller: Address,
-        to_version: u32,
-        description: String,
-    ) {
+    pub fn migrate_schema(env: Env, caller: Address, to_version: u32, description: String) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         caller.require_auth();
         Self::require_admin(&env, &caller);
@@ -994,11 +993,7 @@ impl KycRegistry {
         }
         let mut bytes = [0u8; 2];
         jurisdiction.copy_into_slice(&mut bytes);
-        if bytes[0] < b'A'
-            || bytes[0] > b'Z'
-            || bytes[1] < b'A'
-            || bytes[1] > b'Z'
-        {
+        if bytes[0] < b'A' || bytes[0] > b'Z' || bytes[1] < b'A' || bytes[1] > b'Z' {
             panic_with_error!(env, KycError::InvalidJurisdiction);
         }
     }

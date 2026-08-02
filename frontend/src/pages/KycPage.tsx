@@ -11,7 +11,7 @@ import { recordSessionAction } from "../lib/sessionHistory";
 import type { ContractEvent } from "../types";
 
 export default function KycPage() {
-  const {} = useWallet();
+  useWallet();
   const { addToast } = useToast();
   const [lookup, setLookup] = useState("");
   const [approveForm, setApproveForm] = useState({

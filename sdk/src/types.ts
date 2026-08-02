@@ -30,7 +30,9 @@ export type DenyReason =
   | "TierFromBelowMin"
   | "TierToBelowMin"
   | "TierAmountExceeded"
-  | "RiskScoreTooHigh";
+  | "RiskScoreTooHigh"
+  | "FromNotAllowlisted"
+  | "ToNotAllowlisted";
 
 /**
  * Decoded result of `ComplianceEngineClient.evaluateTransfer()` — the same

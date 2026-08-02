@@ -33,7 +33,6 @@
 /// (The base64 value encodes the `Symbol` "transfer".)
 ///
 /// Iterate returned events; each entry's `value.xdr` decodes to the data tuple.
-
 use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
 pub fn emit_transfer(env: &Env, from: Address, to: Address, amount: i128) {
@@ -57,7 +56,13 @@ pub fn emit_burn(env: &Env, from: Address, amount: i128) {
     );
 }
 
-pub fn emit_approve(env: &Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
+pub fn emit_approve(
+    env: &Env,
+    from: Address,
+    spender: Address,
+    amount: i128,
+    expiration_ledger: u32,
+) {
     env.events().publish(
         (symbol_short!("approve"), from, spender),
         (amount, expiration_ledger),

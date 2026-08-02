@@ -35,7 +35,7 @@ use soroban_sdk::{
 
 use carbon_credit_token::{CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
-use invoice_token::{InvoiceToken, InvoiceTokenClient, InvoiceMeta};
+use invoice_token::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use property_token::{PropertyMeta, PropertyToken, PropertyTokenClient};
 use rwa_token::{ComplianceMetadata, RwaToken, RwaTokenClient};
@@ -67,7 +67,15 @@ fn build_stack() -> Stack {
     let ce = ComplianceEngineClient::new(&env, &ce_id);
     ce.initialize(&admin, &kyc_id, &0u64);
 
-    Stack { env, kyc, ce, admin, verifier, kyc_id, ce_id }
+    Stack {
+        env,
+        kyc,
+        ce,
+        admin,
+        verifier,
+        kyc_id,
+        ce_id,
+    }
 }
 
 impl Stack {
@@ -114,7 +122,12 @@ impl Stack {
         };
         let id = self.env.register(
             PropertyToken,
-            (self.admin.clone(), self.kyc_id.clone(), self.ce_id.clone(), meta),
+            (
+                self.admin.clone(),
+                self.kyc_id.clone(),
+                self.ce_id.clone(),
+                meta,
+            ),
         );
         PropertyTokenClient::new(&self.env, &id)
     }
@@ -135,7 +148,12 @@ impl Stack {
         };
         let id = self.env.register(
             InvoiceToken,
-            (self.admin.clone(), self.kyc_id.clone(), self.ce_id.clone(), meta),
+            (
+                self.admin.clone(),
+                self.kyc_id.clone(),
+                self.ce_id.clone(),
+                meta,
+            ),
         );
         InvoiceTokenClient::new(&self.env, &id)
     }
@@ -155,7 +173,12 @@ impl Stack {
         };
         let id = self.env.register(
             CarbonCreditToken,
-            (self.admin.clone(), self.kyc_id.clone(), self.ce_id.clone(), meta),
+            (
+                self.admin.clone(),
+                self.kyc_id.clone(),
+                self.ce_id.clone(),
+                meta,
+            ),
         );
         CarbonCreditTokenClient::new(&self.env, &id)
     }
@@ -464,12 +487,14 @@ fn workflow_carbon_retire_receipt_is_permanent() {
 
     // Supply is zero; no further retirements possible.
     assert_eq!(carbon.total_supply(), 0);
-    assert!(carbon.try_retire(
-        &alice,
-        &1,
-        &String::from_str(&s.env, "anyone"),
-        &String::from_str(&s.env, "reason"),
-    ).is_err());
+    assert!(carbon
+        .try_retire(
+            &alice,
+            &1,
+            &String::from_str(&s.env, "anyone"),
+            &String::from_str(&s.env, "reason"),
+        )
+        .is_err());
 }
 
 // ── Workflow 10: compliance rule update propagates to all assets ──────────────

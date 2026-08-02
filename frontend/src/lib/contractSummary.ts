@@ -70,11 +70,11 @@ export function summariseCompliance(rules: ComplianceRules): SummaryLine[] {
   }
 
   if (rules.min_holding_period > 0) {
-    lines.push({ level: "warn", text: `Tokens must be held for at least ${fmtSeconds(rules.min_holding_period)} before transfer.` });
+    lines.push({ level: "warn", text: `Tokens must be held for at least ${fmtSeconds(Number(rules.min_holding_period))} before transfer.` });
   }
 
   if (rules.max_holding_period > 0) {
-    lines.push({ level: "warn", text: `Tokens must be transferred within ${fmtSeconds(rules.max_holding_period)} of acquisition.` });
+    lines.push({ level: "warn", text: `Tokens must be transferred within ${fmtSeconds(Number(rules.max_holding_period))} of acquisition.` });
   }
 
   if (rules.require_same_jurisdiction) {
@@ -149,7 +149,8 @@ export function summariseHolder(snap: HolderSnapshot): ContractSummary {
   if (!snap.kycRecord) {
     lines.push({ level: "critical", text: "No KYC record found — this address cannot transact." });
   } else {
-    const { status, tier, jurisdiction, expiry } = snap.kycRecord;
+    const { status, tier, jurisdiction } = snap.kycRecord;
+    const expiry = Number(snap.kycRecord.expiry);
     const tierLabel = ["Basic", "Accredited", "Institutional"][tier] ?? `Tier ${tier}`;
 
     if (status === "Approved" && snap.kycActive) {

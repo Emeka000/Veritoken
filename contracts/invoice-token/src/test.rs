@@ -3,7 +3,10 @@
 use crate::{InvoiceMeta, InvoiceStatus, InvoiceToken, InvoiceTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
 
 // ── Test harness ──────────────────────────────────────────────────────────────
 
@@ -54,11 +57,23 @@ fn setup() -> Harness {
 
     let token_id = env.register(
         InvoiceToken,
-        (admin.clone(), kyc_id.clone(), compliance_id.clone(), meta(&env)),
+        (
+            admin.clone(),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            meta(&env),
+        ),
     );
     let token = InvoiceTokenClient::new(&env, &token_id);
 
-    Harness { env, token, kyc, compliance, verifier, admin }
+    Harness {
+        env,
+        token,
+        kyc,
+        compliance,
+        verifier,
+        admin,
+    }
 }
 
 impl Harness {
@@ -144,7 +159,10 @@ fn test_transfer_blocked_after_due_date() {
     h.token.issue(&inv_id(&h.env), &alice, &1_000);
 
     h.env.ledger().set_timestamp(1_900_000_001);
-    assert!(h.token.try_transfer(&inv_id(&h.env), &alice, &bob, &500).is_err());
+    assert!(h
+        .token
+        .try_transfer(&inv_id(&h.env), &alice, &bob, &500)
+        .is_err());
 }
 
 #[test]
@@ -155,17 +173,24 @@ fn test_transfer_from_blocked_after_due_date() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
     h.token.issue(&inv_id(&h.env), &alice, &1_000);
-    h.token.approve(&alice, &bob, &inv_id(&h.env), &500, &999_999_999);
+    h.token
+        .approve(&alice, &bob, &inv_id(&h.env), &500, &999_999_999);
 
     h.env.ledger().set_timestamp(1_900_000_001);
-    assert!(h.token.try_transfer_from(&bob, &inv_id(&h.env), &alice, &bob, &500).is_err());
+    assert!(h
+        .token
+        .try_transfer_from(&bob, &inv_id(&h.env), &alice, &bob, &500)
+        .is_err());
 }
 
 #[test]
 fn test_metadata() {
     let h = setup();
     assert_eq!(h.token.decimals(), 7);
-    assert_eq!(h.token.name(), String::from_str(&h.env, "Veritoken Invoice"));
+    assert_eq!(
+        h.token.name(),
+        String::from_str(&h.env, "Veritoken Invoice")
+    );
     assert_eq!(
         h.token.get_meta(&inv_id(&h.env)).invoice_id,
         String::from_str(&h.env, "INV-001")
@@ -251,7 +276,10 @@ fn test_non_deployer_cannot_reinitialize() {
     let attacker = Address::generate(&h.env);
     let kyc_id = Address::generate(&h.env);
     let ce_id = Address::generate(&h.env);
-    assert!(h.token.try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env)).is_err());
+    assert!(h
+        .token
+        .try_initialize(&attacker, &kyc_id, &ce_id, &meta(&h.env))
+        .is_err());
 }
 
 #[test]
@@ -273,9 +301,14 @@ fn test_transfer_blocked_by_holding_period() {
     });
 
     h.token.issue(&inv_id(&h.env), &alice, &1_000);
-    assert!(h.token.try_transfer(&inv_id(&h.env), &alice, &bob, &100).is_err());
+    assert!(h
+        .token
+        .try_transfer(&inv_id(&h.env), &alice, &bob, &100)
+        .is_err());
 
-    h.env.ledger().set_timestamp(h.env.ledger().timestamp() + 3601);
+    h.env
+        .ledger()
+        .set_timestamp(h.env.ledger().timestamp() + 3601);
     h.token.transfer(&inv_id(&h.env), &alice, &bob, &100);
     assert_eq!(h.token.balance(&bob, &inv_id(&h.env)), 100);
     assert_eq!(h.token.balance(&alice, &inv_id(&h.env)), 900);
@@ -291,10 +324,17 @@ fn test_update_kyc_registry_admin_only() {
         let non_admin = Address::generate(&env2);
         let token_id2 = env2.register(
             InvoiceToken,
-            (non_admin.clone(), Address::generate(&env2), Address::generate(&env2), meta(&env2)),
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
         );
         let client2 = InvoiceTokenClient::new(&env2, &token_id2);
-        assert!(client2.try_update_kyc_registry(&Address::generate(&env2)).is_err());
+        assert!(client2
+            .try_update_kyc_registry(&Address::generate(&env2))
+            .is_err());
     }
 
     h.token.update_kyc_registry(&new_kyc);
@@ -313,10 +353,17 @@ fn test_update_compliance_engine_admin_only() {
         let non_admin = Address::generate(&env2);
         let token_id2 = env2.register(
             InvoiceToken,
-            (non_admin.clone(), Address::generate(&env2), Address::generate(&env2), meta(&env2)),
+            (
+                non_admin.clone(),
+                Address::generate(&env2),
+                Address::generate(&env2),
+                meta(&env2),
+            ),
         );
         let client2 = InvoiceTokenClient::new(&env2, &token_id2);
-        assert!(client2.try_update_compliance_engine(&Address::generate(&env2)).is_err());
+        assert!(client2
+            .try_update_compliance_engine(&Address::generate(&env2))
+            .is_err());
     }
 
     let kyc_id2 = h.env.register(KycRegistry, ());
@@ -412,7 +459,12 @@ fn test_create_invoice_admin_only() {
     let non_admin = Address::generate(&env2);
     let token_id2 = env2.register(
         InvoiceToken,
-        (non_admin.clone(), Address::generate(&env2), Address::generate(&env2), meta(&env2)),
+        (
+            non_admin.clone(),
+            Address::generate(&env2),
+            Address::generate(&env2),
+            meta(&env2),
+        ),
     );
     let client2 = InvoiceTokenClient::new(&env2, &token_id2);
     assert!(client2.try_create_invoice(&meta(&env2)).is_err());
@@ -450,7 +502,7 @@ fn test_multi_invoice_transfer_only_within_invoice() {
 #[test]
 fn test_version_returns_nonempty() {
     let h = setup();
-    assert!(h.token.version().len() > 0);
+    assert!(!h.token.version().is_empty());
 }
 
 #[test]
@@ -513,7 +565,10 @@ fn test_partial_settle_rejects_zero() {
 fn test_partial_settle_rejects_excess() {
     let h = setup();
     let face = 1_000_000_000_000i128;
-    assert!(h.token.try_partial_settle(&inv_id(&h.env), &(face + 1)).is_err());
+    assert!(h
+        .token
+        .try_partial_settle(&inv_id(&h.env), &(face + 1))
+        .is_err());
 }
 
 // ── Webhook tests ─────────────────────────────────────────────────────────────
@@ -577,7 +632,10 @@ fn test_update_meta_allowed_before_settlement() {
 #[test]
 fn test_initial_status_is_created() {
     let h = setup();
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::Created);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::Created
+    );
 }
 
 #[test]
@@ -586,13 +644,22 @@ fn test_issue_transitions_created_to_issued() {
     let holder = Address::generate(&h.env);
     h.approve_kyc(&holder);
 
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::Created);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::Created
+    );
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::Issued);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::Issued
+    );
 
     // Second issue stays in Issued
     h.token.issue(&inv_id(&h.env), &holder, &500);
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::Issued);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::Issued
+    );
 }
 
 #[test]
@@ -603,7 +670,10 @@ fn test_settle_transitions_issued_to_fully_settled() {
 
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
     h.token.settle(&inv_id(&h.env));
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::FullySettled);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::FullySettled
+    );
 }
 
 #[test]
@@ -614,7 +684,10 @@ fn test_partial_settle_transitions_to_partially_settled() {
 
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
     h.token.partial_settle(&inv_id(&h.env), &500_000_000_000);
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::PartiallySettled);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::PartiallySettled
+    );
 }
 
 #[test]
@@ -626,7 +699,10 @@ fn test_partial_settle_exact_face_value_gives_fully_settled() {
     let face = 1_000_000_000_000i128;
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
     h.token.partial_settle(&inv_id(&h.env), &face);
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::FullySettled);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::FullySettled
+    );
 }
 
 #[test]
@@ -637,12 +713,21 @@ fn test_settle_from_partially_settled_upgrades_to_fully_settled() {
 
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
     h.token.partial_settle(&inv_id(&h.env), &400_000_000_000);
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::PartiallySettled);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::PartiallySettled
+    );
 
     h.token.settle(&inv_id(&h.env));
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::FullySettled);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::FullySettled
+    );
     // settle() overwrites settlement_amount with face_value
-    assert_eq!(h.token.settlement_amount(&inv_id(&h.env)), 1_000_000_000_000i128);
+    assert_eq!(
+        h.token.settlement_amount(&inv_id(&h.env)),
+        1_000_000_000_000i128
+    );
 }
 
 #[test]
@@ -655,7 +740,10 @@ fn test_redeem_all_transitions_to_redeemed() {
     h.token.settle(&inv_id(&h.env));
     h.token.redeem(&inv_id(&h.env), &holder, &1_000);
 
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::Redeemed);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::Redeemed
+    );
     assert_eq!(h.token.total_supply(&inv_id(&h.env)), 0);
 }
 
@@ -669,7 +757,10 @@ fn test_partial_redeem_stays_in_fully_settled() {
     h.token.settle(&inv_id(&h.env));
     h.token.redeem(&inv_id(&h.env), &holder, &400);
 
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::FullySettled);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::FullySettled
+    );
     assert_eq!(h.token.total_supply(&inv_id(&h.env)), 600);
 }
 
@@ -683,7 +774,10 @@ fn test_transfer_blocked_in_created_state() {
     h.approve_kyc(&alice);
     h.approve_kyc(&bob);
     // No issue() — invoice is still in Created state
-    assert!(h.token.try_transfer(&inv_id(&h.env), &alice, &bob, &1).is_err());
+    assert!(h
+        .token
+        .try_transfer(&inv_id(&h.env), &alice, &bob, &1)
+        .is_err());
 }
 
 #[test]
@@ -696,7 +790,10 @@ fn test_transfer_blocked_after_settlement() {
 
     h.token.issue(&inv_id(&h.env), &alice, &1_000);
     h.token.settle(&inv_id(&h.env));
-    assert!(h.token.try_transfer(&inv_id(&h.env), &alice, &bob, &100).is_err());
+    assert!(h
+        .token
+        .try_transfer(&inv_id(&h.env), &alice, &bob, &100)
+        .is_err());
 }
 
 #[test]
@@ -708,9 +805,13 @@ fn test_transfer_from_blocked_after_settlement() {
     h.approve_kyc(&bob);
 
     h.token.issue(&inv_id(&h.env), &alice, &1_000);
-    h.token.approve(&alice, &bob, &inv_id(&h.env), &500, &999_999_999);
+    h.token
+        .approve(&alice, &bob, &inv_id(&h.env), &500, &999_999_999);
     h.token.settle(&inv_id(&h.env));
-    assert!(h.token.try_transfer_from(&bob, &inv_id(&h.env), &alice, &bob, &100).is_err());
+    assert!(h
+        .token
+        .try_transfer_from(&bob, &inv_id(&h.env), &alice, &bob, &100)
+        .is_err());
 }
 
 #[test]
@@ -733,7 +834,10 @@ fn test_double_partial_settle_fails() {
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
     h.token.partial_settle(&inv_id(&h.env), &400_000_000_000);
     // Second partial_settle must be rejected (already PartiallySettled)
-    assert!(h.token.try_partial_settle(&inv_id(&h.env), &200_000_000_000).is_err());
+    assert!(h
+        .token
+        .try_partial_settle(&inv_id(&h.env), &200_000_000_000)
+        .is_err());
 }
 
 #[test]
@@ -776,7 +880,10 @@ fn test_settle_on_already_redeemed_fails() {
     h.token.issue(&inv_id(&h.env), &holder, &500);
     h.token.settle(&inv_id(&h.env));
     h.token.redeem(&inv_id(&h.env), &holder, &500);
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::Redeemed);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::Redeemed
+    );
 
     assert!(h.token.try_settle(&inv_id(&h.env)).is_err());
 }
@@ -791,7 +898,10 @@ fn test_partial_settle_over_face_value_rejected() {
 
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
     let face = 1_000_000_000_000i128;
-    assert!(h.token.try_partial_settle(&inv_id(&h.env), &(face + 1)).is_err());
+    assert!(h
+        .token
+        .try_partial_settle(&inv_id(&h.env), &(face + 1))
+        .is_err());
 }
 
 #[test]
@@ -853,20 +963,32 @@ fn test_journal_records_full_lifecycle() {
     let holder = Address::generate(&h.env);
     h.approve_kyc(&holder);
 
-    h.token.issue(&inv_id(&h.env), &holder, &1_000);     // Created → Issued
+    h.token.issue(&inv_id(&h.env), &holder, &1_000); // Created → Issued
     h.token.partial_settle(&inv_id(&h.env), &500_000_000_000); // Issued → PartiallySettled
-    h.token.settle(&inv_id(&h.env));                      // PartiallySettled → FullySettled
-    h.token.redeem(&inv_id(&h.env), &holder, &1_000);    // FullySettled → Redeemed
+    h.token.settle(&inv_id(&h.env)); // PartiallySettled → FullySettled
+    h.token.redeem(&inv_id(&h.env), &holder, &1_000); // FullySettled → Redeemed
 
     let journal = h.token.get_journal(&inv_id(&h.env));
     assert_eq!(journal.len(), 4);
     assert_eq!(journal.get(0).unwrap().from_status, InvoiceStatus::Created);
     assert_eq!(journal.get(0).unwrap().to_status, InvoiceStatus::Issued);
     assert_eq!(journal.get(1).unwrap().from_status, InvoiceStatus::Issued);
-    assert_eq!(journal.get(1).unwrap().to_status, InvoiceStatus::PartiallySettled);
-    assert_eq!(journal.get(2).unwrap().from_status, InvoiceStatus::PartiallySettled);
-    assert_eq!(journal.get(2).unwrap().to_status, InvoiceStatus::FullySettled);
-    assert_eq!(journal.get(3).unwrap().from_status, InvoiceStatus::FullySettled);
+    assert_eq!(
+        journal.get(1).unwrap().to_status,
+        InvoiceStatus::PartiallySettled
+    );
+    assert_eq!(
+        journal.get(2).unwrap().from_status,
+        InvoiceStatus::PartiallySettled
+    );
+    assert_eq!(
+        journal.get(2).unwrap().to_status,
+        InvoiceStatus::FullySettled
+    );
+    assert_eq!(
+        journal.get(3).unwrap().from_status,
+        InvoiceStatus::FullySettled
+    );
     assert_eq!(journal.get(3).unwrap().to_status, InvoiceStatus::Redeemed);
 }
 
@@ -892,7 +1014,10 @@ fn test_failed_transition_leaves_state_unchanged() {
 
     // Attempt a double-settle — must fail and leave state as FullySettled
     let _ = h.token.try_settle(&inv_id(&h.env));
-    assert_eq!(h.token.invoice_status(&inv_id(&h.env)), InvoiceStatus::FullySettled);
+    assert_eq!(
+        h.token.invoice_status(&inv_id(&h.env)),
+        InvoiceStatus::FullySettled
+    );
     assert_eq!(h.token.get_journal(&inv_id(&h.env)).len(), 2); // Created→Issued + Issued→FullySettled
 
     // Balance and supply must be untouched
@@ -914,11 +1039,9 @@ fn test_approve_allowed_in_any_state() {
     h.token.settle(&inv_id(&h.env));
 
     // approve itself is not gated by lifecycle — it should succeed
-    h.token.approve(&alice, &bob, &inv_id(&h.env), &500, &999_999_999);
-    assert_eq!(
-        h.token.allowance(&alice, &bob, &inv_id(&h.env)),
-        500
-    );
+    h.token
+        .approve(&alice, &bob, &inv_id(&h.env), &500, &999_999_999);
+    assert_eq!(h.token.allowance(&alice, &bob, &inv_id(&h.env)), 500);
 }
 
 #[test]
@@ -930,7 +1053,8 @@ fn test_burn_from_respects_allowance() {
     h.approve_kyc(&bob);
 
     h.token.issue(&inv_id(&h.env), &alice, &1_000);
-    h.token.approve(&alice, &bob, &inv_id(&h.env), &300, &999_999_999);
+    h.token
+        .approve(&alice, &bob, &inv_id(&h.env), &300, &999_999_999);
     h.token.burn_from(&bob, &inv_id(&h.env), &alice, &200);
 
     assert_eq!(h.token.balance(&alice, &inv_id(&h.env)), 800);
@@ -947,8 +1071,12 @@ fn test_burn_from_insufficient_allowance_fails() {
     h.approve_kyc(&bob);
 
     h.token.issue(&inv_id(&h.env), &alice, &1_000);
-    h.token.approve(&alice, &bob, &inv_id(&h.env), &100, &999_999_999);
-    assert!(h.token.try_burn_from(&bob, &inv_id(&h.env), &alice, &101).is_err());
+    h.token
+        .approve(&alice, &bob, &inv_id(&h.env), &100, &999_999_999);
+    assert!(h
+        .token
+        .try_burn_from(&bob, &inv_id(&h.env), &alice, &101)
+        .is_err());
 }
 
 // ── Webhook under settlement ──────────────────────────────────────────────────
@@ -1007,7 +1135,10 @@ fn test_pause_lifecycle_blocks_partial_settle() {
     h.token.issue(&inv_id(&h.env), &holder, &1_000);
 
     h.token.pause_lifecycle();
-    assert!(h.token.try_partial_settle(&inv_id(&h.env), &500_000_000_000).is_err());
+    assert!(h
+        .token
+        .try_partial_settle(&inv_id(&h.env), &500_000_000_000)
+        .is_err());
 }
 
 #[test]

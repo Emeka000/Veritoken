@@ -81,7 +81,6 @@ pub enum DataKey {
     ExternalUri,
 }
 
-
 #[contracttype]
 #[derive(Clone)]
 pub struct AllowanceKey {

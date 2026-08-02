@@ -14,7 +14,7 @@ import ComplianceConfigIOPage from "./pages/ComplianceConfigIOPage";  // #436
 import MarketplacePage from "./pages/MarketplacePage";                // #439
 import StatusPage from "./pages/StatusPage";                          // #458
 import ErrorBoundary from "./components/ErrorBoundary";
-import { AdminOnly, VerifierOnly } from "./components/PermissionGate";
+import { AdminOnly } from "./components/PermissionGate";
 import { ToastProvider } from "./lib/toast";
 
 function AccessDenied({ role }: { role: string }) {

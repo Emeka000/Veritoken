@@ -31,8 +31,8 @@ use crate::RwaError;
 
 pub const ROLE_GOVERNANCE: &str = "governance";
 pub const ROLE_COMPLIANCE: &str = "compliance";
-pub const ROLE_LIQUIDITY:  &str = "liquidity";
-pub const ROLE_REGISTRY:   &str = "registry";
+pub const ROLE_LIQUIDITY: &str = "liquidity";
+pub const ROLE_REGISTRY: &str = "registry";
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 

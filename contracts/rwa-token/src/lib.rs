@@ -1,8 +1,9 @@
 #![no_std]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
+#![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, Address,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
     Env, String, Symbol, Vec,
 };
 
@@ -18,7 +19,7 @@ mod storage_types;
 mod versioning;
 
 // Re-export public KYC sync types so the generated client surfaces them.
-pub use kyc::{KycSyncStatus, KycStatusMirror};
+pub use kyc::{KycStatusMirror, KycSyncStatus};
 
 #[cfg(test)]
 mod test;
@@ -173,6 +174,7 @@ struct TransferPlan {
 #[contract]
 pub struct RwaToken;
 
+#[allow(clippy::too_many_arguments)]
 #[contractimpl]
 impl RwaToken {
     // ── Constructor ───────────────────────────────────────────────────────────
@@ -262,8 +264,7 @@ impl RwaToken {
 
     /// Step 2 of the two-step admin handover — called by the proposed admin.
     pub fn accept_admin(env: Env) {
-        let pending = admin::read_pending_admin(&env)
-            .unwrap_or_else(|| panic!("no pending admin"));
+        let pending = admin::read_pending_admin(&env).unwrap_or_else(|| panic!("no pending admin"));
         pending.require_auth();
         let old_admin = admin::read_admin(&env);
         admin::write_admin(&env, &pending);
@@ -352,7 +353,13 @@ impl RwaToken {
         expiration_ledger: u32,
     ) {
         from.require_auth();
-        allowance::write_allowance(&env, from.clone(), spender.clone(), amount, expiration_ledger);
+        allowance::write_allowance(
+            &env,
+            from.clone(),
+            spender.clone(),
+            amount,
+            expiration_ledger,
+        );
         events::emit_approve(&env, from, spender, amount, expiration_ledger);
     }
 
@@ -534,7 +541,13 @@ impl RwaToken {
 
     /// Sets a compliance metadata field.  Nonce-protected (#349).
     /// `caller` must be the admin or the `"compliance"` role holder.
-    pub fn set_compliance_metadata(env: Env, caller: Address, key: Symbol, value: String, nonce: u64) {
+    pub fn set_compliance_metadata(
+        env: Env,
+        caller: Address,
+        key: Symbol,
+        value: String,
+        nonce: u64,
+    ) {
         roles::require_admin_or_role(&env, &caller, &Symbol::new(&env, roles::ROLE_COMPLIANCE));
         admin::consume_nonce(&env, nonce);
         compliance::write_metadata(&env, key, value);
@@ -547,7 +560,11 @@ impl RwaToken {
     pub fn get_all_compliance_metadata(env: Env) -> ComplianceMetadata {
         let read = |key: &str| {
             let v = compliance::read_metadata(&env, Symbol::new(&env, key));
-            if v.len() > 0 { Some(v) } else { None }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         };
         ComplianceMetadata {
             legal_entity: read(META_LEGAL_ENTITY),
@@ -569,7 +586,7 @@ impl RwaToken {
     pub fn set_external_uri(env: Env, uri: String) {
         let admin = admin::read_admin(&env);
         admin.require_auth();
-        if uri.len() > 0 {
+        if !uri.is_empty() {
             env.storage()
                 .instance()
                 .set(&storage_types::DataKey::ExternalUri, &uri);
@@ -578,8 +595,7 @@ impl RwaToken {
                 .instance()
                 .remove(&storage_types::DataKey::ExternalUri);
         }
-        env.events()
-            .publish((symbol_short!("ext_uri"),), uri);
+        env.events().publish((symbol_short!("ext_uri"),), uri);
     }
 
     /// Returns the optional external URI set by the admin (empty string if unset).
@@ -661,7 +677,11 @@ impl RwaToken {
     pub fn get_token_export(env: Env) -> storage_types::TokenExportMetadata {
         let read_compliance = |key: &str| {
             let v = compliance::read_metadata(&env, Symbol::new(&env, key));
-            if v.len() > 0 { Some(v) } else { None }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         };
         storage_types::TokenExportMetadata {
             name: metadata::read_name(&env),
@@ -718,8 +738,7 @@ impl RwaToken {
 
     /// Returns the migration record at the given index, or panics if out of range.
     pub fn get_migration_record(env: Env, index: u32) -> MigrationRecord {
-        versioning::get_migration_record(&env, index)
-            .expect("migration record not found")
+        versioning::get_migration_record(&env, index).expect("migration record not found")
     }
 
     /// Returns the current numeric schema version.
@@ -933,6 +952,7 @@ impl RwaToken {
         }
     }
 
+    #[allow(dead_code)]
     fn read_recovery_config(env: &Env) -> RecoveryConfig {
         env.storage()
             .instance()
@@ -940,12 +960,14 @@ impl RwaToken {
             .unwrap_or_else(|| panic_with_error!(env, RwaError::RecoveryNotConfigured))
     }
 
+    #[allow(dead_code)]
     fn assert_recovery_member(env: &Env, addr: &Address, cfg: &RecoveryConfig) {
         if !cfg.members.contains(addr) {
             panic_with_error!(env, RwaError::NotRecoveryMember);
         }
     }
 
+    #[allow(dead_code)]
     fn finalize_recovery(env: &Env, new_admin: Address) {
         let old_admin = admin::read_admin(env);
         admin::write_admin(env, &new_admin);

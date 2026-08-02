@@ -33,7 +33,9 @@ pub fn write_pending_admin(env: &Env, pending_admin: &Address) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-    env.storage().instance().set(&DataKey::PendingAdmin, pending_admin);
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAdmin, pending_admin);
 }
 
 pub fn remove_pending_admin(env: &Env) {

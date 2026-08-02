@@ -20,8 +20,8 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
-    Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, String, Vec,
 };
 use token_helpers as th;
 
@@ -196,7 +196,9 @@ impl InvoiceToken {
     pub fn pause_lifecycle(env: Env) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        env.storage().instance().set(&DataKey::LifecyclePaused, &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::LifecyclePaused, &true);
         env.events().publish((symbol_short!("lc_pause"),), ());
     }
 
@@ -205,7 +207,9 @@ impl InvoiceToken {
     pub fn unpause_lifecycle(env: Env) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         th::require_admin(&env);
-        env.storage().instance().set(&DataKey::LifecyclePaused, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::LifecyclePaused, &false);
         env.events().publish((symbol_short!("lc_unpse"),), ());
     }
 
@@ -244,7 +248,7 @@ impl InvoiceToken {
         }
         let end = (start + effective_limit).min(total);
         for i in start..end {
-            result.push_back(list.get(i).unwrap());
+            result.push_back(list.get(i).expect("index in bounds"));
         }
         result
     }
@@ -350,9 +354,10 @@ impl InvoiceToken {
             BUMP,
         );
         th::do_register_holder(&env, &to);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TotalSupply(invoice_id.clone()), &(supply + amount));
+        env.storage().persistent().set(
+            &DataKey::TotalSupply(invoice_id.clone()),
+            &(supply + amount),
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::TotalSupply(invoice_id.clone()),
             THRESHOLD,
@@ -377,22 +382,28 @@ impl InvoiceToken {
             .expect("invoice must exist");
 
         let from_status = Self::read_status(&env, &invoice_id);
-        if matches!(from_status, InvoiceStatus::FullySettled | InvoiceStatus::Redeemed) {
+        if matches!(
+            from_status,
+            InvoiceStatus::FullySettled | InvoiceStatus::Redeemed
+        ) {
             panic_with_error!(env, InvoiceError::AlreadySettled);
         }
 
         Self::transition_status(&env, &invoice_id, from_status, InvoiceStatus::FullySettled);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::SettlementAmount(invoice_id.clone()), &meta.face_value_usd);
+        env.storage().persistent().set(
+            &DataKey::SettlementAmount(invoice_id.clone()),
+            &meta.face_value_usd,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::SettlementAmount(invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
-        env.events()
-            .publish((symbol_short!("settled"),), (invoice_id, meta.notification_webhook));
+        env.events().publish(
+            (symbol_short!("settled"),),
+            (invoice_id, meta.notification_webhook),
+        );
     }
 
     /// Mark an invoice as partially settled with a specific payment amount.
@@ -426,16 +437,19 @@ impl InvoiceToken {
         };
         Self::transition_status(&env, &invoice_id, from_status, to_status);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::SettlementAmount(invoice_id.clone()), &settlement_amount);
+        env.storage().persistent().set(
+            &DataKey::SettlementAmount(invoice_id.clone()),
+            &settlement_amount,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::SettlementAmount(invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
-        env.events()
-            .publish((symbol_short!("p_settld"),), (invoice_id, settlement_amount));
+        env.events().publish(
+            (symbol_short!("p_settld"),),
+            (invoice_id, settlement_amount),
+        );
     }
 
     pub fn settlement_amount(env: Env, invoice_id: String) -> i128 {
@@ -453,7 +467,10 @@ impl InvoiceToken {
         Self::require_lifecycle_active(&env);
 
         let status = Self::read_status(&env, &invoice_id);
-        if !matches!(status, InvoiceStatus::PartiallySettled | InvoiceStatus::FullySettled) {
+        if !matches!(
+            status,
+            InvoiceStatus::PartiallySettled | InvoiceStatus::FullySettled
+        ) {
             panic_with_error!(env, InvoiceError::NotSettled);
         }
 
@@ -552,7 +569,10 @@ impl InvoiceToken {
 
         if new_supply == 0 {
             let status = Self::read_status(&env, &invoice_id);
-            if matches!(status, InvoiceStatus::PartiallySettled | InvoiceStatus::FullySettled) {
+            if matches!(
+                status,
+                InvoiceStatus::PartiallySettled | InvoiceStatus::FullySettled
+            ) {
                 Self::transition_status(&env, &invoice_id, status, InvoiceStatus::Redeemed);
             }
         }
@@ -562,13 +582,7 @@ impl InvoiceToken {
     }
 
     /// SEP-41-style burn_from.
-    pub fn burn_from(
-        env: Env,
-        spender: Address,
-        invoice_id: String,
-        from: Address,
-        amount: i128,
-    ) {
+    pub fn burn_from(env: Env, spender: Address, invoice_id: String, from: Address, amount: i128) {
         spender.require_auth();
         match th::evaluate_transfer_compliance(&env, &from, &from, amount) {
             th::TransferDecision::Allow => {}
@@ -581,7 +595,8 @@ impl InvoiceToken {
             }
         }
 
-        let allowance = Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
+        let allowance =
+            Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
         if allowance.amount < amount {
             panic_with_error!(env, InvoiceError::InsufficientAllowance);
         }
@@ -621,7 +636,10 @@ impl InvoiceToken {
 
         if new_supply == 0 {
             let status = Self::read_status(&env, &invoice_id);
-            if matches!(status, InvoiceStatus::PartiallySettled | InvoiceStatus::FullySettled) {
+            if matches!(
+                status,
+                InvoiceStatus::PartiallySettled | InvoiceStatus::FullySettled
+            ) {
                 Self::transition_status(&env, &invoice_id, status, InvoiceStatus::Redeemed);
             }
         }
@@ -675,10 +693,13 @@ impl InvoiceToken {
 
         // ── Fee deduction ────────────────────────────────────────────────
         // Compute fee: floor(amount * transfer_fee_bps / 10_000).
-        // The fee is deducted from `from`'s balance and credited to `fee_recipient`.
-        // If fee_recipient is None or fee_bps is 0, no fee is collected.
+        // Only collected when BOTH fee_bps > 0 AND a fee_recipient is set.
         let fee = if meta.transfer_fee_bps > 0 {
-            amount * meta.transfer_fee_bps as i128 / 10_000
+            if meta.fee_recipient.is_some() {
+                amount * meta.transfer_fee_bps as i128 / 10_000
+            } else {
+                0
+            }
         } else {
             0
         };
@@ -707,6 +728,21 @@ impl InvoiceToken {
             THRESHOLD,
             BUMP,
         );
+        if fee > 0 {
+            if let Some(ref recipient) = meta.fee_recipient {
+                let rec_bal = Self::read_balance(&env, recipient.clone(), invoice_id.clone());
+                env.storage().persistent().set(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    &(rec_bal + fee),
+                );
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    THRESHOLD,
+                    BUMP,
+                );
+                th::do_register_holder(&env, recipient);
+            }
+        }
         th::do_register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
@@ -756,7 +792,8 @@ impl InvoiceToken {
             }
         }
 
-        let allowance = Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
+        let allowance =
+            Self::read_allowance(&env, from.clone(), spender.clone(), invoice_id.clone());
         if allowance.expiration_ledger < env.ledger().sequence() {
             panic_with_error!(env, InvoiceError::AllowanceExpired);
         }
@@ -774,7 +811,11 @@ impl InvoiceToken {
         // ── Fee deduction ────────────────────────────────────────────────
         // `meta` was already fetched above for the due_date check; reuse it here.
         let fee = if meta.transfer_fee_bps > 0 {
-            amount * meta.transfer_fee_bps as i128 / 10_000
+            if meta.fee_recipient.is_some() {
+                amount * meta.transfer_fee_bps as i128 / 10_000
+            } else {
+                0
+            }
         } else {
             0
         };
@@ -803,6 +844,21 @@ impl InvoiceToken {
             THRESHOLD,
             BUMP,
         );
+        if fee > 0 {
+            if let Some(ref recipient) = meta.fee_recipient {
+                let rec_bal = Self::read_balance(&env, recipient.clone(), invoice_id.clone());
+                env.storage().persistent().set(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    &(rec_bal + fee),
+                );
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Balance(recipient.clone(), invoice_id.clone()),
+                    THRESHOLD,
+                    BUMP,
+                );
+                th::do_register_holder(&env, recipient);
+            }
+        }
         th::do_register_holder(&env, &to);
         env.events()
             .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
@@ -822,7 +878,10 @@ impl InvoiceToken {
         }
         env.storage().persistent().set(
             &DataKey::Allowance(from.clone(), spender.clone(), invoice_id.clone()),
-            &AllowanceValue { amount, expiration_ledger },
+            &AllowanceValue {
+                amount,
+                expiration_ledger,
+            },
         );
         env.storage().persistent().extend_ttl(
             &DataKey::Allowance(from.clone(), spender.clone(), invoice_id.clone()),
@@ -899,12 +958,7 @@ impl InvoiceToken {
     }
 
     /// Atomically records a journal entry and writes the new status.
-    fn transition_status(
-        env: &Env,
-        invoice_id: &String,
-        from: InvoiceStatus,
-        to: InvoiceStatus,
-    ) {
+    fn transition_status(env: &Env, invoice_id: &String, from: InvoiceStatus, to: InvoiceStatus) {
         let entry = JournalEntry {
             from_status: from,
             to_status: to,
@@ -932,11 +986,11 @@ impl InvoiceToken {
     }
 
     fn validate_webhook(env: &Env, webhook: &String) {
-        if webhook.len() == 0 {
+        if webhook.is_empty() {
             return;
         }
         let len = webhook.len() as usize;
-        if len < 8 || len > 256 {
+        if !(8..=256).contains(&len) {
             panic_with_error!(env, InvoiceError::InvalidWebhook);
         }
         let mut buf = [0u8; 256];
@@ -973,29 +1027,37 @@ impl InvoiceToken {
         env.storage()
             .persistent()
             .set(&DataKey::InvoiceMeta(invoice_id.clone()), &meta);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::InvoiceMeta(invoice_id.clone()), THRESHOLD, BUMP);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TotalSupply(invoice_id.clone()), &0i128);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::TotalSupply(invoice_id.clone()), THRESHOLD, BUMP);
-        env.storage()
-            .persistent()
-            .set(&DataKey::InvoiceStatus(invoice_id.clone()), &InvoiceStatus::Created);
         env.storage().persistent().extend_ttl(
-            &DataKey::InvoiceStatus(invoice_id.clone()),
+            &DataKey::InvoiceMeta(invoice_id.clone()),
             THRESHOLD,
             BUMP,
         );
         env.storage()
             .persistent()
-            .set(&DataKey::Journal(invoice_id.clone()), &Vec::<JournalEntry>::new(env));
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Journal(invoice_id.clone()), THRESHOLD, BUMP);
+            .set(&DataKey::TotalSupply(invoice_id.clone()), &0i128);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TotalSupply(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+        env.storage().persistent().set(
+            &DataKey::InvoiceStatus(invoice_id.clone()),
+            &InvoiceStatus::Created,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::InvoiceStatus(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+        env.storage().persistent().set(
+            &DataKey::Journal(invoice_id.clone()),
+            &Vec::<JournalEntry>::new(env),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Journal(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
 
         let mut list: Vec<String> = env
             .storage()
@@ -1004,7 +1066,8 @@ impl InvoiceToken {
             .unwrap_or_else(|| Vec::new(env));
         list.push_back(invoice_id.clone());
         env.storage().instance().set(&DataKey::InvoicesList, &list);
-        env.events().publish((symbol_short!("inv_crt"),), invoice_id);
+        env.events()
+            .publish((symbol_short!("inv_crt"),), invoice_id);
     }
 
     fn require_lifecycle_active(env: &Env) {

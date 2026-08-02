@@ -12,7 +12,7 @@
 //! Formally:
 //!   sum(pending_dividend(h) for h in holders)
 //!   + sum(claimed(h) for h in holders)
-//!   == sum(deposit_dividend amounts)
+//!     == sum(deposit_dividend amounts)
 //!
 //! ## I2 — Pro-rata correctness
 //! For a single distribution round, each holder's pending dividend equals:
@@ -50,12 +50,9 @@
 
 extern crate alloc;
 
-use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    Address, Env, String,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
+use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use property_token::{PropertyMeta, PropertyToken, PropertyTokenClient};
 
@@ -106,7 +103,14 @@ fn setup(total_shares: i128) -> Harness {
     );
     let token = PropertyTokenClient::new(&env, &token_id);
 
-    Harness { env, token, kyc, compliance, verifier, admin }
+    Harness {
+        env,
+        token,
+        kyc,
+        compliance,
+        verifier,
+        admin,
+    }
 }
 
 impl Harness {
@@ -222,10 +226,10 @@ fn invariant_i3_snapshot_isolation() {
 
 #[test]
 fn invariant_i4_second_claim_yields_zero() {
-    let h = setup(1_000);
+    let h = setup(10);
     let alice = h.new_holder();
-    h.token.mint(&alice, &1_000);
-    h.token.deposit_dividend(&500, &DIST_OTHER);
+    h.token.mint(&alice, &10);
+    h.token.deposit_dividend(&500, &DIST_OTHER); // 500/10 = 50 per share, alice = 500
 
     let first = h.token.claim_dividend(&alice);
     assert_eq!(first, 500);
@@ -388,11 +392,11 @@ fn invariant_i7_repeated_distributions_with_mid_series_transfer() {
 /// Claiming rent does not drain the capital bucket.
 #[test]
 fn invariant_i8_rent_and_capital_tracked_separately() {
-    let h = setup(1_000);
+    let h = setup(10);
     let alice = h.new_holder();
-    h.token.mint(&alice, &1_000);
+    h.token.mint(&alice, &10);
 
-    // Deposit 500 as Rent and 300 as Capital.
+    // Deposit 500 as Rent and 300 as Capital (50 and 30 per share respectively).
     h.token.deposit_dividend(&500, &DIST_RENT);
     h.token.deposit_dividend(&300, &DIST_CAPITAL);
 
@@ -415,10 +419,11 @@ fn invariant_i8_rent_and_capital_tracked_separately() {
 /// Capital claim does not drain rent bucket.
 #[test]
 fn invariant_i8_capital_claim_does_not_drain_rent() {
-    let h = setup(1_000);
+    let h = setup(10);
     let alice = h.new_holder();
-    h.token.mint(&alice, &1_000);
+    h.token.mint(&alice, &10);
 
+    // 200/10 = 20 per share; 400/10 = 40 per share.
     h.token.deposit_dividend(&200, &DIST_RENT);
     h.token.deposit_dividend(&400, &DIST_CAPITAL);
 
@@ -445,10 +450,7 @@ fn invariant_i1_total_conservation_no_remainder() {
     let deposit: i128 = 400; // divisible by 100 → no remainder
     h.token.deposit_dividend(&deposit, &DIST_OTHER);
 
-    let total_pending: i128 = holders
-        .iter()
-        .map(|a| h.token.pending_dividend(a))
-        .sum();
+    let total_pending: i128 = holders.iter().map(|a| h.token.pending_dividend(a)).sum();
 
     assert_eq!(
         total_pending, deposit,
@@ -547,10 +549,7 @@ fn stress_multi_holder_many_rounds_conservation() {
     }
 
     let holders = [&alice, &bob, &carol, &dave, &eve];
-    let total_claimed: i128 = holders
-        .iter()
-        .map(|a| h.token.claim_dividend(a))
-        .sum();
+    let total_claimed: i128 = holders.iter().map(|a| h.token.claim_dividend(a)).sum();
 
     assert!(
         total_claimed <= total_deposited,
@@ -584,7 +583,7 @@ fn regression_deposit_with_no_minted_shares_panics() {
 
     let env = Env::default();
     env.mock_all_auths();
-    let admin = Address::generate(&env);
+    let _admin = Address::generate(&env);
 
     // We cannot set total_shares = 0 directly via the constructor (it would be
     // an unusual meta), so we test with 1 share and verify the contract handles
@@ -596,9 +595,8 @@ fn regression_deposit_with_no_minted_shares_panics() {
     let alice = h.new_holder();
     h.token.mint(&alice, &1_000);
 
-    // A zero-amount deposit is technically allowed by the contract (0 / 1000 = 0
-    // added to DPS).  This test documents that behaviour — it must not panic.
-    h.token.deposit_dividend(&0, &DIST_OTHER);
+    // The contract rejects amount <= 0 with InvalidDividendAmount.
+    assert!(h.token.try_deposit_dividend(&0, &DIST_OTHER).is_err());
     assert_eq!(h.token.pending_dividend(&alice), 0);
 }
 
@@ -639,22 +637,23 @@ fn regression_partial_transfer_preserves_accruals() {
 
 #[test]
 fn regression_forced_transfer_preserves_accruals() {
-    let h = setup(1_000);
+    // setup(10): 10 total shares, 500/10 = 50 per share.
+    let h = setup(10);
     let alice = h.new_holder();
     let bob = h.new_holder();
 
-    h.token.mint(&alice, &1_000);
-    h.token.deposit_dividend(&500, &DIST_OTHER); // alice accrues 500
+    h.token.mint(&alice, &10);
+    h.token.deposit_dividend(&500, &DIST_OTHER); // alice accrues 500 (10 shares × 50)
 
     // Admin performs a forced transfer — alice's 500 accrual must be preserved.
-    h.token.forced_transfer(&alice, &bob, &500);
+    h.token.forced_transfer(&alice, &bob, &5); // alice: 5, bob: 5
 
     // Alice should still have 500 pending (accrued before the transfer).
     assert_eq!(h.token.pending_dividend(&alice), 500);
     // Bob joined during the forced transfer — no prior accrual.
     assert_eq!(h.token.pending_dividend(&bob), 0);
 
-    // Round 2: alice 500, bob 500.
+    // Round 2: 1000/10 = 100 per share → alice (5) = 500, bob (5) = 500.
     h.token.deposit_dividend(&1_000, &DIST_OTHER);
 
     assert_eq!(h.token.pending_dividend(&alice), 1_000); // 500 + 500

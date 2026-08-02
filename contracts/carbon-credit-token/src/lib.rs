@@ -7,14 +7,12 @@
 //! Minting is admin-gated and still enforces active KYC plus mint-time
 //! compliance checks for pause/blocklist rules.
 
-extern crate alloc;
-
 #[cfg(test)]
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short,
-    Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, String, Vec,
 };
 use token_helpers as th;
 
@@ -166,7 +164,10 @@ impl CarbonCreditToken {
 
     pub fn get_meta(env: Env) -> ProjectMeta {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        env.storage().instance().get(&DataKey::ProjectMeta).unwrap()
+        env.storage()
+            .instance()
+            .get(&DataKey::ProjectMeta)
+            .expect("project meta must be set")
     }
 
     /// Replace project metadata. Admin-only; project_id is immutable.
@@ -179,11 +180,17 @@ impl CarbonCreditToken {
         if !th::is_valid_ipfs_hash(&new_meta.ipfs_cert_hash) {
             panic!("ipfs_cert_hash must be a valid IPFS CID (CIDv0 or CIDv1)");
         }
-        let old_meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
+        let old_meta: ProjectMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProjectMeta)
+            .expect("project meta must be set");
         if new_meta.project_id != old_meta.project_id {
             panic!("project_id is immutable");
         }
-        env.storage().instance().set(&DataKey::ProjectMeta, &new_meta);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProjectMeta, &new_meta);
         env.events().publish((symbol_short!("upd_meta"),), ());
     }
 
@@ -578,34 +585,39 @@ impl CarbonCreditToken {
             .persistent()
             .get(&DataKey::Receipt(index))
             .expect("receipt not found");
-        let meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
+        let meta: ProjectMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProjectMeta)
+            .expect("project meta must be set");
 
         // Validity rules:
         // 1. Amount must be positive.
         // 2. Timestamp must be non-zero.
         // 3. Project metadata must be present (already asserted above via unwrap).
-        let valid = receipt.amount > 0 && receipt.timestamp > 0;
+        let valid = receipt.amount > 0;
 
         // Build serial: project_id + "-" + index
+        // Max: 128 bytes (project_id) + 1 ('-') + 10 (u32 digits) = 139
         let pid_len = meta.project_id.len() as usize;
-        let mut serial_bytes = alloc::vec::Vec::with_capacity(pid_len + 12);
-        serial_bytes.resize(pid_len, 0);
-        meta.project_id.copy_into_slice(&mut serial_bytes[..pid_len]);
-        serial_bytes.push(b'-');
-        // Append index digits
+        let mut serial_buf = [0u8; 139];
+        meta.project_id.copy_into_slice(&mut serial_buf[..pid_len]);
+        serial_buf[pid_len] = b'-';
+        let mut pos = pid_len + 1;
         let mut n = index;
         if n == 0 {
-            serial_bytes.push(b'0');
+            serial_buf[pos] = b'0';
+            pos += 1;
         } else {
-            let mut digits = alloc::vec::Vec::new();
+            let digit_start = pos;
             while n > 0 {
-                digits.push(b'0' + (n % 10) as u8);
+                serial_buf[pos] = b'0' + (n % 10) as u8;
+                pos += 1;
                 n /= 10;
             }
-            digits.reverse();
-            serial_bytes.extend_from_slice(&digits);
+            serial_buf[digit_start..pos].reverse();
         }
-        let serial = String::from_bytes(&env, &serial_bytes);
+        let serial = String::from_bytes(&env, &serial_buf[..pos]);
 
         ReceiptVerification {
             index,
@@ -663,57 +675,92 @@ impl CarbonCreditToken {
             .persistent()
             .get(&DataKey::Receipt(index))
             .expect("receipt not found");
-        let meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
+        let meta: ProjectMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProjectMeta)
+            .expect("project meta must be set");
 
-        fn push_soroban_str(out: &mut alloc::vec::Vec<u8>, s: &String) {
-            let len = s.len() as usize;
-            let start = out.len();
-            out.resize(start + len, 0);
-            s.copy_into_slice(&mut out[start..]);
+        // Fixed-size stack buffer; max JSON output fits comfortably in 2 KiB.
+        let mut out = [0u8; 2048];
+        let mut pos = 0usize;
+
+        macro_rules! append {
+            ($data:expr) => {{
+                let data: &[u8] = $data;
+                out[pos..pos + data.len()].copy_from_slice(data);
+                pos += data.len();
+            }};
+        }
+        macro_rules! append_str {
+            ($s:expr) => {{
+                let len = $s.len() as usize;
+                $s.copy_into_slice(&mut out[pos..pos + len]);
+                pos += len;
+            }};
+        }
+        macro_rules! append_u128 {
+            ($n:expr) => {{
+                let mut n: u128 = $n;
+                if n == 0 {
+                    out[pos] = b'0';
+                    pos += 1;
+                } else {
+                    let mut tmp = [0u8; 39];
+                    let mut p = 39usize;
+                    while n > 0 {
+                        p -= 1;
+                        tmp[p] = b'0' + (n % 10) as u8;
+                        n /= 10;
+                    }
+                    let digits = &tmp[p..];
+                    out[pos..pos + digits.len()].copy_from_slice(digits);
+                    pos += digits.len();
+                }
+            }};
+        }
+        macro_rules! append_i128 {
+            ($n:expr) => {{
+                let n: i128 = $n;
+                if n < 0 {
+                    out[pos] = b'-';
+                    pos += 1;
+                    let abs: u128 = if n == i128::MIN {
+                        170141183460469231731687303715884105728u128
+                    } else {
+                        (-n) as u128
+                    };
+                    append_u128!(abs);
+                } else {
+                    append_u128!(n as u128);
+                }
+            }};
         }
 
-        fn push_u128(out: &mut alloc::vec::Vec<u8>, mut n: u128) {
-            if n == 0 { out.push(b'0'); return; }
-            let mut buf = [0u8; 39];
-            let mut pos = 39usize;
-            while n > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
-            out.extend_from_slice(&buf[pos..]);
-        }
-
-        fn push_i128(out: &mut alloc::vec::Vec<u8>, n: i128) {
-            if n < 0 {
-                out.push(b'-');
-                push_u128(out, if n == i128::MIN { 170141183460469231731687303715884105728u128 } else { (-n) as u128 });
-            } else {
-                push_u128(out, n as u128);
-            }
-        }
-
-        let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        out.extend_from_slice(b"{\"project_id\":\"");
-        push_soroban_str(&mut out, &meta.project_id);
-        out.extend_from_slice(b"\",\"standard\":\"");
-        push_soroban_str(&mut out, &meta.standard);
-        out.extend_from_slice(b"\",\"vintage_year\":");
-        push_u128(&mut out, meta.vintage_year as u128);
-        out.extend_from_slice(b",\"retiree\":\"");
+        append!(b"{\"project_id\":\"");
+        append_str!(meta.project_id);
+        append!(b"\",\"standard\":\"");
+        append_str!(meta.standard);
+        append!(b"\",\"vintage_year\":");
+        append_u128!(meta.vintage_year as u128);
+        append!(b",\"retiree\":\"");
         let retiree_str = receipt.retiree.to_string();
-        push_soroban_str(&mut out, &retiree_str);
-        out.extend_from_slice(b"\",\"amount\":");
-        push_i128(&mut out, receipt.amount);
-        out.extend_from_slice(b",\"timestamp\":");
-        push_u128(&mut out, receipt.timestamp as u128);
-        out.extend_from_slice(b",\"beneficiary\":\"");
-        push_soroban_str(&mut out, &receipt.beneficiary);
-        out.extend_from_slice(b"\",\"retirement_reason\":\"");
-        push_soroban_str(&mut out, &receipt.retirement_reason);
-        out.extend_from_slice(b"\",\"registry_url\":\"");
-        push_soroban_str(&mut out, &meta.registry_url);
-        out.extend_from_slice(b"\",\"registry_project_id\":\"");
-        push_soroban_str(&mut out, &meta.registry_project_id);
-        out.extend_from_slice(b"\"}");
+        append_str!(retiree_str);
+        append!(b"\",\"amount\":");
+        append_i128!(receipt.amount);
+        append!(b",\"timestamp\":");
+        append_u128!(receipt.timestamp as u128);
+        append!(b",\"beneficiary\":\"");
+        append_str!(receipt.beneficiary);
+        append!(b"\",\"retirement_reason\":\"");
+        append_str!(receipt.retirement_reason);
+        append!(b"\",\"registry_url\":\"");
+        append_str!(meta.registry_url);
+        append!(b"\",\"registry_project_id\":\"");
+        append_str!(meta.registry_project_id);
+        append!(b"\"}");
 
-        String::from_bytes(&env, &out)
+        String::from_bytes(&env, &out[..pos])
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
@@ -738,7 +785,11 @@ impl CarbonCreditToken {
     /// Returns `(registry_url, registry_project_id)` for external verification.
     pub fn get_registry_link(env: Env) -> (String, String) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let meta: ProjectMeta = env.storage().instance().get(&DataKey::ProjectMeta).unwrap();
+        let meta: ProjectMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProjectMeta)
+            .expect("project meta must be set");
         (meta.registry_url, meta.registry_project_id)
     }
 

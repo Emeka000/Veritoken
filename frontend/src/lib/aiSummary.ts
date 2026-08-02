@@ -87,7 +87,7 @@ export function summariseGlobalSnapshot(snapshot: GlobalSnapshot): StateSummary 
       bullets.push("Transfer limit: none (unlimited transfers permitted).");
     }
 
-    const hold = c.rules.min_holding_period;
+    const hold = Number(c.rules.min_holding_period);
     if (hold > 0) {
       const days = Math.floor(hold / 86400);
       const hrs = Math.floor((hold % 86400) / 3600);

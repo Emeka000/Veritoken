@@ -3,7 +3,10 @@
 use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    vec, Address, Env, String,
+};
 
 /// Test harness for SEP-41 compliance tests
 #[allow(dead_code)]
@@ -89,10 +92,7 @@ impl Sep41Harness {
 #[test]
 fn sep41_name() {
     let h = setup_sep41();
-    assert_eq!(
-        h.token.name(),
-        String::from_str(&h.env, "Veritoken RWA")
-    );
+    assert_eq!(h.token.name(), String::from_str(&h.env, "Veritoken RWA"));
 }
 
 // ── symbol ────────────────────────────────────────────────────────────
@@ -473,8 +473,14 @@ fn sep41_batch_total_supply_unchanged_after_failure() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 300,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -497,8 +503,14 @@ fn sep41_batch_balances_unchanged_after_failure() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: carol.clone(), amount: 200 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -524,9 +536,18 @@ fn sep41_batch_balances_correct_after_success() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
-        RecipientEntry { to: carol.clone(), amount: 250 },
-        RecipientEntry { to: dave.clone(), amount: 350 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 250,
+        },
+        RecipientEntry {
+            to: dave.clone(),
+            amount: 350,
+        },
     ];
     h.token.batch_transfer(&alice, &recipients);
 
@@ -553,9 +574,15 @@ fn sep41_batch_from_total_supply_unchanged_after_failure() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 }, // exceeds allowance
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        }, // exceeds allowance
     ];
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
 
     assert_eq!(h.token.total_supply(), 1_000);
     assert_eq!(h.token.balance(&alice), 1_000);
@@ -580,8 +607,14 @@ fn sep41_batch_from_balances_correct_after_success() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 400 },
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 400,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
     h.token.batch_transfer_from(&spender, &alice, &recipients);
 
@@ -609,9 +642,18 @@ fn sep41_batch_failure_in_middle_of_list_leaves_no_partial_state() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: eve.clone(), amount: 100 },   // fails validation
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: eve.clone(),
+            amount: 100,
+        }, // fails validation
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -643,8 +685,14 @@ fn sep41_batch_holder_cap_failure_preserves_supply_balances_and_count() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -672,7 +720,10 @@ fn sep41_single_and_batch_transfer_enforce_same_freeze_check() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 

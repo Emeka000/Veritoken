@@ -48,11 +48,11 @@ describe("exportConfig / configToRules round-trip", () => {
     const rules: ComplianceRules = { ...BASE_RULES, min_holding_period: 86_400n, max_holding_period: 172_800n };
     const exported = exportConfig(rules, [], null, { label: "test", network: "testnet" });
 
-    // Regression check: these must serialise as JSON-safe numbers, not bigints.
-    expect(typeof exported.rules.min_holding_period).toBe("number");
-    expect(typeof exported.rules.max_holding_period).toBe("number");
-    expect(exported.rules.min_holding_period).toBe(86_400);
-    expect(exported.rules.max_holding_period).toBe(172_800);
+    // Regression check: these must serialise as decimal strings (safe for large u64 values).
+    expect(typeof exported.rules.min_holding_period).toBe("string");
+    expect(typeof exported.rules.max_holding_period).toBe("string");
+    expect(exported.rules.min_holding_period).toBe("86400");
+    expect(exported.rules.max_holding_period).toBe("172800");
 
     const restored = configToRules(exported);
     expect(restored.min_holding_period).toBe(86_400n);
@@ -105,13 +105,13 @@ describe("validateConfigForApply", () => {
 
   it("rejects a min_holding_period beyond 365 days", () => {
     const config = makeConfig();
-    config.rules.min_holding_period = 31_536_001;
+    config.rules.min_holding_period = "31536001";
     expect(validateConfigForApply(config).some((e) => /365 days/.test(e))).toBe(true);
   });
 
   it("rejects a negative min_holding_period", () => {
     const config = makeConfig();
-    config.rules.min_holding_period = -1;
+    config.rules.min_holding_period = "-1";
     expect(validateConfigForApply(config)).toContain("Min holding period cannot be negative.");
   });
 

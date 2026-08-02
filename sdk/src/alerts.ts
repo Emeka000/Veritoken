@@ -63,6 +63,8 @@ const DENY_REASON_INFO: Record<DenyReason, { severity: AlertSeverity; label: str
   ToKycRejected: { severity: "info", label: "the recipient's KYC was rejected" },
   FromKycPending: { severity: "info", label: "the sender's KYC is still pending" },
   ToKycPending: { severity: "info", label: "the recipient's KYC is still pending" },
+  FromNotAllowlisted: { severity: "critical", label: "the sender is not on the allowlist" },
+  ToNotAllowlisted: { severity: "critical", label: "the recipient is not on the allowlist" },
 };
 
 /** Look up the severity + plain-language explanation for a `DenyReason`. */

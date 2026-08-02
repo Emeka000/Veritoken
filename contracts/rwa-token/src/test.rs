@@ -1,9 +1,14 @@
 #![cfg(test)]
 
-use crate::{ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY};
+use crate::{
+    ComplianceMetadata, RecipientEntry, RwaToken, RwaTokenClient, META_ISIN, META_LEGAL_ENTITY,
+};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    vec, Address, Env, String,
+};
 
 #[allow(dead_code)]
 struct Harness {
@@ -365,13 +370,22 @@ fn test_get_all_compliance_metadata_returns_set_fields() {
     let key_entity = soroban_sdk::Symbol::new(&h.env, META_LEGAL_ENTITY);
     let key_isin = soroban_sdk::Symbol::new(&h.env, META_ISIN);
     h.token.set_compliance_metadata(
-        &h.admin, &key_entity, &String::from_str(&h.env, "Acme Corp"), &0,
+        &h.admin,
+        &key_entity,
+        &String::from_str(&h.env, "Acme Corp"),
+        &0,
     );
     h.token.set_compliance_metadata(
-        &h.admin, &key_isin, &String::from_str(&h.env, "US1234567890"), &1,
+        &h.admin,
+        &key_isin,
+        &String::from_str(&h.env, "US1234567890"),
+        &1,
     );
     let meta = h.token.get_all_compliance_metadata();
-    assert_eq!(meta.legal_entity, Some(String::from_str(&h.env, "Acme Corp")));
+    assert_eq!(
+        meta.legal_entity,
+        Some(String::from_str(&h.env, "Acme Corp"))
+    );
     assert_eq!(meta.isin, Some(String::from_str(&h.env, "US1234567890")));
     assert!(meta.governing_law.is_none());
     assert!(meta.prospectus_hash.is_none());
@@ -412,7 +426,10 @@ fn test_constructor_sets_compliance_metadata() {
     );
     let token = RwaTokenClient::new(&env, &token_id);
     let meta = token.get_all_compliance_metadata();
-    assert_eq!(meta.legal_entity, Some(String::from_str(&env, "Issuer LLC")));
+    assert_eq!(
+        meta.legal_entity,
+        Some(String::from_str(&env, "Issuer LLC"))
+    );
     assert_eq!(meta.governing_law, Some(String::from_str(&env, "New York")));
     assert!(meta.isin.is_none());
 }
@@ -460,7 +477,7 @@ fn test_invalid_asset_type() {
 fn test_version_returns_nonempty() {
     let h = setup();
     let v = h.token.version();
-    assert!(v.len() > 0);
+    assert!(!v.is_empty());
 }
 
 // ── batch_transfer ────────────────────────────────────────────────────────────
@@ -478,8 +495,14 @@ fn test_batch_transfer_two_recipients_success() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 300,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        },
     ];
     h.token.batch_transfer(&alice, &recipients);
 
@@ -500,8 +523,14 @@ fn test_batch_transfer_state_unchanged_on_kyc_failure() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 }, // fails here
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 300,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        }, // fails here
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -524,8 +553,14 @@ fn test_batch_transfer_state_unchanged_on_insufficient_balance() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 300,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -549,8 +584,14 @@ fn test_batch_transfer_state_unchanged_on_frozen_recipient() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 }, // frozen → validation fails
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 300,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        }, // frozen → validation fails
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -571,7 +612,10 @@ fn test_batch_transfer_frozen_sender_rejected() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 1_000);
@@ -589,7 +633,10 @@ fn test_batch_transfer_exceeds_max_recipients() {
     for _ in 0..11 {
         let addr = Address::generate(&h.env);
         h.approve_kyc(&addr);
-        recipients.push_back(RecipientEntry { to: addr, amount: 1 });
+        recipients.push_back(RecipientEntry {
+            to: addr,
+            amount: 1,
+        });
     }
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 10_000);
@@ -606,7 +653,10 @@ fn test_batch_transfer_zero_amount_entry_rejected() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 0 }, // invalid
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 0,
+        }, // invalid
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 1_000);
@@ -625,7 +675,10 @@ fn test_batch_transfer_sender_unregistered_when_balance_drained() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 500 }, // drains alice
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 500,
+        }, // drains alice
     ];
     h.token.batch_transfer(&alice, &recipients);
 
@@ -649,8 +702,14 @@ fn test_batch_transfer_holder_count_correct_after_batch() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 400 },
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 400,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
     h.token.batch_transfer(&alice, &recipients);
 
@@ -675,8 +734,14 @@ fn test_batch_transfer_rejects_cumulative_holder_limit_without_state_change() {
     // The complete plan creates two new holders and must fail before mutation.
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
-        RecipientEntry { to: carol.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 100,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -698,8 +763,14 @@ fn test_batch_transfer_counts_duplicate_recipient_once_for_holder_limit() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
-        RecipientEntry { to: bob.clone(), amount: 150 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 150,
+        },
     ];
     h.token.batch_transfer(&alice, &recipients);
 
@@ -722,8 +793,14 @@ fn test_batch_transfer_reuses_drained_sender_holder_slot() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 500 },
-        RecipientEntry { to: carol.clone(), amount: 500 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 500,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 500,
+        },
     ];
     h.token.batch_transfer(&alice, &recipients);
 
@@ -746,8 +823,14 @@ fn test_batch_transfer_amount_overflow_leaves_state_unchanged() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: i128::MAX },
-        RecipientEntry { to: carol.clone(), amount: 1 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: i128::MAX,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 1,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -769,7 +852,10 @@ fn test_batch_transfer_compliance_paused_state_unchanged() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
     assert_eq!(h.token.balance(&alice), 1_000);
@@ -798,14 +884,23 @@ fn test_batch_transfer_max_amount_rule_per_entry() {
     // Single entry of 51 exceeds per-transfer cap
     let recipients_over = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 51 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 51,
+        },
     ];
-    assert!(h.token.try_batch_transfer(&alice, &recipients_over).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer(&alice, &recipients_over)
+        .is_err());
 
     // Single entry within cap succeeds
     let recipients_ok = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 50 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 50,
+        },
     ];
     h.token.batch_transfer(&alice, &recipients_ok);
     assert_eq!(h.token.balance(&bob), 50);
@@ -830,8 +925,14 @@ fn test_batch_transfer_from_success() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 300,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        },
     ];
     h.token.batch_transfer_from(&spender, &alice, &recipients);
 
@@ -857,9 +958,15 @@ fn test_batch_transfer_from_insufficient_allowance() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 }, // needs 200
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        }, // needs 200
     ];
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
 
     assert_eq!(h.token.balance(&alice), 1_000);
     assert_eq!(h.token.balance(&bob), 0);
@@ -883,9 +990,15 @@ fn test_batch_transfer_from_expired_allowance() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
     ];
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
     assert_eq!(h.token.balance(&alice), 1_000);
     assert_eq!(h.token.balance(&bob), 0);
 }
@@ -906,10 +1019,19 @@ fn test_batch_transfer_from_state_unchanged_on_kyc_failure() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 300 },
-        RecipientEntry { to: carol.clone(), amount: 200 }, // KYC fails
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 300,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        }, // KYC fails
     ];
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
 
     assert_eq!(h.token.balance(&alice), 1_000);
     assert_eq!(h.token.balance(&bob), 0);
@@ -935,8 +1057,14 @@ fn test_batch_transfer_from_allowance_consumed_atomically() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 250 },
-        RecipientEntry { to: carol.clone(), amount: 250 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 250,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 250,
+        },
     ];
     h.token.batch_transfer_from(&spender, &alice, &recipients);
 
@@ -963,11 +1091,20 @@ fn test_batch_transfer_from_holder_limit_failure_preserves_allowance() {
     h.token.approve(&alice, &spender, &500, &expiration);
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
-        RecipientEntry { to: carol.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 100,
+        },
     ];
 
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
     assert_eq!(h.token.allowance(&alice, &spender), 500);
     assert_eq!(h.token.balance(&alice), 1_000);
     assert_eq!(h.token.balance(&bob), 0);
@@ -990,9 +1127,15 @@ fn test_batch_transfer_from_exceeds_max_recipients() {
     for _ in 0..11 {
         let addr = Address::generate(&h.env);
         h.approve_kyc(&addr);
-        recipients.push_back(RecipientEntry { to: addr, amount: 1 });
+        recipients.push_back(RecipientEntry {
+            to: addr,
+            amount: 1,
+        });
     }
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
     assert_eq!(h.token.balance(&alice), 10_000);
 }
 
@@ -1003,7 +1146,7 @@ fn test_contract_version_info_initialized_at_deploy() {
     let h = setup();
     let (ver, count, last_ts) = h.token.contract_version_info();
     // Version is set to Cargo.toml version at deploy; migration count starts at 0.
-    assert!(ver.len() > 0);
+    assert!(!ver.is_empty());
     assert_eq!(count, 0);
     assert_eq!(last_ts, 0);
 }
@@ -1085,7 +1228,7 @@ fn test_get_token_export_basic_fields() {
     assert_eq!(export.asset_type, String::from_str(&h.env, "property"));
     assert_eq!(export.total_supply, 0i128);
     assert_eq!(export.max_supply, 0i128);
-    assert!(export.contract_version.len() > 0);
+    assert!(!export.contract_version.is_empty());
 }
 
 #[test]
@@ -1113,7 +1256,7 @@ fn test_get_token_export_compliance_fields_empty_by_default() {
 fn test_get_token_export_reflects_set_compliance_metadata() {
     let h = setup();
     let key_entity = soroban_sdk::Symbol::new(&h.env, META_LEGAL_ENTITY);
-    let key_isin   = soroban_sdk::Symbol::new(&h.env, META_ISIN);
+    let key_isin = soroban_sdk::Symbol::new(&h.env, META_ISIN);
     h.token.set_compliance_metadata(
         &h.admin,
         &key_entity,
@@ -1128,7 +1271,10 @@ fn test_get_token_export_reflects_set_compliance_metadata() {
     );
 
     let export = h.token.get_token_export();
-    assert_eq!(export.legal_entity, Some(String::from_str(&h.env, "Acme Corp")));
+    assert_eq!(
+        export.legal_entity,
+        Some(String::from_str(&h.env, "Acme Corp"))
+    );
     assert_eq!(export.isin, Some(String::from_str(&h.env, "US0231351067")));
     assert!(export.governing_law.is_none());
     assert!(export.prospectus_hash.is_none());
@@ -1161,7 +1307,8 @@ fn test_set_and_get_external_uri() {
 #[test]
 fn test_set_external_uri_empty_string_clears_value() {
     let h = setup();
-    h.token.set_external_uri(&String::from_str(&h.env, "https://example.com/meta"));
+    h.token
+        .set_external_uri(&String::from_str(&h.env, "https://example.com/meta"));
     h.token.set_external_uri(&String::from_str(&h.env, ""));
 
     assert_eq!(h.token.get_external_uri(), String::from_str(&h.env, ""));
@@ -1470,11 +1617,9 @@ fn test_migrate_schema_already_at_version_rejected() {
     let h = setup();
     let nonce = h.next_nonce();
     // schema_version is 1; migrating to 1 must fail with MigrationVersionConflict.
-    let res = h.token.try_migrate_schema(
-        &1,
-        &String::from_str(&h.env, "dup"),
-        &nonce,
-    );
+    let res = h
+        .token
+        .try_migrate_schema(&1, &String::from_str(&h.env, "dup"), &nonce);
     assert_eq!(
         res.unwrap_err().unwrap(),
         Error::from(RwaError::MigrationVersionConflict)
@@ -1488,11 +1633,9 @@ fn test_migrate_schema_version_skip_rejected() {
 
     let h = setup();
     let nonce = h.next_nonce();
-    let res = h.token.try_migrate_schema(
-        &3,
-        &String::from_str(&h.env, "skip"),
-        &nonce,
-    );
+    let res = h
+        .token
+        .try_migrate_schema(&3, &String::from_str(&h.env, "skip"), &nonce);
     assert_eq!(
         res.unwrap_err().unwrap(),
         Error::from(RwaError::MigrationVersionNotSequential)
@@ -1503,8 +1646,10 @@ fn test_migrate_schema_version_skip_rejected() {
 fn test_migrate_schema_sequential_steps_succeed() {
     let h = setup();
 
-    h.token.migrate_schema(&2, &String::from_str(&h.env, "step 1"), &h.next_nonce());
-    h.token.migrate_schema(&3, &String::from_str(&h.env, "step 2"), &h.next_nonce());
+    h.token
+        .migrate_schema(&2, &String::from_str(&h.env, "step 1"), &h.next_nonce());
+    h.token
+        .migrate_schema(&3, &String::from_str(&h.env, "step 2"), &h.next_nonce());
 
     assert_eq!(h.token.schema_version(), 3u32);
 
@@ -1596,11 +1741,8 @@ fn test_migrate_schema_state_continuity() {
     h.approve_kyc(&user);
     h.mint(&user, 1_000);
 
-    h.token.migrate_schema(
-        &2,
-        &String::from_str(&h.env, "v1 -> v2"),
-        &h.next_nonce(),
-    );
+    h.token
+        .migrate_schema(&2, &String::from_str(&h.env, "v1 -> v2"), &h.next_nonce());
 
     assert_eq!(h.token.balance(&user), 1_000);
     assert_eq!(h.token.schema_version(), 2u32);
@@ -1631,9 +1773,18 @@ fn test_batch_transfer_frozen_recipient_in_middle_leaves_no_partial_state() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: eve.clone(), amount: 100 }, // frozen → validation fails
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: eve.clone(),
+            amount: 100,
+        }, // frozen → validation fails
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -1677,9 +1828,18 @@ fn test_batch_transfer_expired_kyc_recipient_in_middle_leaves_no_partial_state()
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: eve.clone(), amount: 100 }, // expired KYC → fails
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: eve.clone(),
+            amount: 100,
+        }, // expired KYC → fails
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -1712,9 +1872,18 @@ fn test_batch_transfer_insufficient_balance_invariants_total_supply_and_holder_c
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: carol.clone(), amount: 200 },
-        RecipientEntry { to: dave.clone(), amount: 200 }, // total 600 > 500
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: dave.clone(),
+            amount: 200,
+        }, // total 600 > 500
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -1747,11 +1916,23 @@ fn test_batch_transfer_from_mid_batch_kyc_failure_preserves_all_state() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: eve.clone(), amount: 100 }, // no KYC → validation fails
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: eve.clone(),
+            amount: 100,
+        }, // no KYC → validation fails
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
 
     // All state must be untouched.
     assert_eq!(h.token.balance(&alice), 1_000);
@@ -1785,11 +1966,23 @@ fn test_batch_transfer_from_mid_batch_frozen_recipient_preserves_allowance() {
 
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 200 },
-        RecipientEntry { to: eve.clone(), amount: 100 }, // frozen → validation fails
-        RecipientEntry { to: carol.clone(), amount: 300 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 200,
+        },
+        RecipientEntry {
+            to: eve.clone(),
+            amount: 100,
+        }, // frozen → validation fails
+        RecipientEntry {
+            to: carol.clone(),
+            amount: 300,
+        },
     ];
-    assert!(h.token.try_batch_transfer_from(&spender, &alice, &recipients).is_err());
+    assert!(h
+        .token
+        .try_batch_transfer_from(&spender, &alice, &recipients)
+        .is_err());
 
     assert_eq!(h.token.balance(&alice), 1_000);
     assert_eq!(h.token.balance(&bob), 0);
@@ -1818,7 +2011,10 @@ fn test_single_and_batch_transfer_enforce_same_freeze_rule_for_sender() {
     // Batch transfer: same frozen sender rejected.
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -1848,7 +2044,10 @@ fn test_single_and_batch_transfer_enforce_same_kyc_rule_for_sender() {
     // Batch transfer: same rule enforced.
     let recipients = vec![
         &h.env,
-        RecipientEntry { to: bob.clone(), amount: 100 },
+        RecipientEntry {
+            to: bob.clone(),
+            amount: 100,
+        },
     ];
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 
@@ -1874,7 +2073,10 @@ fn test_batch_transfer_11_recipients_rejected_before_validation() {
     for _ in 0..11 {
         let addr = Address::generate(&h.env);
         h.approve_kyc(&addr);
-        recipients.push_back(RecipientEntry { to: addr, amount: 1 });
+        recipients.push_back(RecipientEntry {
+            to: addr,
+            amount: 1,
+        });
     }
     assert!(h.token.try_batch_transfer(&alice, &recipients).is_err());
 

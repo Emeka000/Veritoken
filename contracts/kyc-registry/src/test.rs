@@ -280,7 +280,7 @@ fn test_approve_accepts_valid_iso_code() {
 fn test_version_returns_nonempty() {
     let (_, client, _) = setup();
     let v = client.version();
-    assert!(v.len() > 0);
+    assert!(!v.is_empty());
 }
 
 // ── Lifecycle history: ordering and content ───────────────────────────────────
@@ -947,11 +947,7 @@ fn test_lifecycle_count_consistent_with_history_length() {
         let count = client.get_lifecycle_count(&subject);
         assert_eq!(count, (i + 1) as u32, "count mismatch after op {i}");
         let hist = client.get_lifecycle_history(&subject, &0, &50);
-        assert_eq!(
-            hist.len(),
-            count,
-            "history length mismatch after op {i}"
-        );
+        assert_eq!(hist.len(), count, "history length mismatch after op {i}");
     }
 }
 
@@ -1008,11 +1004,7 @@ fn test_record_always_matches_latest_lifecycle_entry() {
     let subject = Address::generate(&env);
     client.add_verifier(&admin, &verifier);
 
-    let steps: &[(u32, u64, &str)] = &[
-        (0, 0, "US"),
-        (1, 1000, "DE"),
-        (2, 2000, "GB"),
-    ];
+    let steps: &[(u32, u64, &str)] = &[(0, 0, "US"), (1, 1000, "DE"), (2, 2000, "GB")];
 
     for (tier, expiry, jcode) in steps.iter() {
         client.approve(&verifier, &subject, tier, expiry, &js(&env, jcode));
@@ -1359,9 +1351,8 @@ fn test_migrate_schema_unauthorized_rejected() {
 #[test]
 fn test_migrate_schema_legacy_bootstrap() {
     use crate::DataKey;
-    use soroban_sdk::testutils::storage::Instance;
 
-    let (env, client, admin) = setup();
+    let (env, _client, admin) = setup();
     let contract_id = env.register(crate::KycRegistry, ());
     let legacy = KycRegistryClient::new(&env, &contract_id);
     legacy.initialize(&admin);

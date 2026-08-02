@@ -25,7 +25,7 @@ use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 use carbon_credit_token::{CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
-use invoice_token::{InvoiceToken, InvoiceTokenClient, InvoiceMeta};
+use invoice_token::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use property_token::{PropertyMeta, PropertyToken, PropertyTokenClient};
 use rwa_token::{ComplianceMetadata, RwaToken, RwaTokenClient};
@@ -134,6 +134,7 @@ fn smoke_rwa_token() {
             kyc_id.clone(),
             ce_id.clone(),
             Option::<ComplianceMetadata>::None,
+            0i128,
         ),
     );
     let token = RwaTokenClient::new(&env, &token_id);
@@ -172,7 +173,7 @@ fn smoke_property_token() {
         total_valuation_usd: 1_000_000_000_000,
         total_shares: 1_000,
         property_type: String::from_str(&env, "commercial"),
-        ipfs_title_hash: String::from_str(&env, "Qm..."),
+        ipfs_title_hash: String::from_str(&env, "QmNLei78zWmzUdbeRB3CiUfAizWUrbeeZh5K1rhAQKCh8L"),
         kyc_tier_required: 0,
     };
 
@@ -217,7 +218,7 @@ fn smoke_invoice_token() {
         discount_rate_bps: 200,
         due_date: 1_900_000_000,
         currency: String::from_str(&env, "USD"),
-        ipfs_doc_hash: String::from_str(&env, "Qm..."),
+        ipfs_doc_hash: String::from_str(&env, "QmNLei78zWmzUdbeRB3CiUfAizWUrbeeZh5K1rhAQKCh8L"),
         transfer_fee_bps: 0,
         fee_recipient: None,
         notification_webhook: String::from_str(&env, ""),
@@ -261,7 +262,7 @@ fn smoke_carbon_credit_token() {
         project_type: String::from_str(&env, "forestry"),
         country: String::from_str(&env, "BR"),
         verifier: String::from_str(&env, "Verra"),
-        ipfs_cert_hash: String::from_str(&env, "Qm..."),
+        ipfs_cert_hash: String::from_str(&env, "QmNLei78zWmzUdbeRB3CiUfAizWUrbeeZh5K1rhAQKCh8L"),
         registry_url: String::from_str(&env, "https://registry.verra.org"),
         registry_project_id: String::from_str(&env, "VCS-001"),
     };
@@ -272,7 +273,10 @@ fn smoke_carbon_credit_token() {
     );
     let token = CarbonCreditTokenClient::new(&env, &token_id);
 
-    assert_eq!(token.name(), String::from_str(&env, "Veritoken Carbon Credit"));
+    assert_eq!(
+        token.name(),
+        String::from_str(&env, "Veritoken Carbon Credit")
+    );
     assert_eq!(token.total_supply(), 0);
     assert_eq!(token.total_retired(), 0);
 

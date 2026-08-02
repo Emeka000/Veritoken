@@ -8,7 +8,7 @@
 //! Existing contracts stored the same data under identically-named local variants,
 //! so the encoding is transparent — no on-chain migration is required.
 
-use soroban_sdk::{contracttype, Address, Env, symbol_short};
+use soroban_sdk::{contracttype, symbol_short, Address, Env};
 
 // ── KYC state ─────────────────────────────────────────────────────────────────
 
@@ -157,7 +157,8 @@ pub fn propose_admin(env: &Env, new_admin: Address) {
     env.storage()
         .instance()
         .set(&SharedDataKey::PendingAdmin, &new_admin);
-    env.events().publish((symbol_short!("proposed"),), new_admin);
+    env.events()
+        .publish((symbol_short!("proposed"),), new_admin);
 }
 
 /// Pending admin confirms the handover; replaces the active admin atomically.
@@ -170,7 +171,9 @@ pub fn accept_admin(env: &Env) {
     pending.require_auth();
     let old_admin = read_admin(env);
     write_admin(env, &pending);
-    env.storage().instance().remove(&SharedDataKey::PendingAdmin);
+    env.storage()
+        .instance()
+        .remove(&SharedDataKey::PendingAdmin);
     env.events()
         .publish((symbol_short!("admin_set"),), (old_admin, pending));
 }
@@ -235,8 +238,7 @@ pub fn write_compliance_engine(env: &Env, engine: &Address) {
 pub fn update_compliance_engine(env: &Env, new_engine: Address) {
     require_admin(env);
     write_compliance_engine(env, &new_engine);
-    env.events()
-        .publish((symbol_short!("upd_ce"),), new_engine);
+    env.events().publish((symbol_short!("upd_ce"),), new_engine);
 }
 
 /// Fetches the active compliance rule set from the engine contract.
@@ -355,7 +357,7 @@ pub fn is_valid_ipfs_hash(hash: &soroban_sdk::String) -> bool {
     if len == 0 {
         return true;
     }
-    if len < 46 || len > 128 {
+    if !(46..=128).contains(&len) {
         return false;
     }
     let buf_len = len as usize;
@@ -386,7 +388,7 @@ pub fn is_valid_governing_law(law: &soroban_sdk::String) -> bool {
 
 /// Returns `true` when `year` is a plausible carbon-credit vintage year (1990–2050).
 pub fn is_valid_vintage_year(year: u32) -> bool {
-    year >= 1990 && year <= 2050
+    (1990..=2050).contains(&year)
 }
 
 /// Returns `true` when `currency` is a 3-letter ISO 4217 uppercase code.

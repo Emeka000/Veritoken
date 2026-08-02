@@ -50,10 +50,10 @@ pub fn fetch_kyc_sync_status(env: &Env, addr: &Address) -> KycSyncStatus {
 
     // Map the registry's KycStatus to our local mirror enum.
     let status_mirror = match record.status {
-        kyc_registry_interface::KycStatus::Approved  => KycStatusMirror::Approved,
-        kyc_registry_interface::KycStatus::Revoked   => KycStatusMirror::Revoked,
-        kyc_registry_interface::KycStatus::Rejected  => KycStatusMirror::Rejected,
-        kyc_registry_interface::KycStatus::Pending   => KycStatusMirror::Pending,
+        kyc_registry_interface::KycStatus::Approved => KycStatusMirror::Approved,
+        kyc_registry_interface::KycStatus::Revoked => KycStatusMirror::Revoked,
+        kyc_registry_interface::KycStatus::Rejected => KycStatusMirror::Rejected,
+        kyc_registry_interface::KycStatus::Pending => KycStatusMirror::Pending,
     };
 
     let is_active = matches!(status_mirror, KycStatusMirror::Approved)

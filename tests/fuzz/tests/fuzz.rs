@@ -64,6 +64,7 @@ struct Suite {
     env: Env,
     kyc: KycRegistryClient<'static>,
     ce: ComplianceEngineClient<'static>,
+    #[allow(dead_code)]
     admin: Address,
     verifier: Address,
 }
@@ -83,7 +84,13 @@ fn build_suite() -> Suite {
     let ce = ComplianceEngineClient::new(&env, &ce_id);
     ce.initialize(&admin, &kyc_id, &0u64);
 
-    Suite { env, kyc, ce, admin, verifier }
+    Suite {
+        env,
+        kyc,
+        ce,
+        admin,
+        verifier,
+    }
 }
 
 fn default_rules() -> ComplianceRules {
@@ -118,9 +125,7 @@ fn rules_with(
 #[test]
 fn fuzz_pause_invariant() {
     // Amounts and address pairs to sweep over.
-    let amounts: &[i128] = &[
-        0, 1, 100, 1_000_000, i128::MAX / 2, i128::MAX,
-    ];
+    let amounts: &[i128] = &[0, 1, 100, 1_000_000, i128::MAX / 2, i128::MAX];
 
     for &amount in amounts {
         let s = build_suite();
@@ -229,13 +234,7 @@ fn fuzz_max_transfer_amount_boundary() {
 
 #[test]
 fn fuzz_zero_limit_is_unlimited() {
-    let large_amounts: &[i128] = &[
-        1,
-        1_000_000,
-        1_000_000_000,
-        i64::MAX as i128,
-        i128::MAX / 2,
-    ];
+    let large_amounts: &[i128] = &[1, 1_000_000, 1_000_000_000, i64::MAX as i128, i128::MAX / 2];
 
     for &amount in large_amounts {
         let s = build_suite();
@@ -257,19 +256,19 @@ fn fuzz_min_holding_period_boundary() {
     // (holding_period_secs, elapsed_secs_before_transfer)
     let cases: &[(u64, u64, bool)] = &[
         // elapsed < period → blocked
-        (100,    0,   false),
-        (100,   99,   false),
+        (100, 0, false),
+        (100, 99, false),
         // elapsed == period → allowed (boundary is inclusive)
-        (100,  100,   true),
+        (100, 100, true),
         // elapsed > period → allowed
-        (100,  101,   true),
-        (3600,    0,   false),
-        (3600, 3600,   true),
-        (3600, 7200,   true),
+        (100, 101, true),
+        (3600, 0, false),
+        (3600, 3600, true),
+        (3600, 7200, true),
         // 24-hour period
-        (86400,     0,   false),
-        (86400, 86399,   false),
-        (86400, 86400,   true),
+        (86400, 0, false),
+        (86400, 86399, false),
+        (86400, 86400, true),
         // 365-day max (31_536_000 s)
         (31_536_000, 31_535_999, false),
         (31_536_000, 31_536_000, true),
@@ -417,7 +416,7 @@ fn fuzz_kyc_expiry_edge_cases() {
     // (expiry_value, expected_approved)
     // expiry 0 = never expires.
     let cases: &[(u64, bool)] = &[
-        (0, true),  // 0 = no expiry → approved
+        (0, true),        // 0 = no expiry → approved
         (u64::MAX, true), // far-future expiry → approved
     ];
 
@@ -663,7 +662,7 @@ fn fuzz_compliance_rule_validation() {
         (0, 0),
         (1, 0),
         (i64::MAX as i128, 0),
-        (0, 31_536_000),  // exactly 365 days — valid
+        (0, 31_536_000), // exactly 365 days — valid
         (0, 1),
         (0, 3600),
     ];

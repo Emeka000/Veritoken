@@ -20,6 +20,7 @@ import {
   resolveAction,
 } from "../lib/conflictDetection";
 import type { ComplianceRules, ContractEvent } from "../types";
+import { startComplianceAlertMonitor } from "../lib/alertMonitor";
 
 interface RulesFormState {
   max_transfer_amount: string;
