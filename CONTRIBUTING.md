@@ -46,6 +46,8 @@ npm run dev
 
 ## Making Changes
 
+All incoming issues and pull requests must conform to the new template files. See our [Issue Triage Workflow](.github/triage-workflow.md) for more details.
+
 1. Fork the repo and create a feature branch: `git checkout -b feat/your-feature`
 2. Make your changes
 3. Ensure the following pass before opening a PR:
@@ -110,7 +112,7 @@ Breaking changes (major bumps) must be discussed in an issue before implementati
 
 ## Questions
 
-Open an issue or start a discussion on GitHub. For significant changes, open an issue first to align on approach before writing code.
+Open an [issue](https://github.com/abore9769/Veritoken/issues) or start a discussion on GitHub. For significant changes, open an issue first to align on approach before writing code. Please use the appropriate [issue template](.github/ISSUE_TEMPLATE/) when creating new issues.
 
 ---
 

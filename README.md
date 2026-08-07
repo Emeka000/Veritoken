@@ -273,7 +273,9 @@ See [CHANGELOG.md](CHANGELOG.md) for a full history of changes and the versionin
 
 ## Contributing
 
-Pull requests are welcome. For significant changes, please open an issue first to discuss the approach.
+Pull requests are welcome. All incoming issues and pull requests must conform to the project's [contribution templates](.github/ISSUE_TEMPLATE/) and [triage workflow](.github/triage-workflow.md).
+
+For detailed instructions, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feat/your-feature`)
