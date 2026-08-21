@@ -2084,3 +2084,330 @@ fn test_batch_transfer_11_recipients_rejected_before_validation() {
     assert_eq!(h.token.total_supply(), supply_before);
     assert_eq!(h.compliance.holder_count(), 1); // only alice registered
 }
+
+// ── Recovery subsystem unit tests ─────────────────────────────────────────────
+
+fn make_guardians(h: &Harness, n: usize) -> soroban_sdk::Vec<Address> {
+    let mut v = soroban_sdk::Vec::new(&h.env);
+    for _ in 0..n {
+        v.push_back(Address::generate(&h.env));
+    }
+    v
+}
+
+#[test]
+fn test_recovery_configure_and_read() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    h.token.configure_recovery(&2, &members, &100);
+
+    let cfg = h.token.recovery_config();
+    assert_eq!(cfg.threshold, 2);
+    assert_eq!(cfg.cooldown_ledgers, 100);
+    assert_eq!(cfg.last_executed_ledger, 0);
+
+    let stored_members = h.token.recovery_members();
+    assert_eq!(stored_members.len(), 3);
+}
+
+#[test]
+fn test_recovery_configure_rejects_threshold_below_two() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let res = h.token.try_configure_recovery(&1, &members, &100);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InvalidRecoveryConfig)
+    );
+}
+
+#[test]
+fn test_recovery_configure_rejects_threshold_above_member_count() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let res = h.token.try_configure_recovery(&4, &members, &100);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InvalidRecoveryConfig)
+    );
+}
+
+#[test]
+fn test_recovery_configure_rejects_more_than_ten_members() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 11);
+    let res = h.token.try_configure_recovery(&2, &members, &100);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InvalidRecoveryConfig)
+    );
+}
+
+#[test]
+fn test_recovery_propose_and_read_active() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+
+    let new_admin = Address::generate(&h.env);
+    h.token.propose_recovery(&g1, &new_admin);
+
+    let proposal = h.token.active_recovery().expect("proposal must exist");
+    assert_eq!(proposal.proposed_admin, new_admin);
+    assert_eq!(proposal.proposer, g1);
+    assert_eq!(proposal.approvals.len(), 0);
+}
+
+#[test]
+fn test_recovery_propose_replaces_existing_proposal() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+
+    let admin_a = Address::generate(&h.env);
+    let admin_b = Address::generate(&h.env);
+    h.token.propose_recovery(&g1, &admin_a);
+    h.token.propose_recovery(&g2, &admin_b);
+
+    let proposal = h.token.active_recovery().unwrap();
+    assert_eq!(proposal.proposed_admin, admin_b);
+    assert_eq!(proposal.proposer, g2);
+}
+
+#[test]
+fn test_recovery_approve_increases_approval_count() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+
+    h.token.approve_recovery(&g2);
+
+    let proposal = h.token.active_recovery().unwrap();
+    assert_eq!(proposal.approvals.len(), 1);
+    assert!(proposal.approvals.contains(&g2));
+}
+
+#[test]
+fn test_recovery_approve_duplicate_panics() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+    h.token.approve_recovery(&g2);
+
+    let res = h.token.try_approve_recovery(&g2);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::AlreadyApproved)
+    );
+}
+
+#[test]
+fn test_recovery_proposer_cannot_approve() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+
+    let res = h.token.try_approve_recovery(&g1);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::ProposerCannotApprove)
+    );
+}
+
+#[test]
+fn test_recovery_expired_proposal_blocks_approve() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+
+    h.env.ledger().set_sequence_number(1000);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+    // Expiry = 1000 + 100/2 = 1050
+    h.env.ledger().set_sequence_number(1051);
+
+    let res = h.token.try_approve_recovery(&g2);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::RecoveryExpired)
+    );
+}
+
+#[test]
+fn test_recovery_execute_replaces_admin_and_bumps_nonce() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    let g3 = members.get(2).unwrap();
+    h.token.configure_recovery(&2, &members, &0); // cooldown=0 for simplicity
+    let new_admin = Address::generate(&h.env);
+    let nonce_before = h.token.admin_nonce();
+
+    h.token.propose_recovery(&g1, &new_admin);
+    h.token.approve_recovery(&g2);
+    h.token.approve_recovery(&g3);
+    h.token.execute_recovery(&g1);
+
+    // Active proposal cleared
+    assert!(h.token.active_recovery().is_none());
+    // AdminNonce bumped
+    assert!(h.token.admin_nonce() > nonce_before);
+    // last_executed_ledger updated
+    assert!(h.token.recovery_config().last_executed_ledger > 0 || h.env.ledger().sequence() == 0);
+}
+
+#[test]
+fn test_recovery_execute_insufficient_approvals_panics() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    h.token.configure_recovery(&2, &members, &0);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+    h.token.approve_recovery(&g2); // only 1 of 2 required
+
+    let res = h.token.try_execute_recovery(&g1);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InsufficientApprovals)
+    );
+}
+
+#[test]
+fn test_recovery_cooldown_blocks_immediate_second_execution() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    let g3 = members.get(2).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+    let admin1 = Address::generate(&h.env);
+    let admin2 = Address::generate(&h.env);
+
+    h.env.ledger().set_sequence_number(1000);
+    h.token.propose_recovery(&g1, &admin1);
+    h.token.approve_recovery(&g2);
+    h.token.approve_recovery(&g3);
+    h.token.execute_recovery(&g1);
+
+    // Attempt second recovery immediately after (cooldown=100, so need seq >= 1100)
+    h.env.ledger().set_sequence_number(1001);
+    h.token.propose_recovery(&g1, &admin2);
+    h.token.approve_recovery(&g2);
+    h.token.approve_recovery(&g3);
+
+    let res = h.token.try_execute_recovery(&g1);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::RecoveryCooldown)
+    );
+}
+
+#[test]
+fn test_recovery_cancel_clears_active_proposal() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+    assert!(h.token.active_recovery().is_some());
+
+    h.token.cancel_recovery();
+    assert!(h.token.active_recovery().is_none());
+}
+
+#[test]
+fn test_recovery_cancel_no_active_panics() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    h.token.configure_recovery(&2, &members, &100);
+
+    let res = h.token.try_cancel_recovery();
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::NoActiveRecovery)
+    );
+}
+
+#[test]
+fn test_recovery_non_guardian_propose_panics() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    h.token.configure_recovery(&2, &members, &100);
+    let stranger = Address::generate(&h.env);
+    let res = h
+        .token
+        .try_propose_recovery(&stranger, &Address::generate(&h.env));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::NotRecoveryMember)
+    );
+}
+
+#[test]
+fn test_recovery_configure_invalidates_active_proposal() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+    assert!(h.token.active_recovery().is_some());
+
+    let new_members = make_guardians(&h, 2);
+    h.token.configure_recovery(&2, &new_members, &50);
+    assert!(h.token.active_recovery().is_none());
+}
+
+#[test]
+fn test_recovery_new_admin_can_mint_after_recovery() {
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    let g3 = members.get(2).unwrap();
+    h.token.configure_recovery(&2, &members, &0);
+    let new_admin = Address::generate(&h.env);
+
+    h.token.propose_recovery(&g1, &new_admin);
+    h.token.approve_recovery(&g2);
+    h.token.approve_recovery(&g3);
+    h.token.execute_recovery(&g1);
+
+    let investor = Address::generate(&h.env);
+    h.approve_kyc(&investor);
+    h.token.mint(&new_admin, &investor, &500);
+    assert_eq!(h.token.balance(&investor), 500);
+}

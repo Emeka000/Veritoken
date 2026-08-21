@@ -106,3 +106,27 @@ pub fn emit_role_revoked(env: &Env, role: Symbol, nonce: u64) {
     env.events()
         .publish((symbol_short!("role_rev"),), (role, nonce));
 }
+
+pub fn emit_recovery_configured(env: &Env, threshold: u32, member_count: u32) {
+    env.events()
+        .publish((symbol_short!("rcv_cfg"),), (threshold, member_count));
+}
+
+pub fn emit_recovery_proposed(env: &Env, proposed_admin: Address, expiry_ledger: u64) {
+    env.events()
+        .publish((symbol_short!("rcv_prp"),), (proposed_admin, expiry_ledger));
+}
+
+pub fn emit_recovery_approved(env: &Env, approver: Address, approval_count: u32) {
+    env.events()
+        .publish((symbol_short!("rcv_apv"),), (approver, approval_count));
+}
+
+pub fn emit_recovery_executed(env: &Env, old_admin: Address, new_admin: Address) {
+    env.events()
+        .publish((symbol_short!("rcv_exe"),), (old_admin, new_admin));
+}
+
+pub fn emit_recovery_cancelled(env: &Env) {
+    env.events().publish((symbol_short!("rcv_can"),), ());
+}

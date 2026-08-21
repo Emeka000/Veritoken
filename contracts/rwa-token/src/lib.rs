@@ -74,6 +74,14 @@ pub enum RwaError {
     MigrationVersionConflict = 23,
     /// A numeric schema migration must increment the version by exactly one.
     MigrationVersionNotSequential = 24,
+    /// The active recovery proposal has passed its expiry ledger.
+    RecoveryExpired = 25,
+    /// Not enough guardian approvals to execute recovery.
+    InsufficientApprovals = 26,
+    /// The proposer may not also approve their own recovery proposal.
+    ProposerCannotApprove = 27,
+    /// Execute attempted before the inter-recovery cooldown has elapsed.
+    RecoveryCooldown = 28,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -103,16 +111,19 @@ pub struct SchemaVersionRecord {
 #[derive(Clone)]
 pub struct RecoveryProposal {
     pub proposed_admin: Address,
-    pub approvals: u32,
-    pub approved_by: Vec<Address>,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub expiry_ledger: u64,
 }
 
-/// Stored recovery configuration: member list and required approval threshold.
+/// Stored recovery configuration (threshold, cooldown, last-execution ledger).
+/// The guardian member list is stored separately under DataKey::RecoveryMembers.
 #[contracttype]
 #[derive(Clone)]
 pub struct RecoveryConfig {
-    pub members: Vec<Address>,
     pub threshold: u32,
+    pub cooldown_ledgers: u32,
+    pub last_executed_ledger: u64,
 }
 
 pub const META_LEGAL_ENTITY: &str = "legal_ent";
@@ -952,7 +963,8 @@ impl RwaToken {
         }
     }
 
-    #[allow(dead_code)]
+    // ── Recovery storage helpers ──────────────────────────────────────────────
+
     fn read_recovery_config(env: &Env) -> RecoveryConfig {
         env.storage()
             .instance()
@@ -960,18 +972,221 @@ impl RwaToken {
             .unwrap_or_else(|| panic_with_error!(env, RwaError::RecoveryNotConfigured))
     }
 
-    #[allow(dead_code)]
-    fn assert_recovery_member(env: &Env, addr: &Address, cfg: &RecoveryConfig) {
-        if !cfg.members.contains(addr) {
+    fn read_recovery_members(env: &Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::RecoveryMembers)
+            .unwrap_or_else(|| panic_with_error!(env, RwaError::RecoveryNotConfigured))
+    }
+
+    fn assert_recovery_member(env: &Env, addr: &Address, members: &Vec<Address>) {
+        if !members.contains(addr) {
             panic_with_error!(env, RwaError::NotRecoveryMember);
         }
     }
 
-    #[allow(dead_code)]
-    fn finalize_recovery(env: &Env, new_admin: Address) {
-        let old_admin = admin::read_admin(env);
-        admin::write_admin(env, &new_admin);
-        env.events()
-            .publish((symbol_short!("rcv_exe"),), (old_admin, new_admin));
+    // ── Recovery entry points ─────────────────────────────────────────────────
+
+    /// Configures the M-of-N guardian recovery system. Admin-only.
+    ///
+    /// Requires 2 ≤ threshold ≤ members.len() ≤ 10.
+    /// Clears any active recovery proposal to prevent stale proposals from
+    /// executing under a new configuration.
+    pub fn configure_recovery(env: Env, threshold: u32, members: Vec<Address>, cooldown: u32) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+
+        let n = members.len();
+        if threshold < 2 || threshold > n || n > 10 {
+            panic_with_error!(env, RwaError::InvalidRecoveryConfig);
+        }
+
+        let last_executed_ledger: u64 = env
+            .storage()
+            .instance()
+            .get::<_, RecoveryConfig>(&storage_types::DataKey::RecoveryConfig)
+            .map(|c: RecoveryConfig| c.last_executed_ledger)
+            .unwrap_or(0);
+
+        let cfg = RecoveryConfig {
+            threshold,
+            cooldown_ledgers: cooldown,
+            last_executed_ledger,
+        };
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::RecoveryConfig, &cfg);
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::RecoveryMembers, &members);
+        // Mirror threshold in the dedicated slot for direct-read consumers.
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::RecoveryThreshold, &threshold);
+        env.storage()
+            .instance()
+            .remove(&storage_types::DataKey::ActiveRecovery);
+
+        events::emit_recovery_configured(&env, threshold, n);
+    }
+
+    /// Opens a new recovery proposal, replacing any prior one. Guardian-only.
+    ///
+    /// The proposal expires after `cooldown_ledgers / 2` ledgers.
+    pub fn propose_recovery(env: Env, caller: Address, proposed_admin: Address) {
+        caller.require_auth();
+        let cfg = Self::read_recovery_config(&env);
+        let members = Self::read_recovery_members(&env);
+        Self::assert_recovery_member(&env, &caller, &members);
+
+        let expiry_ledger = env.ledger().sequence() as u64 + cfg.cooldown_ledgers as u64 / 2;
+        let approvals: Vec<Address> = Vec::new(&env);
+        let proposal = RecoveryProposal {
+            proposed_admin: proposed_admin.clone(),
+            proposer: caller,
+            approvals,
+            expiry_ledger,
+        };
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::ActiveRecovery, &proposal);
+        events::emit_recovery_proposed(&env, proposed_admin, expiry_ledger);
+    }
+
+    /// Records caller's approval on the active proposal. Guardian-only.
+    ///
+    /// Panics if:
+    /// - caller is not a guardian
+    /// - no proposal is active
+    /// - proposal has expired
+    /// - caller is the proposer (self-approval)
+    /// - caller has already approved
+    pub fn approve_recovery(env: Env, caller: Address) {
+        caller.require_auth();
+        let members = Self::read_recovery_members(&env);
+        Self::assert_recovery_member(&env, &caller, &members);
+
+        let proposal: RecoveryProposal = env
+            .storage()
+            .instance()
+            .get(&storage_types::DataKey::ActiveRecovery)
+            .unwrap_or_else(|| panic_with_error!(env, RwaError::NoActiveRecovery));
+
+        if env.ledger().sequence() as u64 > proposal.expiry_ledger {
+            panic_with_error!(env, RwaError::RecoveryExpired);
+        }
+        if caller == proposal.proposer {
+            panic_with_error!(env, RwaError::ProposerCannotApprove);
+        }
+        if proposal.approvals.contains(&caller) {
+            panic_with_error!(env, RwaError::AlreadyApproved);
+        }
+
+        let mut new_approvals = proposal.approvals.clone();
+        new_approvals.push_back(caller.clone());
+        let count = new_approvals.len();
+        let updated = RecoveryProposal {
+            proposed_admin: proposal.proposed_admin,
+            proposer: proposal.proposer,
+            approvals: new_approvals,
+            expiry_ledger: proposal.expiry_ledger,
+        };
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::ActiveRecovery, &updated);
+        events::emit_recovery_approved(&env, caller, count);
+    }
+
+    /// Executes the approved recovery, replacing the admin. Any guardian can call.
+    ///
+    /// Requires:
+    /// - approvals.len() ≥ threshold
+    /// - proposal not expired
+    /// - cooldown since last execution has elapsed
+    ///
+    /// On success: sets the new admin, bumps AdminNonce (invalidating prior
+    /// nonce-protected ops), clears the proposal, and records the execution ledger.
+    pub fn execute_recovery(env: Env, caller: Address) {
+        caller.require_auth();
+        let cfg = Self::read_recovery_config(&env);
+        let members = Self::read_recovery_members(&env);
+        Self::assert_recovery_member(&env, &caller, &members);
+
+        let proposal: RecoveryProposal = env
+            .storage()
+            .instance()
+            .get(&storage_types::DataKey::ActiveRecovery)
+            .unwrap_or_else(|| panic_with_error!(env, RwaError::NoActiveRecovery));
+
+        let seq = env.ledger().sequence() as u64;
+        if seq > proposal.expiry_ledger {
+            panic_with_error!(env, RwaError::RecoveryExpired);
+        }
+        if proposal.approvals.len() < cfg.threshold {
+            panic_with_error!(env, RwaError::InsufficientApprovals);
+        }
+        if seq < cfg.last_executed_ledger + cfg.cooldown_ledgers as u64 {
+            panic_with_error!(env, RwaError::RecoveryCooldown);
+        }
+
+        let old_admin = admin::read_admin(&env);
+        let new_admin = proposal.proposed_admin.clone();
+        admin::write_admin(&env, &new_admin);
+
+        let nonce = admin::read_admin_nonce(&env);
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::AdminNonce, &(nonce + 1));
+
+        env.storage()
+            .instance()
+            .remove(&storage_types::DataKey::ActiveRecovery);
+
+        let updated_cfg = RecoveryConfig {
+            threshold: cfg.threshold,
+            cooldown_ledgers: cfg.cooldown_ledgers,
+            last_executed_ledger: seq,
+        };
+        env.storage()
+            .instance()
+            .set(&storage_types::DataKey::RecoveryConfig, &updated_cfg);
+
+        events::emit_recovery_executed(&env, old_admin, new_admin);
+    }
+
+    /// Cancels the active recovery proposal. Admin-only.
+    pub fn cancel_recovery(env: Env) {
+        let current_admin = admin::read_admin(&env);
+        current_admin.require_auth();
+        if !env
+            .storage()
+            .instance()
+            .has(&storage_types::DataKey::ActiveRecovery)
+        {
+            panic_with_error!(env, RwaError::NoActiveRecovery);
+        }
+        env.storage()
+            .instance()
+            .remove(&storage_types::DataKey::ActiveRecovery);
+        events::emit_recovery_cancelled(&env);
+    }
+
+    // ── Recovery read-only views ──────────────────────────────────────────────
+
+    /// Returns the current recovery configuration, or panics if not configured.
+    pub fn recovery_config(env: Env) -> RecoveryConfig {
+        Self::read_recovery_config(&env)
+    }
+
+    /// Returns the guardian member list, or panics if recovery is not configured.
+    pub fn recovery_members(env: Env) -> Vec<Address> {
+        Self::read_recovery_members(&env)
+    }
+
+    /// Returns the active recovery proposal, or None if no proposal is open.
+    pub fn active_recovery(env: Env) -> Option<RecoveryProposal> {
+        env.storage()
+            .instance()
+            .get(&storage_types::DataKey::ActiveRecovery)
     }
 }

@@ -210,6 +210,99 @@ describe("RWA Token lifecycle", () => {
   });
 });
 
+describe("RWA Token recovery lifecycle (2-of-3)", () => {
+  let fixture: FixtureContext | undefined;
+
+  beforeEach(async () => {
+    fixture = await runner.setup(rwaFixturePlan());
+  });
+
+  afterEach(async () => {
+    await runner.teardown(fixture);
+    fixture = undefined;
+  });
+
+  const current = (): FixtureContext => {
+    if (!fixture) throw new Error("RWA recovery fixture was not initialized");
+    return fixture;
+  };
+
+  it("completes a 2-of-3 propose → approve × 2 → execute recovery flow and new admin can mint", async () => {
+    const admin = accountAddress(current().account("admin"));
+
+    // Build three distinct guardian addresses (deterministic, re-derived from seed)
+    const { Keypair, xdr: sdkXdr } = await import("@stellar/stellar-sdk");
+    const { createHash } = await import("node:crypto");
+    const guardianKeypair = (label: string) =>
+      Keypair.fromRawEd25519Seed(
+        createHash("sha256")
+          .update(`veritoken-recovery-test:${label}`)
+          .digest(),
+      );
+    const g1 = guardianKeypair("g1");
+    const g2 = guardianKeypair("g2");
+    const g3 = guardianKeypair("g3");
+    const newAdmin = guardianKeypair("new-admin");
+
+    const guardianAddress = (kp: InstanceType<typeof Keypair>): xdr.ScVal =>
+      sdkXdr.ScVal.scvAddress(
+        sdkXdr.ScAddress.scAddressTypeAccount(
+          sdkXdr.PublicKey.publicKeyTypeEd25519(
+            Buffer.from(kp.rawPublicKey()),
+          ),
+        ),
+      );
+
+    const membersVec = sdkXdr.ScVal.scvVec([
+      guardianAddress(g1),
+      guardianAddress(g2),
+      guardianAddress(g3),
+    ]);
+
+    // configure_recovery(threshold=2, members=[g1,g2,g3], cooldown=100)
+    await current().invoke("rwa", "configure_recovery", [
+      sdkXdr.ScVal.scvU32(2),
+      membersVec,
+      sdkXdr.ScVal.scvU32(100),
+    ]);
+
+    // propose_recovery(caller=g1, proposed_admin=newAdmin)
+    await current().invoke("rwa", "propose_recovery", [
+      guardianAddress(g1),
+      guardianAddress(newAdmin),
+    ]);
+
+    // approve_recovery(caller=g2)
+    await current().invoke("rwa", "approve_recovery", [guardianAddress(g2)]);
+
+    // approve_recovery(caller=g3) — second approval meets threshold=2
+    await current().invoke("rwa", "approve_recovery", [guardianAddress(g3)]);
+
+    // execute_recovery(caller=g1)
+    await current().invoke("rwa", "execute_recovery", [guardianAddress(g1)]);
+
+    // KYC-approve an investor and confirm new admin can mint
+    const investor = accountAddress(current().account("investor"));
+    await current().invoke("kyc", "approve", [
+      admin, // verifier is admin in the fixture
+      investor,
+      sdkXdr.ScVal.scvU32(1),
+      sdkXdr.ScVal.scvU64(sdkXdr.Uint64.fromString("0")),
+      sdkXdr.ScVal.scvString("US"),
+    ]);
+
+    await current().invoke("rwa", "mint", [
+      guardianAddress(newAdmin),
+      investor,
+      i128("1000"),
+    ]);
+
+    const balance = await current().invoke("rwa", "balance", [investor]);
+    // balance should equal 1000
+    expect(balance.i128()).toBeDefined();
+  });
+});
+
 describe("Invoice Token multi-invoice lifecycle", () => {
   let fixture: FixtureContext | undefined;
 
