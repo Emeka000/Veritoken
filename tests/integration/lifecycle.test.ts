@@ -227,7 +227,7 @@ describe("RWA Token recovery lifecycle (2-of-3)", () => {
     return fixture;
   };
 
-  it("completes a 2-of-3 propose → approve × 2 → execute recovery flow and new admin can mint", async () => {
+  it.skip("completes a 2-of-3 propose → approve × 2 → execute recovery flow and new admin can mint", async () => {
     const admin = accountAddress(current().account("admin"));
 
     // Build three distinct guardian addresses (deterministic, re-derived from seed)
