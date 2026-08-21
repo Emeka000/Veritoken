@@ -190,6 +190,99 @@ describe("Compliance Engine lifecycle", () => {
   });
 });
 
+describe("Compliance Engine blocklist lifecycle (20-address scale)", () => {
+  let fixture: FixtureContext | undefined;
+
+  beforeEach(async () => {
+    fixture = await runner.setup(complianceFixturePlan());
+  });
+
+  afterEach(async () => {
+    await runner.teardown(fixture);
+    fixture = undefined;
+  });
+
+  const current = (): FixtureContext => {
+    if (!fixture) throw new Error("Compliance blocklist fixture was not initialized");
+    return fixture;
+  };
+
+  it("adds 20 addresses, migrates schema, and verifies blocklist integrity", async () => {
+    const { Keypair } = await import("@stellar/stellar-sdk");
+    const { createHash } = await import("node:crypto");
+
+    const blocklistKeypair = (n: number) =>
+      Keypair.fromRawEd25519Seed(
+        createHash("sha256")
+          .update(`veritoken-blocklist-test:${n}`)
+          .digest(),
+      );
+
+    const blocklistedAddress = (n: number): xdr.ScVal => {
+      const kp = blocklistKeypair(n);
+      return xdr.ScVal.scvAddress(
+        xdr.ScAddress.scAddressTypeAccount(
+          xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(kp.rawPublicKey())),
+        ),
+      );
+    };
+
+    // Add 20 addresses to the blocklist (admin-signed, all go to persistent storage)
+    for (let i = 0; i < 20; i++) {
+      await current().invoke("compliance", "add_to_blocklist", [
+        blocklistedAddress(i),
+      ]);
+    }
+
+    // Verify count before migration
+    const countBefore = await current().invoke(
+      "compliance",
+      "blocklist_count",
+      [],
+    );
+    expect(countBefore.u32()).toBe(20);
+
+    // Migrate schema v1 → v2 (no old Vec data in instance; persistent data survives)
+    await current().invoke("compliance", "migrate_schema", [
+      xdr.ScVal.scvU32(2),
+      xdr.ScVal.scvString("blocklist-to-persistent"),
+    ]);
+
+    // Verify schema version advanced
+    const ver = await current().invoke("compliance", "schema_version", []);
+    expect(scValToNative(ver)).toBe(2);
+
+    // Every added address must still be blocklisted
+    for (let i = 0; i < 20; i++) {
+      const result = await current().invoke(
+        "compliance",
+        "is_blocklisted",
+        [blocklistedAddress(i)],
+      );
+      expect(scValToNative(result)).toBe(true);
+    }
+
+    // Pagination: page=0 size=10 → 10 results, page=1 size=10 → 10 results
+    const page0 = await current().invoke("compliance", "get_blocklist", [
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(page0.vec()?.length).toBe(10);
+
+    const page1 = await current().invoke("compliance", "get_blocklist", [
+      xdr.ScVal.scvU32(1),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(page1.vec()?.length).toBe(10);
+
+    const page2 = await current().invoke("compliance", "get_blocklist", [
+      xdr.ScVal.scvU32(2),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(page2.vec()?.length).toBe(0);
+  });
+});
+
 describe("RWA Token lifecycle", () => {
   let fixture: FixtureContext | undefined;
 

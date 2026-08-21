@@ -200,12 +200,22 @@ pub enum DataKey {
     Rules,
     PendingProposal,
     RuleChangeDelay,
+    // Legacy vec-based blocklist (instance storage, schema v1 only)
     Blocklist,
     BlocklistCount,
+    // Per-entry persistent blocklist (schema v2+)
+    BlocklistEntry(Address),
+    BlocklistSize,
+    BlocklistMember(u32),
     BlockedJurisdictions,
     HolderCount,
     HolderSince(Address),
+    // Legacy vec-based allowlist (instance storage, schema v1 only)
     Allowlist,
+    // Per-entry persistent allowlist (schema v2+)
+    AllowlistEntry(Address),
+    AllowlistSize,
+    AllowlistMember(u32),
     TierPolicy(TierPolicyKey),
     TierPolicyCount,
     JurisdictionRisk(String),
@@ -425,17 +435,28 @@ impl ComplianceEngine {
     pub fn add_to_blocklist(env: Env, addr: Address) {
         Self::require_admin(&env);
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let mut list = Self::blocklist(&env);
-        if !list.contains(&addr) {
-            list.push_back(addr.clone());
-            let count: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::BlocklistCount)
-                .unwrap_or(0);
+        let entry_key = DataKey::BlocklistEntry(addr.clone());
+        if !env.storage().persistent().has(&entry_key) {
+            env.storage().persistent().set(&entry_key, &true);
             env.storage()
-                .instance()
-                .set(&DataKey::BlocklistCount, &(count + 1));
+                .persistent()
+                .extend_ttl(&entry_key, THRESHOLD, BUMP);
+            let size: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::BlocklistSize)
+                .unwrap_or(0);
+            let member_key = DataKey::BlocklistMember(size);
+            env.storage().persistent().set(&member_key, &addr);
+            env.storage()
+                .persistent()
+                .extend_ttl(&member_key, THRESHOLD, BUMP);
+            env.storage()
+                .persistent()
+                .set(&DataKey::BlocklistSize, &(size + 1));
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::BlocklistSize, THRESHOLD, BUMP);
             let rules: ComplianceRules = env
                 .storage()
                 .instance()
@@ -448,68 +469,105 @@ impl ComplianceEngine {
                 String::from_str(&env, ""),
             );
         }
-        env.storage().instance().set(&DataKey::Blocklist, &list);
         env.events().publish((symbol_short!("blocked"),), addr);
     }
 
     pub fn remove_from_blocklist(env: Env, addr: Address) {
         Self::require_admin(&env);
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let list = Self::blocklist(&env);
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        let mut removed = false;
-        for a in list.iter() {
-            if a != addr {
-                new_list.push_back(a);
-            } else {
-                removed = true;
+        let entry_key = DataKey::BlocklistEntry(addr.clone());
+        if !env.storage().persistent().has(&entry_key) {
+            return;
+        }
+        env.storage().persistent().remove(&entry_key);
+        let size: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BlocklistSize)
+            .unwrap_or(0);
+        // Scan member list to find position, then swap-with-last to compact.
+        let mut pos = u32::MAX;
+        for i in 0..size {
+            let member: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::BlocklistMember(i))
+                .expect("blocklist member at index must exist");
+            if member == addr {
+                pos = i;
+                break;
             }
         }
-        env.storage().instance().set(&DataKey::Blocklist, &new_list);
-        if removed {
-            let count: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::BlocklistCount)
-                .unwrap_or(0);
+        let new_size = size.saturating_sub(1);
+        if pos <= new_size {
+            if pos < new_size {
+                let last: Address = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::BlocklistMember(new_size))
+                    .expect("last blocklist member must exist");
+                let slot = DataKey::BlocklistMember(pos);
+                env.storage().persistent().set(&slot, &last);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&slot, THRESHOLD, BUMP);
+            }
             env.storage()
-                .instance()
-                .set(&DataKey::BlocklistCount, &count.saturating_sub(1));
-            let rules: ComplianceRules = env
-                .storage()
-                .instance()
-                .get(&DataKey::Rules)
-                .expect("rules must be set");
-            Self::append_policy_record(
-                &env,
-                rules,
-                PolicyChangeKind::BlocklistRemove,
-                String::from_str(&env, ""),
-            );
+                .persistent()
+                .remove(&DataKey::BlocklistMember(new_size));
+            env.storage()
+                .persistent()
+                .set(&DataKey::BlocklistSize, &new_size);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::BlocklistSize, THRESHOLD, BUMP);
         }
+        let rules: ComplianceRules = env
+            .storage()
+            .instance()
+            .get(&DataKey::Rules)
+            .expect("rules must be set");
+        Self::append_policy_record(
+            &env,
+            rules,
+            PolicyChangeKind::BlocklistRemove,
+            String::from_str(&env, ""),
+        );
     }
 
     pub fn is_blocklisted(env: Env, addr: Address) -> bool {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::blocklist(&env).contains(&addr)
+        env.storage()
+            .persistent()
+            .has(&DataKey::BlocklistEntry(addr))
     }
 
     pub fn blocklist_count(env: Env) -> u32 {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         env.storage()
-            .instance()
-            .get(&DataKey::BlocklistCount)
+            .persistent()
+            .get(&DataKey::BlocklistSize)
             .unwrap_or(0)
     }
 
-    pub fn get_blocklist(env: Env, start: u32, limit: u32) -> Vec<Address> {
+    /// Returns paginated blocklist entries. `page` is 0-based; returns up to
+    /// `page_size` addresses starting at index `page * page_size`.
+    pub fn get_blocklist(env: Env, page: u32, page_size: u32) -> Vec<Address> {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let all = Self::blocklist(&env);
-        let total = all.len();
+        let size: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BlocklistSize)
+            .unwrap_or(0);
+        let start = page * page_size;
+        let end = (start + page_size).min(size);
         let mut result: Vec<Address> = Vec::new(&env);
-        let end = (start + limit).min(total);
         for i in start..end {
-            if let Some(a) = all.get(i) {
+            if let Some(a) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::BlocklistMember(i))
+            {
                 result.push_back(a);
             }
         }
@@ -521,9 +579,28 @@ impl ComplianceEngine {
     pub fn add_to_allowlist(env: Env, addr: Address) {
         Self::require_admin(&env);
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let mut list = Self::allowlist(&env);
-        if !list.contains(&addr) {
-            list.push_back(addr.clone());
+        let entry_key = DataKey::AllowlistEntry(addr.clone());
+        if !env.storage().persistent().has(&entry_key) {
+            env.storage().persistent().set(&entry_key, &true);
+            env.storage()
+                .persistent()
+                .extend_ttl(&entry_key, THRESHOLD, BUMP);
+            let size: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AllowlistSize)
+                .unwrap_or(0);
+            let member_key = DataKey::AllowlistMember(size);
+            env.storage().persistent().set(&member_key, &addr);
+            env.storage()
+                .persistent()
+                .extend_ttl(&member_key, THRESHOLD, BUMP);
+            env.storage()
+                .persistent()
+                .set(&DataKey::AllowlistSize, &(size + 1));
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::AllowlistSize, THRESHOLD, BUMP);
             let rules: ComplianceRules = env
                 .storage()
                 .instance()
@@ -536,43 +613,110 @@ impl ComplianceEngine {
                 String::from_str(&env, ""),
             );
         }
-        env.storage().instance().set(&DataKey::Allowlist, &list);
         env.events().publish((symbol_short!("al_add"),), addr);
     }
 
     pub fn remove_from_allowlist(env: Env, addr: Address) {
         Self::require_admin(&env);
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        let list = Self::allowlist(&env);
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        let mut was_in = false;
-        for a in list.iter() {
-            if a != addr {
-                new_list.push_back(a);
-            } else {
-                was_in = true;
+        let entry_key = DataKey::AllowlistEntry(addr.clone());
+        if !env.storage().persistent().has(&entry_key) {
+            env.events().publish((symbol_short!("al_rem"),), addr);
+            return;
+        }
+        env.storage().persistent().remove(&entry_key);
+        let size: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AllowlistSize)
+            .unwrap_or(0);
+        let mut pos = u32::MAX;
+        for i in 0..size {
+            let member: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AllowlistMember(i))
+                .expect("allowlist member at index must exist");
+            if member == addr {
+                pos = i;
+                break;
             }
         }
-        env.storage().instance().set(&DataKey::Allowlist, &new_list);
-        if was_in {
-            let rules: ComplianceRules = env
-                .storage()
-                .instance()
-                .get(&DataKey::Rules)
-                .expect("rules must be set");
-            Self::append_policy_record(
-                &env,
-                rules,
-                PolicyChangeKind::AllowlistRemove,
-                String::from_str(&env, ""),
-            );
+        let new_size = size.saturating_sub(1);
+        if pos <= new_size {
+            if pos < new_size {
+                let last: Address = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::AllowlistMember(new_size))
+                    .expect("last allowlist member must exist");
+                let slot = DataKey::AllowlistMember(pos);
+                env.storage().persistent().set(&slot, &last);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&slot, THRESHOLD, BUMP);
+            }
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AllowlistMember(new_size));
+            env.storage()
+                .persistent()
+                .set(&DataKey::AllowlistSize, &new_size);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::AllowlistSize, THRESHOLD, BUMP);
         }
+        let rules: ComplianceRules = env
+            .storage()
+            .instance()
+            .get(&DataKey::Rules)
+            .expect("rules must be set");
+        Self::append_policy_record(
+            &env,
+            rules,
+            PolicyChangeKind::AllowlistRemove,
+            String::from_str(&env, ""),
+        );
         env.events().publish((symbol_short!("al_rem"),), addr);
     }
 
     pub fn is_allowlisted(env: Env, addr: Address) -> bool {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
-        Self::allowlist(&env).contains(&addr)
+        env.storage()
+            .persistent()
+            .has(&DataKey::AllowlistEntry(addr))
+    }
+
+    pub fn allowlist_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .persistent()
+            .get(&DataKey::AllowlistSize)
+            .unwrap_or(0)
+    }
+
+    /// Returns paginated allowlist entries. `page` is 0-based; returns up to
+    /// `page_size` addresses starting at index `page * page_size`.
+    pub fn get_allowlist(env: Env, page: u32, page_size: u32) -> Vec<Address> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let size: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AllowlistSize)
+            .unwrap_or(0);
+        let start = page * page_size;
+        let end = (start + page_size).min(size);
+        let mut result: Vec<Address> = Vec::new(&env);
+        for i in start..end {
+            if let Some(a) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::AllowlistMember(i))
+            {
+                result.push_back(a);
+            }
+        }
+        result
     }
 
     // ── Jurisdiction blocklist ────────────────────────────────────────────────
@@ -661,20 +805,34 @@ impl ComplianceEngine {
             return TransferDecision::Deny(DenyReason::CompliancePaused);
         }
 
-        let blocklist = Self::blocklist(env);
-        if blocklist.contains(from) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::BlocklistEntry(from.clone()))
+        {
             return TransferDecision::Deny(DenyReason::FromBlocklisted);
         }
-        if blocklist.contains(to) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::BlocklistEntry(to.clone()))
+        {
             return TransferDecision::Deny(DenyReason::ToBlocklisted);
         }
 
         if rules.allowlist_mode {
-            let allowlist = Self::allowlist(env);
-            if !allowlist.contains(from) {
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::AllowlistEntry(from.clone()))
+            {
                 return TransferDecision::Deny(DenyReason::FromNotAllowlisted);
             }
-            if !allowlist.contains(to) {
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::AllowlistEntry(to.clone()))
+            {
                 return TransferDecision::Deny(DenyReason::ToNotAllowlisted);
             }
         }
@@ -1242,7 +1400,9 @@ impl ComplianceEngine {
         if to_version != current + 1 {
             panic_with_error!(env, ComplianceError::MigrationVersionNotSequential);
         }
-        let _ = to_version;
+        if to_version == 2 {
+            Self::apply_v2_migration(&env);
+        }
         let count: u32 = env
             .storage()
             .instance()
@@ -1297,18 +1457,78 @@ impl ComplianceEngine {
         }
     }
 
-    fn blocklist(env: &Env) -> Vec<Address> {
-        env.storage()
+    /// Schema v1 → v2: migrate blocklist and allowlist from instance Vec storage
+    /// to per-entry persistent storage.  Safe to call when no old Vec data
+    /// exists (reads an absent key as empty) and idempotent per-address (skips
+    /// entries already present in persistent storage).
+    fn apply_v2_migration(env: &Env) {
+        if let Some(old_list) = env
+            .storage()
             .instance()
-            .get(&DataKey::Blocklist)
-            .unwrap_or_else(|| Vec::new(env))
-    }
+            .get::<DataKey, Vec<Address>>(&DataKey::Blocklist)
+        {
+            let mut size: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::BlocklistSize)
+                .unwrap_or(0);
+            for addr in old_list.iter() {
+                let entry_key = DataKey::BlocklistEntry(addr.clone());
+                if !env.storage().persistent().has(&entry_key) {
+                    env.storage().persistent().set(&entry_key, &true);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&entry_key, THRESHOLD, BUMP);
+                    let member_key = DataKey::BlocklistMember(size);
+                    env.storage().persistent().set(&member_key, &addr);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&member_key, THRESHOLD, BUMP);
+                    size += 1;
+                }
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::BlocklistSize, &size);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::BlocklistSize, THRESHOLD, BUMP);
+            env.storage().instance().remove(&DataKey::Blocklist);
+        }
 
-    fn allowlist(env: &Env) -> Vec<Address> {
-        env.storage()
+        if let Some(old_list) = env
+            .storage()
             .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(env))
+            .get::<DataKey, Vec<Address>>(&DataKey::Allowlist)
+        {
+            let mut size: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AllowlistSize)
+                .unwrap_or(0);
+            for addr in old_list.iter() {
+                let entry_key = DataKey::AllowlistEntry(addr.clone());
+                if !env.storage().persistent().has(&entry_key) {
+                    env.storage().persistent().set(&entry_key, &true);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&entry_key, THRESHOLD, BUMP);
+                    let member_key = DataKey::AllowlistMember(size);
+                    env.storage().persistent().set(&member_key, &addr);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&member_key, THRESHOLD, BUMP);
+                    size += 1;
+                }
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::AllowlistSize, &size);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::AllowlistSize, THRESHOLD, BUMP);
+            env.storage().instance().remove(&DataKey::Allowlist);
+        }
     }
 
     /// Single write path for policy history.  Every ruleset mutation calls this.

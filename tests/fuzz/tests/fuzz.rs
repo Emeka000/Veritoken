@@ -730,3 +730,146 @@ fn fuzz_allowlist_mode_invariant() {
         );
     }
 }
+
+// ── Persistent blocklist/allowlist scale and pagination ───────────────────────
+
+#[test]
+fn fuzz_blocklist_200_addresses() {
+    let s = build_suite();
+    let mut addrs: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+    for _ in 0..200 {
+        let addr = Address::generate(&s.env);
+        s.ce.add_to_blocklist(&addr);
+        addrs.push(addr);
+    }
+    assert_eq!(s.ce.blocklist_count(), 200);
+    for addr in &addrs {
+        assert!(
+            !s.ce.can_transfer(addr, &Address::generate(&s.env), &1),
+            "blocklisted sender must be blocked"
+        );
+        assert!(
+            !s.ce.can_transfer(&Address::generate(&s.env), addr, &1),
+            "blocklisted receiver must be blocked"
+        );
+        assert!(s.ce.is_blocklisted(addr), "is_blocklisted must be true");
+    }
+    for _ in 0..10 {
+        let clean = Address::generate(&s.env);
+        assert!(
+            s.ce.can_transfer(&clean, &Address::generate(&s.env), &1),
+            "non-blocklisted must not be blocked"
+        );
+    }
+}
+
+#[test]
+fn fuzz_blocklist_remove_100_of_200() {
+    let s = build_suite();
+    let mut addrs: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+    for _ in 0..200 {
+        let addr = Address::generate(&s.env);
+        s.ce.add_to_blocklist(&addr);
+        addrs.push(addr);
+    }
+    for addr in addrs.iter().take(100) {
+        s.ce.remove_from_blocklist(addr);
+    }
+    assert_eq!(s.ce.blocklist_count(), 100);
+    for addr in addrs.iter().take(100) {
+        assert!(
+            !s.ce.is_blocklisted(addr),
+            "removed address must no longer be blocklisted"
+        );
+        assert!(
+            s.ce.can_transfer(addr, &Address::generate(&s.env), &1),
+            "removed address must be able to transfer"
+        );
+    }
+    for addr in addrs.iter().skip(100) {
+        assert!(
+            s.ce.is_blocklisted(addr),
+            "non-removed address must remain blocklisted"
+        );
+    }
+}
+
+#[test]
+fn fuzz_allowlist_blocklist_interaction() {
+    let amounts: &[i128] = &[1, 500, 1_000_000];
+    for &amount in amounts {
+        let s = build_suite();
+        let alice = Address::generate(&s.env);
+        let bob = Address::generate(&s.env);
+        let carol = Address::generate(&s.env);
+
+        let allowlist_rules = ComplianceRules {
+            allowlist_mode: true,
+            ..default_rules()
+        };
+        s.ce.set_rules(&allowlist_rules);
+        s.ce.add_to_allowlist(&alice);
+        s.ce.add_to_allowlist(&bob);
+        s.ce.add_to_allowlist(&carol);
+
+        assert!(
+            s.ce.can_transfer(&alice, &bob, &amount),
+            "allowlisted pair must be allowed, amount={amount}"
+        );
+
+        s.ce.add_to_blocklist(&alice);
+        assert!(
+            !s.ce.can_transfer(&alice, &bob, &amount),
+            "blocklist overrides allowlist for sender, amount={amount}"
+        );
+
+        s.ce.remove_from_blocklist(&alice);
+        s.ce.add_to_blocklist(&bob);
+        assert!(
+            !s.ce.can_transfer(&alice, &bob, &amount),
+            "blocklist overrides allowlist for receiver, amount={amount}"
+        );
+
+        s.ce.remove_from_blocklist(&bob);
+        s.ce.remove_from_allowlist(&carol);
+        assert!(
+            !s.ce.can_transfer(&alice, &carol, &amount),
+            "removed from allowlist must be blocked in allowlist_mode, amount={amount}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_blocklist_pagination_no_duplicates() {
+    let page_sizes: &[u32] = &[1, 2, 3, 5, 7, 10, 13, 25, 50];
+    for &ps in page_sizes {
+        let s = build_suite();
+        let mut inserted: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+        for _ in 0..25 {
+            let addr = Address::generate(&s.env);
+            s.ce.add_to_blocklist(&addr);
+            inserted.push(addr);
+        }
+        let mut collected: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+        let mut page = 0u32;
+        loop {
+            let batch = s.ce.get_blocklist(&page, &ps);
+            if batch.is_empty() {
+                break;
+            }
+            for a in batch.iter() {
+                collected.push(a);
+            }
+            page += 1;
+        }
+        assert_eq!(
+            collected.len(),
+            25,
+            "all 25 entries must be returned at page_size={ps}"
+        );
+        for addr in &inserted {
+            let count = collected.iter().filter(|a| *a == addr).count();
+            assert_eq!(count, 1, "duplicate detected at page_size={ps}");
+        }
+    }
+}
