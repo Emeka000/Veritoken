@@ -1,0 +1,141 @@
+name: Integration
+
+on:
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: "Integration tests"
+    runs-on: ubuntu-latest
+    # This job requires the build workflow to have uploaded the wasm-release artifact.
+    # We use workflow_run if triggered from a PR; however for simplicity and to keep
+    # the dependency self-contained, we rebuild the WASMs here as well, then run the
+    # full suite. The artifact download below prefers a prior build upload when
+    # available via the needs chain.
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Download WASMs produced by the build job ─────────────────────────────
+      - name: Download WASM artifacts
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: build.yml
+          workflow_conclusion: success
+          commit: ${{ github.event.pull_request.head.sha }}
+          name: wasm-release
+          path: target/wasm32v1-none/release/
+        # Fall back to a local build if no prior artifact exists for this commit
+        continue-on-error: true
+
+      # ── Build locally if download failed ─────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integration-
+
+      - name: Build WASMs (fallback if artifact download failed)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          wasm_files=(target/wasm32v1-none/release/*.wasm)
+          if [ "${#wasm_files[@]}" -eq 0 ]; then
+            echo "No WASMs found from artifact download — building locally."
+            cargo build --target wasm32v1-none --release \
+              -p kyc-registry -p compliance-engine -p rwa-token \
+              -p invoice-token -p property-token -p carbon-credit-token
+          else
+            echo "Using ${#wasm_files[@]} downloaded WASM artifact(s)."
+          fi
+
+      # ── Start Stellar standalone node ─────────────────────────────────────────
+      - name: Start Stellar Quickstart (standalone)
+        run: >-
+          docker run --detach
+          --name stellar-standalone
+          --publish 8000:8000
+          stellar/quickstart:latest
+          --standalone
+
+      - name: Wait for Stellar RPC to be ready
+        shell: bash
+        run: |
+          echo "Waiting for Stellar RPC at http://localhost:8000 ..."
+          for attempt in $(seq 1 60); do
+            response="$(
+              curl --silent --show-error \
+                --header 'Content-Type: application/json' \
+                --data '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' \
+                http://localhost:8000/soroban/rpc 2>/dev/null || true
+            )"
+            if echo "$response" | grep -q '"status":"healthy"'; then
+              echo "Stellar RPC is healthy after attempt $attempt."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Stellar RPC did not become healthy in time."
+          docker logs stellar-standalone
+          exit 1
+
+      # ── Lifecycle tests ───────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: tests/integration/package-lock.json
+
+      - name: Install integration test dependencies
+        working-directory: tests/integration
+        run: npm ci
+
+      - name: Run lifecycle tests
+        working-directory: tests/integration
+        env:
+          STELLAR_RPC_URL: http://localhost:8000/soroban/rpc
+          STELLAR_NETWORK_PASSPHRASE: Standalone Network ; February 2017
+          WASM_DIR: ${{ github.workspace }}/target/wasm32v1-none/release
+          STELLAR_TRANSACTION_TIMEOUT_MS: "60000"
+        run: npm run test:lifecycle -- --reporter=junit --outputFile=test-results/lifecycle.xml
+
+      # ── Fuzz tests ────────────────────────────────────────────────────────────
+      - name: Run fuzz tests (30-second budget)
+        run: |
+          cargo test --package fuzz-tests -- --test-threads=1
+        env:
+          FUZZ_DURATION_SECS: "30"
+        # Fuzz tests run as property-based tests; a 30s window is advisory
+        continue-on-error: false
+
+      # ── Upload test results ───────────────────────────────────────────────────
+      - name: Upload JUnit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: tests/integration/test-results/*.xml
+          retention-days: 7
+
+      # ── Cleanup ───────────────────────────────────────────────────────────────
+      - name: Print Quickstart logs on failure
+        if: failure()
+        run: docker logs stellar-standalone
+
+      - name: Stop Stellar Quickstart
+        if: always()
+        run: docker rm --force --volumes stellar-standalone

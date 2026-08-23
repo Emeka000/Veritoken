@@ -1,0 +1,19 @@
+{
+  "name": "veritoken-deployment-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "tsx deploy.ts",
+    "check-funded": "tsx check-funded.ts",
+    "verify-manifest": "tsx verify-manifest.ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^12.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.15.7",
+    "typescript": "^5.4.5"
+  }
+}

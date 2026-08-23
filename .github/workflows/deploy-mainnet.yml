@@ -1,0 +1,140 @@
+name: Deploy — Mainnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Git SHA that was successfully deployed to testnet"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  validate-testnet-manifest:
+    name: "Validate testnet manifest exists for SHA"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check testnet manifest exists for provided SHA
+        shell: bash
+        run: |
+          MANIFEST="deployment/manifests/testnet-${{ inputs.sha }}.json"
+          if [[ ! -f "$MANIFEST" ]]; then
+            echo "ERROR: Testnet manifest not found: $MANIFEST"
+            echo "The SHA '${{ inputs.sha }}' was not successfully deployed to testnet,"
+            echo "or the manifest was not committed to the repository."
+            echo ""
+            echo "Available testnet manifests:"
+            ls deployment/manifests/testnet-*.json 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+          echo "Testnet manifest found: $MANIFEST"
+          cat "$MANIFEST"
+
+  deploy-mainnet:
+    name: "Deploy to Mainnet"
+    runs-on: ubuntu-latest
+    needs: validate-testnet-manifest
+    # Manual approval gate via the 'mainnet' GitHub Environment
+    environment: mainnet
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Download WASMs built for the specified SHA ────────────────────────────
+      - name: Download WASM artifacts for SHA ${{ inputs.sha }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: build.yml
+          workflow_conclusion: success
+          commit: ${{ inputs.sha }}
+          name: wasm-release
+          path: target/wasm32v1-none/release/
+        continue-on-error: true
+
+      # ── Rebuild if not cached ─────────────────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-mainnet-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-mainnet-
+
+      - name: Build WASMs (fallback)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          wasm_files=(target/wasm32v1-none/release/*.wasm)
+          if [ "${#wasm_files[@]}" -eq 0 ]; then
+            echo "No cached WASMs — building from source at SHA ${{ inputs.sha }}."
+            cargo build --target wasm32v1-none --release \
+              -p kyc-registry -p compliance-engine -p rwa-token \
+              -p invoice-token -p property-token -p carbon-credit-token
+          fi
+
+      # ── Setup Node ────────────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: deployment/scripts/package-lock.json
+
+      - name: Install deployment script dependencies
+        working-directory: deployment/scripts
+        run: npm ci
+
+      # ── Verify deployer account balance ──────────────────────────────────────
+      - name: Check deployer account is funded
+        working-directory: deployment/scripts
+        env:
+          DEPLOYER_SECRET: ${{ secrets.MAINNET_DEPLOYER_SECRET }}
+          STELLAR_NETWORK: mainnet
+          STELLAR_RPC_URL: https://mainnet.stellar.validationcloud.io/v1/soroban/rpc
+          STELLAR_NETWORK_PASSPHRASE: Public Global Stellar Network ; September 2015
+        run: npx tsx check-funded.ts
+
+      # ── Deploy to mainnet ─────────────────────────────────────────────────────
+      - name: Deploy contracts to Mainnet
+        id: deploy
+        working-directory: deployment/scripts
+        env:
+          DEPLOYER_SECRET: ${{ secrets.MAINNET_DEPLOYER_SECRET }}
+          STELLAR_NETWORK: mainnet
+          STELLAR_RPC_URL: https://mainnet.stellar.validationcloud.io/v1/soroban/rpc
+          STELLAR_NETWORK_PASSPHRASE: Public Global Stellar Network ; September 2015
+          WASM_DIR: ${{ github.workspace }}/target/wasm32v1-none/release
+          CONFIG_FILE: ${{ github.workspace }}/deployment/config.mainnet.json
+          MANIFEST_OUT: ${{ github.workspace }}/deployment/manifests/mainnet-${{ inputs.sha }}.json
+        run: npx tsx deploy.ts
+
+      # ── Commit mainnet manifest ───────────────────────────────────────────────
+      - name: Commit mainnet manifest
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Switch back to main to commit the manifest
+          git fetch origin main
+          git checkout main
+          git add deployment/manifests/mainnet-${{ inputs.sha }}.json
+          if git diff --cached --quiet; then
+            echo "No manifest changes to commit."
+          else
+            git commit -m "chore(deploy): mainnet manifest for ${{ inputs.sha }}"
+            git push origin main
+          fi
