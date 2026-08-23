@@ -665,3 +665,77 @@ fn workflow_shared_compliance_engine_two_tokens() {
     assert_eq!(token_a.balance(&bob), 100);
     assert_eq!(token_b.balance(&bob), 100);
 }
+
+/// 10 subjects approved with overlapping expiry dates across different epoch-days.
+/// get_expiring_soon must return only subjects whose stored expiry falls within
+/// the queried window — no stale entries from superseded approvals.
+#[test]
+fn workflow_kyc_expiry_bucket_ten_subjects_overlap() {
+    let s = build_stack();
+
+    // Base timestamp: start of day 0.
+    s.env.ledger().set_timestamp(0);
+
+    // Approve 10 subjects spread across days 1-10.
+    let mut subjects: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+    for day in 1u64..=10 {
+        let addr = Address::generate(&s.env);
+        subjects.push(addr.clone());
+        s.kyc.approve(
+            &s.verifier,
+            &addr,
+            &1,
+            &(86_400 * day),
+            &String::from_str(&s.env, "US"),
+        );
+    }
+
+    // Query window [now=0, now+5*86400]: should return subjects expiring days 1-5.
+    let window_5days = 86_400 * 5;
+    let expiring = s.kyc.get_expiring_soon(&window_5days, &0, &50);
+    assert_eq!(
+        expiring.len(),
+        5,
+        "expected 5 subjects expiring in 5-day window"
+    );
+    // Verify all returned subjects have expiry in (0, 5*86400].
+    for i in 0..expiring.len() {
+        let rec = expiring.get(i).unwrap();
+        assert!(rec.record.expiry > 0 && rec.record.expiry <= window_5days);
+    }
+
+    // Re-approve subject[0] (expiry day 1) with a new expiry on day 20.
+    // After re-approval, subject[0] must no longer appear in the 5-day window.
+    let first = subjects[0].clone();
+    s.kyc.approve(
+        &s.verifier,
+        &first,
+        &1,
+        &(86_400 * 20),
+        &String::from_str(&s.env, "US"),
+    );
+
+    let expiring_after_reapprove = s.kyc.get_expiring_soon(&window_5days, &0, &50);
+    // Now only 4 subjects should appear (days 2-5; subject[0] moved to day 20).
+    assert_eq!(
+        expiring_after_reapprove.len(),
+        4,
+        "re-approved subject must not appear in old expiry window"
+    );
+    for i in 0..expiring_after_reapprove.len() {
+        assert_ne!(
+            expiring_after_reapprove.get(i).unwrap().addr,
+            first,
+            "re-approved subject must be absent from stale window"
+        );
+    }
+
+    // Full 20-day window should include subject[0] again (now at day 20).
+    let window_20days = 86_400 * 20;
+    let expiring_20 = s.kyc.get_expiring_soon(&window_20days, &0, &50);
+    assert_eq!(
+        expiring_20.len(),
+        10,
+        "all 10 subjects should appear in the 20-day window"
+    );
+}

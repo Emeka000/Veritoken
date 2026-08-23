@@ -1028,3 +1028,78 @@ fn fuzz_recovery_with_concurrent_pending_handover() {
         "AdminNonce must be incremented after recovery"
     );
 }
+
+// ── KYC expiry-bucket fuzz tests ──────────────────────────────────────────────
+
+/// Approve a subject with expiry A, re-approve with expiry B (B > A).
+/// After time advances past A, get_expiring_soon must never return the subject
+/// for a window that covers A but not B — i.e., stale bucket entries from the
+/// first approval must not produce ghost results.
+#[test]
+fn prop_expiry_index_no_stale_results() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let verifier = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    kyc.add_verifier(&admin, &verifier);
+
+    // Matrix: (expiry_A, expiry_B) pairs where B >> A.
+    let pairs: &[(u64, u64)] = &[
+        (86_400, 86_400 * 10),
+        (86_400 * 2, 86_400 * 30),
+        (86_400 * 5, 86_400 * 100),
+    ];
+
+    for &(expiry_a, expiry_b) in pairs {
+        let subject = Address::generate(&env);
+
+        // Approve with expiry A, then immediately re-approve with expiry B.
+        env.ledger().set_timestamp(0);
+        kyc.approve(
+            &verifier,
+            &subject,
+            &0,
+            &expiry_a,
+            &String::from_str(&env, "US"),
+        );
+        kyc.approve(
+            &verifier,
+            &subject,
+            &0,
+            &expiry_b,
+            &String::from_str(&env, "US"),
+        );
+
+        // Advance ledger to just after expiry_a but well before expiry_b.
+        let now = expiry_a + 1;
+        env.ledger().set_timestamp(now);
+
+        // Query window: covers expiry_a (already past) but not expiry_b.
+        // Result must be empty — the stale bucket entry for day(A) should not
+        // surface because SubjectExpiry now holds B (and A is in the past).
+        let window = (expiry_a + 100).saturating_sub(now);
+        let expiring = kyc.get_expiring_soon(&window, &0, &50);
+        for i in 0..expiring.len() {
+            assert_ne!(
+                expiring.get(i).unwrap().addr,
+                subject,
+                "stale entry for expiry_a={expiry_a} returned after re-approve with expiry_b={expiry_b}"
+            );
+        }
+
+        // Now advance to just before expiry_b — the subject SHOULD appear.
+        let before_b = expiry_b - 1;
+        env.ledger().set_timestamp(before_b);
+        let window_b = 86_400 * 2;
+        let expiring_b = kyc.get_expiring_soon(&window_b, &0, &50);
+        let found = (0..expiring_b.len()).any(|i| expiring_b.get(i).unwrap().addr == subject);
+        assert!(
+            found,
+            "subject not found before expiry_b={expiry_b} (expiry_a={expiry_a})"
+        );
+    }
+}
