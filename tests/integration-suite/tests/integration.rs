@@ -470,6 +470,8 @@ fn workflow_carbon_retire_receipt_is_permanent() {
     let alice = Address::generate(&s.env);
     s.onboard(&alice);
 
+    // Set a non-zero ledger timestamp so verify_receipt returns valid=true.
+    s.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
     carbon.mint(&alice, &50);
     carbon.retire(
         &alice,
