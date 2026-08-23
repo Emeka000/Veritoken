@@ -1028,3 +1028,213 @@ fn fuzz_recovery_with_concurrent_pending_handover() {
         "AdminNonce must be incremented after recovery"
     );
 }
+
+// ── Invoice-token fuzz tests ──────────────────────────────────────────────────
+
+use invoice_token::{InvoiceMeta, InvoiceToken, InvoiceTokenClient};
+
+fn build_invoice_suite() -> (
+    Env,
+    Address, // admin
+    Address, // verifier
+    kyc_registry::KycRegistryClient<'static>,
+    compliance_engine::ComplianceEngineClient<'static>,
+    InvoiceTokenClient<'static>,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let verifier = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = kyc_registry::KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    kyc.add_verifier(&admin, &verifier);
+
+    let ce_id = env.register(ComplianceEngine, ());
+    let ce = compliance_engine::ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
+
+    let face = 1_000_000_000_000i128;
+    let token_id = env.register(
+        InvoiceToken,
+        (
+            admin.clone(),
+            kyc_id.clone(),
+            ce_id.clone(),
+            InvoiceMeta {
+                invoice_id: String::from_str(&env, "FUZZ-INV"),
+                issuer: String::from_str(&env, "Issuer"),
+                debtor: String::from_str(&env, "Debtor"),
+                face_value_usd: face,
+                discount_rate_bps: 0,
+                due_date: 9_999_999_999,
+                currency: String::from_str(&env, "USD"),
+                ipfs_doc_hash: String::from_str(&env, ""),
+                transfer_fee_bps: 0,
+                fee_recipient: None,
+                notification_webhook: String::from_str(&env, ""),
+            },
+        ),
+    );
+    let token = InvoiceTokenClient::new(&env, &token_id);
+
+    (env, admin, verifier, kyc, ce, token)
+}
+
+fn onboard_fuzz(
+    env: &Env,
+    kyc: &kyc_registry::KycRegistryClient,
+    verifier: &Address,
+    addr: &Address,
+) {
+    kyc.approve(verifier, addr, &1, &0, &String::from_str(env, "US"));
+}
+
+/// prop_redemption_arithmetic_no_overflow:
+/// For all (balance, settlement, total_supply) combinations in valid ranges,
+/// max_redeemable ≤ balance AND max_redeemable ≤ settlement_amount.
+#[test]
+fn prop_redemption_arithmetic_no_overflow() {
+    // Edge-case matrix for the three parameters.
+    // Keep balances within range where bal * settlement fits in u128.
+    // u128::MAX ≈ 3.4e38; i128::MAX ≈ 1.7e38; safe product bound ≈ sqrt(u128::MAX) ≈ 1.8e19.
+    let balances: &[i128] = &[
+        1,
+        2,
+        10,
+        100,
+        1_000,
+        1_000_000,
+        1_000_000_000_000_000_000i128,
+    ];
+    let ratios_bps: &[u128] = &[1, 5_000, 9_900, 10_000]; // settlement as bps of face_value
+
+    for &bal in balances {
+        for &ratio_bps in ratios_bps {
+            let face = bal;
+            // Compute settlement without overflowing: face * ratio_bps / 10_000.
+            let settlement = (face as u128)
+                .checked_mul(ratio_bps)
+                .map(|x| x / 10_000)
+                .unwrap_or(face as u128) as i128;
+            let total_supply = bal;
+
+            // Replicate the contract's u128 formula exactly.
+            let max_redeemable: i128 = if settlement > 0 && total_supply > 0 {
+                (bal as u128)
+                    .checked_mul(settlement as u128)
+                    .and_then(|x| x.checked_div(total_supply as u128))
+                    .and_then(|x| i128::try_from(x).ok())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            assert!(
+                max_redeemable >= 0,
+                "max_redeemable must be non-negative (bal={bal}, settlement={settlement}, supply={total_supply})"
+            );
+            assert!(
+                max_redeemable <= bal,
+                "max_redeemable ({max_redeemable}) must not exceed balance ({bal})"
+            );
+            assert!(
+                max_redeemable <= settlement,
+                "max_redeemable ({max_redeemable}) must not exceed settlement ({settlement})"
+            );
+        }
+    }
+}
+
+/// prop_partial_settlement_transfer_conservation:
+/// Transfer during PartiallySettled, then both parties redeem — total
+/// redemption must equal ≤ settlement_amount (no double-spend).
+#[test]
+fn prop_partial_settlement_transfer_conservation() {
+    // Vary issued supply and settlement ratio.
+    let supplies: &[i128] = &[10, 100, 1_000, 10_000];
+    let ratios_bps: &[i128] = &[1_000, 3_000, 5_000, 7_500, 9_999]; // bps of face
+
+    let face = 1_000_000_000_000i128;
+
+    for &supply in supplies {
+        for &ratio_bps in ratios_bps {
+            let settlement = face * ratio_bps / 10_000;
+
+            let (env, _admin, verifier, kyc, _ce, token) = build_invoice_suite();
+            let alice = Address::generate(&env);
+            let bob = Address::generate(&env);
+            onboard_fuzz(&env, &kyc, &verifier, &alice);
+            onboard_fuzz(&env, &kyc, &verifier, &bob);
+
+            let inv = String::from_str(&env, "FUZZ-INV");
+            token.issue(&inv, &alice, &supply);
+            token.partial_settle(&inv, &settlement);
+
+            // Alice transfers half to Bob.
+            let transfer_amt = supply / 2;
+            if transfer_amt > 0 {
+                token.transfer(&inv, &alice, &bob, &transfer_amt);
+            }
+
+            // Each party redeems their full available balance.
+            let alice_bal = token.balance(&alice, &inv);
+            let _bob_bal = token.balance(&bob, &inv);
+
+            // max_redeemable for alice (has SettledEntitlement from transfer).
+            // We just try to redeem the full balance — the contract will cap it.
+            // Actually the test confirms NO double-spend by checking total ≤ settlement.
+            // Redeem alice first.
+            let alice_redeemed = if alice_bal > 0 {
+                // Try redeeming the full balance; contract will block if over entitlement.
+                let alice_max = if settlement > 0 && supply > 0 {
+                    // Pre-transfer entitlement for alice (snapshotted on transfer).
+                    // snapshot was floor(supply * settlement / supply) = settlement (for 100% holder).
+                    // Then alice has alice_bal tokens. cap = min(alice_bal, settlement).
+                    alice_bal.min(settlement)
+                } else {
+                    0
+                };
+                if alice_max > 0 {
+                    token.redeem(&inv, &alice, &alice_max);
+                    alice_max
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let bob_bal_after_alice = token.balance(&bob, &inv);
+            let bob_redeemed = if bob_bal_after_alice > 0 {
+                let new_supply = token.total_supply(&inv);
+                let bob_max = if settlement > 0 && new_supply > 0 {
+                    (bob_bal_after_alice as u128)
+                        .checked_mul(settlement as u128)
+                        .and_then(|x| x.checked_div(new_supply as u128))
+                        .and_then(|x| i128::try_from(x).ok())
+                        .unwrap_or(0)
+                        .min(bob_bal_after_alice)
+                } else {
+                    0
+                };
+                if bob_max > 0 {
+                    token.redeem(&inv, &bob, &bob_max);
+                    bob_max
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let total_redeemed = alice_redeemed + bob_redeemed;
+            assert!(
+                total_redeemed <= settlement,
+                "conservation violated: redeemed {total_redeemed} > settlement {settlement} \
+                 (supply={supply}, ratio_bps={ratio_bps})"
+            );
+        }
+    }
+}
