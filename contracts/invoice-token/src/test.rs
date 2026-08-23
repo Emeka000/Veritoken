@@ -1291,3 +1291,460 @@ fn test_transfer_fee_no_recipient_no_deduction() {
     assert_eq!(h.token.balance(&alice, &inv), 0);
     assert_eq!(h.token.balance(&bob, &inv), 1_000);
 }
+
+// ── Fee recipient compliance tests ───────────────────────────────────────────
+
+fn make_fee_invoice(env: &Env, id: &str, fee_recipient: Option<Address>) -> InvoiceMeta {
+    InvoiceMeta {
+        invoice_id: String::from_str(env, id),
+        issuer: String::from_str(env, "Issuer"),
+        debtor: String::from_str(env, "Debtor"),
+        face_value_usd: 1_000_000,
+        discount_rate_bps: 0,
+        due_date: 1_900_000_000,
+        currency: String::from_str(env, "USD"),
+        ipfs_doc_hash: String::from_str(env, ""),
+        transfer_fee_bps: 100, // 1%
+        fee_recipient,
+        notification_webhook: String::from_str(env, ""),
+    }
+}
+
+#[test]
+fn test_fee_recipient_blocklisted_blocks_transfer() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let fee_recipient = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&fee_recipient);
+
+    let inv = String::from_str(&h.env, "FEE-BLOCK");
+    h.token.create_invoice(&make_fee_invoice(
+        &h.env,
+        "FEE-BLOCK",
+        Some(fee_recipient.clone()),
+    ));
+    h.token.issue(&inv, &alice, &10_000);
+
+    // Blocklist the fee recipient AFTER issuing tokens.
+    h.compliance.add_to_blocklist(&fee_recipient);
+
+    // Transfer should fail because fee recipient is on the blocklist.
+    assert!(h.token.try_transfer(&inv, &alice, &bob, &1_000).is_err());
+}
+
+#[test]
+fn test_fee_recipient_exempt_allows_blocklisted() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let fee_recipient = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&fee_recipient);
+
+    let inv = String::from_str(&h.env, "FEE-EXEMPT");
+    h.token.create_invoice(&make_fee_invoice(
+        &h.env,
+        "FEE-EXEMPT",
+        Some(fee_recipient.clone()),
+    ));
+    h.token.issue(&inv, &alice, &10_000);
+
+    // Set exempt flag — per-transfer compliance check for fee recipient is skipped.
+    h.token.set_fee_recipient_exempt(&true);
+    assert!(h.token.is_fee_recipient_exempt());
+
+    // Blocklist the fee recipient.
+    h.compliance.add_to_blocklist(&fee_recipient);
+
+    // Transfer should succeed because FeeRecipientExempt = true.
+    h.token.transfer(&inv, &alice, &bob, &1_000);
+    assert_eq!(h.token.balance(&alice, &inv), 9_000);
+    assert_eq!(h.token.balance(&bob, &inv), 990);
+    assert_eq!(h.token.balance(&fee_recipient, &inv), 10);
+}
+
+#[test]
+fn test_fee_recipient_compliant_transfer_succeeds() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let fee_recipient = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.approve_kyc(&fee_recipient);
+
+    let inv = String::from_str(&h.env, "FEE-COMP");
+    h.token.create_invoice(&make_fee_invoice(
+        &h.env,
+        "FEE-COMP",
+        Some(fee_recipient.clone()),
+    ));
+    h.token.issue(&inv, &alice, &10_000);
+
+    // Transfer succeeds — all parties are compliant.
+    h.token.transfer(&inv, &alice, &bob, &1_000);
+    assert_eq!(h.token.balance(&fee_recipient, &inv), 10);
+}
+
+#[test]
+fn test_set_fee_recipient_rejects_blocklisted_addr() {
+    let h = setup();
+    let bad_addr = Address::generate(&h.env);
+    h.approve_kyc(&bad_addr);
+    h.compliance.add_to_blocklist(&bad_addr);
+
+    // set_fee_recipient must reject a blocklisted address.
+    assert!(h.token.try_set_fee_recipient(&bad_addr).is_err());
+}
+
+#[test]
+fn test_set_fee_recipient_rejects_non_kyc_addr() {
+    let h = setup();
+    let no_kyc = Address::generate(&h.env);
+    // no_kyc has no KYC record.
+    assert!(h.token.try_set_fee_recipient(&no_kyc).is_err());
+}
+
+#[test]
+fn test_set_fee_recipient_stores_valid_addr() {
+    let h = setup();
+    let addr = Address::generate(&h.env);
+    h.approve_kyc(&addr);
+
+    h.token.set_fee_recipient(&addr);
+    assert_eq!(h.token.get_fee_recipient_role(), Some(addr));
+}
+
+// ── Redemption arithmetic tests ───────────────────────────────────────────────
+
+#[test]
+fn test_redemption_arithmetic_small_balance_no_truncation() {
+    let h = setup();
+    let small_holder = Address::generate(&h.env);
+    let big_holder = Address::generate(&h.env);
+    h.approve_kyc(&small_holder);
+    h.approve_kyc(&big_holder);
+
+    // total_supply = 1_000_000_000, small_holder balance = 1, big_holder = 999_999_999
+    // settlement_amount = 999_999_999 (nearly the whole supply's worth)
+    // max_redeemable for small_holder = floor(1 * 999_999_999 / 1_000_000_000) = 0
+    // With new u128 formula this still gives 0, but importantly does NOT panic.
+    // The acceptance criterion: max_redeemable ≥ 0 (no panic, no negative value).
+    let supply = 1_000_000_000i128;
+    let settlement = supply - 1;
+
+    let inv = String::from_str(&h.env, "ARITH-TEST");
+    let m = InvoiceMeta {
+        invoice_id: inv.clone(),
+        issuer: String::from_str(&h.env, "Issuer"),
+        debtor: String::from_str(&h.env, "Debtor"),
+        face_value_usd: supply,
+        discount_rate_bps: 0,
+        due_date: 1_900_000_000,
+        currency: String::from_str(&h.env, "USD"),
+        ipfs_doc_hash: String::from_str(&h.env, ""),
+        transfer_fee_bps: 0,
+        fee_recipient: None,
+        notification_webhook: String::from_str(&h.env, ""),
+    };
+    h.token.create_invoice(&m);
+    // Issue 1 token to small_holder, rest to big_holder so total_supply = supply.
+    h.token.issue(&inv, &small_holder, &1);
+    h.token.issue(&inv, &big_holder, &(supply - 1));
+
+    h.token.partial_settle(&inv, &settlement);
+
+    // max_redeemable for small_holder = floor(1 * (supply-1) / supply) = 0.
+    // Attempting to redeem 1 must fail with OverSettlement (cap = 0), not panic.
+    assert!(
+        h.token.try_redeem(&inv, &small_holder, &1).is_err(),
+        "small holder with max_redeemable=0 must not be able to redeem"
+    );
+
+    // Balance is unchanged after the failed redeem attempt.
+    assert_eq!(h.token.balance(&small_holder, &inv), 1);
+}
+
+#[test]
+fn test_redemption_arithmetic_equal_settlement_and_supply() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    // When settlement_amount == total_supply, max_redeemable == bal (100% ratio).
+    let supply = 1_000_000_000i128;
+    let inv = String::from_str(&h.env, "ARITH-EQ");
+    let m = InvoiceMeta {
+        invoice_id: inv.clone(),
+        issuer: String::from_str(&h.env, "Issuer"),
+        debtor: String::from_str(&h.env, "Debtor"),
+        face_value_usd: supply,
+        discount_rate_bps: 0,
+        due_date: 1_900_000_000,
+        currency: String::from_str(&h.env, "USD"),
+        ipfs_doc_hash: String::from_str(&h.env, ""),
+        transfer_fee_bps: 0,
+        fee_recipient: None,
+        notification_webhook: String::from_str(&h.env, ""),
+    };
+    h.token.create_invoice(&m);
+    h.token.issue(&inv, &holder, &100);
+    h.token.partial_settle(&inv, &supply);
+
+    // max_redeemable = floor(100 * supply / supply) = 100
+    h.token.redeem(&inv, &holder, &100);
+    assert_eq!(h.token.balance(&holder, &inv), 0);
+}
+
+// ── PartiallySettled transfer tests ──────────────────────────────────────────
+
+#[test]
+fn test_transfer_allowed_during_partially_settled() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.issue(&inv_id(&h.env), &alice, &1_000);
+    h.token.partial_settle(&inv_id(&h.env), &500_000_000_000);
+
+    // Transfer should succeed in PartiallySettled state.
+    h.token.transfer(&inv_id(&h.env), &alice, &bob, &400);
+    assert_eq!(h.token.balance(&alice, &inv_id(&h.env)), 600);
+    assert_eq!(h.token.balance(&bob, &inv_id(&h.env)), 400);
+}
+
+#[test]
+fn test_transfer_blocked_in_fully_settled() {
+    // FullySettled still blocks transfers (existing behaviour preserved).
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.issue(&inv_id(&h.env), &alice, &1_000);
+    h.token.settle(&inv_id(&h.env));
+    assert!(h
+        .token
+        .try_transfer(&inv_id(&h.env), &alice, &bob, &100)
+        .is_err());
+}
+
+#[test]
+fn test_partially_settled_transfer_then_redeem_conservation() {
+    // Alice has all tokens. Partial settle at 50%. Alice transfers half to Bob.
+    // Both redeem. Total redemption must not exceed settlement_amount.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    let face = 1_000_000_000_000i128;
+    let supply = 1_000i128;
+    let settlement = face / 2; // 50%
+
+    let inv = inv_id(&h.env);
+    h.token.issue(&inv, &alice, &supply);
+    h.token.partial_settle(&inv, &settlement);
+
+    // Transfer half of Alice's tokens to Bob.
+    h.token.transfer(&inv, &alice, &bob, &500);
+    assert_eq!(h.token.balance(&alice, &inv), 500);
+    assert_eq!(h.token.balance(&bob, &inv), 500);
+
+    // Alice's entitlement was snapshotted before transfer:
+    // floor(1000 * (face/2) / face) = 500_000_000_000... wait:
+    // floor(1000 * settlement / total_supply) where total_supply = 1000
+    // = floor(1000 * 500B / 1000) = 500B, but alice only has 500 tokens.
+    // max_redeemable for alice = min(500, 500B) = 500.
+    // Alice redeems 500:
+    h.token.redeem(&inv, &alice, &500);
+    assert_eq!(h.token.balance(&alice, &inv), 0);
+
+    // Bob redeems: no SettledEntitlement → formula: floor(500 * settlement / 500) = settlement = 500B
+    // But bob only has 500 tokens, so max_redeemable = min(500, 500B) = 500.
+    h.token.redeem(&inv, &bob, &500);
+    assert_eq!(h.token.balance(&bob, &inv), 0);
+
+    // Total redeemed = 1000 tokens ≤ settlement (500_000_000_000 tokens worth).
+    // supply → 0, status → Redeemed.
+    assert_eq!(h.token.total_supply(&inv), 0);
+    assert_eq!(h.token.invoice_status(&inv), InvoiceStatus::Redeemed);
+}
+
+#[test]
+fn test_partially_settled_transfer_entitlement_caps_seller() {
+    // Seller's post-transfer redemption is capped by the pre-transfer entitlement.
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    let face = 1_000_000_000_000i128;
+    let issued = 1_000i128;
+    let settlement = face / 10; // 10% settlement
+
+    h.token.issue(&inv_id(&h.env), &alice, &issued);
+    h.token.partial_settle(&inv_id(&h.env), &settlement);
+
+    // Alice's pre-transfer entitlement: floor(1000 * settlement / 1000) = settlement = 100B
+    // Alice transfers 900 to Bob, keeping 100.
+    h.token.transfer(&inv_id(&h.env), &alice, &bob, &900);
+    assert_eq!(h.token.balance(&alice, &inv_id(&h.env)), 100);
+
+    // Alice's SettledEntitlement is capped at settlement (100B).
+    // She has only 100 tokens, so max_redeemable = min(100, 100B) = 100. Can redeem all.
+    h.token.redeem(&inv_id(&h.env), &alice, &100);
+    assert_eq!(h.token.balance(&alice, &inv_id(&h.env)), 0);
+}
+
+// ── Redemption dust tests ─────────────────────────────────────────────────────
+
+#[test]
+fn test_redemption_dust_initialized_on_partial_settle() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    let settlement = 500_000_000_000i128;
+    h.token.issue(&inv_id(&h.env), &holder, &100);
+    h.token.partial_settle(&inv_id(&h.env), &settlement);
+
+    // Dust = settlement_amount initially (nothing redeemed yet).
+    assert_eq!(h.token.collect_redemption_dust(&inv_id(&h.env)), settlement);
+}
+
+#[test]
+fn test_redemption_dust_decremented_on_redeem() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    h.token.issue(&inv_id(&h.env), &holder, &1_000);
+    h.token.settle(&inv_id(&h.env));
+
+    let initial_dust = h.token.collect_redemption_dust(&inv_id(&h.env));
+    assert_eq!(initial_dust, 1_000_000_000_000i128); // face_value_usd
+
+    h.token.redeem(&inv_id(&h.env), &holder, &400);
+    let remaining_dust = h.token.collect_redemption_dust(&inv_id(&h.env));
+    assert_eq!(remaining_dust, initial_dust - 400);
+}
+
+// ── batch_settle tests ────────────────────────────────────────────────────────
+
+#[test]
+fn test_batch_settle_processes_multiple_invoices() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    let id1 = inv_id(&h.env);
+    let id2 = String::from_str(&h.env, "BATCH-002");
+    let id3 = String::from_str(&h.env, "BATCH-003");
+
+    h.token.create_invoice(&h.make_invoice("BATCH-002"));
+    h.token.create_invoice(&h.make_invoice("BATCH-003"));
+
+    h.token.issue(&id1, &holder, &100);
+    h.token.issue(&id2, &holder, &100);
+    h.token.issue(&id3, &holder, &100);
+
+    let settlements: soroban_sdk::Vec<(String, i128)> = {
+        let mut v = soroban_sdk::Vec::new(&h.env);
+        v.push_back((id1.clone(), 200_000_000_000i128));
+        v.push_back((id2.clone(), 300_000_000_000i128));
+        v.push_back((id3.clone(), 500_000_000_000i128));
+        v
+    };
+
+    let results = h.token.batch_settle(&settlements);
+    assert_eq!(results.len(), 3);
+
+    // All three should succeed (error = None).
+    for i in 0..3 {
+        let r = results.get(i).unwrap();
+        assert!(r.error.is_none(), "invoice {i} should succeed");
+    }
+
+    assert!(h.token.is_settled(&id1));
+    assert!(h.token.is_settled(&id2));
+    assert!(h.token.is_settled(&id3));
+}
+
+#[test]
+fn test_batch_settle_continues_on_individual_failure() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    let id1 = inv_id(&h.env);
+    let id2 = String::from_str(&h.env, "BATCH-ERR-002");
+
+    h.token.create_invoice(&h.make_invoice("BATCH-ERR-002"));
+    h.token.issue(&id1, &holder, &100);
+    h.token.issue(&id2, &holder, &100);
+
+    // Pre-settle id1 so the second attempt in batch fails.
+    h.token.partial_settle(&id1, &200_000_000_000i128);
+
+    let settlements: soroban_sdk::Vec<(String, i128)> = {
+        let mut v = soroban_sdk::Vec::new(&h.env);
+        // id1 is already settled — should fail.
+        v.push_back((id1.clone(), 200_000_000_000i128));
+        // id2 is fresh — should succeed.
+        v.push_back((id2.clone(), 300_000_000_000i128));
+        v
+    };
+
+    let results = h.token.batch_settle(&settlements);
+    assert_eq!(results.len(), 2);
+
+    let r0 = results.get(0).unwrap();
+    let r1 = results.get(1).unwrap();
+
+    // First must fail (AlreadySettled = 2).
+    assert!(r0.error.is_some());
+    assert_eq!(r0.error.unwrap(), 2u32); // AlreadySettled
+
+    // Second must succeed.
+    assert!(r1.error.is_none());
+    assert!(h.token.is_settled(&id2));
+}
+
+#[test]
+fn test_batch_settle_capped_at_10() {
+    let h = setup();
+    let holder = Address::generate(&h.env);
+    h.approve_kyc(&holder);
+
+    // Create 12 invoices using pre-defined IDs.
+    let raw_ids = [
+        "BCAP-000", "BCAP-001", "BCAP-002", "BCAP-003", "BCAP-004", "BCAP-005", "BCAP-006",
+        "BCAP-007", "BCAP-008", "BCAP-009", "BCAP-010", "BCAP-011",
+    ];
+
+    let mut ids: soroban_sdk::Vec<String> = soroban_sdk::Vec::new(&h.env);
+    for raw in raw_ids.iter() {
+        let id = String::from_str(&h.env, raw);
+        h.token.create_invoice(&h.make_invoice(raw));
+        h.token.issue(&id, &holder, &10);
+        ids.push_back(id);
+    }
+
+    let mut settlements: soroban_sdk::Vec<(String, i128)> = soroban_sdk::Vec::new(&h.env);
+    for i in 0..12u32 {
+        settlements.push_back((ids.get(i).unwrap(), 200_000_000i128));
+    }
+
+    let results = h.token.batch_settle(&settlements);
+    // Only 10 should be processed.
+    assert_eq!(results.len(), 10);
+}

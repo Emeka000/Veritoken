@@ -665,3 +665,135 @@ fn workflow_shared_compliance_engine_two_tokens() {
     assert_eq!(token_a.balance(&bob), 100);
     assert_eq!(token_b.balance(&bob), 100);
 }
+
+// ── Invoice: partial settle → transfer → dual redeem ─────────────────────────
+
+/// Integration test: deploy invoice token, partial settle at 50%, transfer half
+/// of position, both parties redeem their entitlements, verify total ≤ settlement.
+///
+/// Uses realistic face values (1T stroops) where settlement >> token count,
+/// so the conservation invariant holds: total_tokens_redeemed ≤ settlement_stroops.
+#[test]
+fn workflow_invoice_partial_settle_transfer_redeem_conservation() {
+    let s = build_stack();
+
+    // Realistic scale: face = 1T stroops, issue 1_000 tokens.
+    let face = 1_000_000_000_000i128;
+    let token_supply = 1_000i128;
+    let token = s.deploy_invoice(face);
+    let inv = String::from_str(&s.env, "INV-INT-001");
+
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    // Issue all tokens to Alice.
+    token.issue(&inv, &alice, &token_supply);
+    assert_eq!(token.total_supply(&inv), token_supply);
+
+    // Partial settle at 50% of face value.
+    let settlement = face / 2; // 500_000_000_000 stroops
+    token.partial_settle(&inv, &settlement);
+    assert_eq!(token.settlement_amount(&inv), settlement);
+    assert_eq!(
+        token.invoice_status(&inv),
+        invoice_token::InvoiceStatus::PartiallySettled
+    );
+
+    // Transfer half of Alice's position to Bob while PartiallySettled.
+    // This must succeed — PartiallySettled no longer blocks transfers.
+    let transfer_amt = token_supply / 2; // 500 tokens
+    token.transfer(&inv, &alice, &bob, &transfer_amt);
+    assert_eq!(token.balance(&alice, &inv), 500);
+    assert_eq!(token.balance(&bob, &inv), 500);
+
+    // Alice's SettledEntitlement = floor(1000 * 500B / 1000) = 500B stroops.
+    // Alice has 500 tokens, max_redeemable = min(500, 500B) = 500 tokens.
+    let alice_before = token.balance(&alice, &inv);
+    token.redeem(&inv, &alice, &alice_before);
+    assert_eq!(token.balance(&alice, &inv), 0);
+
+    // Bob has 500 tokens. No SettledEntitlement — uses formula.
+    // After Alice's redeem: total_supply = 500, settlement = 500B.
+    // max_redeemable for bob = floor(500 * 500B / 500) = 500B ≫ 500 tokens.
+    // max = min(500, 500B) = 500 tokens. Bob redeems all.
+    let bob_before = token.balance(&bob, &inv);
+    token.redeem(&inv, &bob, &bob_before);
+    assert_eq!(token.balance(&bob, &inv), 0);
+
+    // Conservation: total_tokens_redeemed ≤ settlement_amount (in stroops).
+    // With realistic scale (settlement = 500B, tokens = 1000), this always holds.
+    let total_redeemed_tokens = alice_before + bob_before;
+    assert!(
+        total_redeemed_tokens <= settlement,
+        "conservation violated: {total_redeemed_tokens} tokens redeemed > {settlement} settlement"
+    );
+
+    // Dust = settlement - total_tokens_redeemed = 500B - 1000 ≈ 500B (rounding error).
+    let dust = token.collect_redemption_dust(&inv);
+    assert!(dust >= 0, "dust must be non-negative");
+    assert_eq!(dust, settlement - total_redeemed_tokens);
+
+    // All tokens burned — invoice transitions to Redeemed.
+    assert_eq!(token.total_supply(&inv), 0);
+    assert_eq!(
+        token.invoice_status(&inv),
+        invoice_token::InvoiceStatus::Redeemed
+    );
+}
+
+/// Integration test: fee recipient compliance — blocklisted recipient blocks the transfer.
+#[test]
+fn workflow_invoice_fee_recipient_blocklist_blocks_transfer() {
+    let s = build_stack();
+
+    let fee_recipient = Address::generate(&s.env);
+    s.onboard(&fee_recipient);
+
+    // Deploy invoice with 1% transfer fee.
+    let face = 10_000i128;
+    let meta = invoice_token::InvoiceMeta {
+        invoice_id: String::from_str(&s.env, "INV-INT-001"),
+        issuer: String::from_str(&s.env, "Acme Corp"),
+        debtor: String::from_str(&s.env, "Beta Inc"),
+        face_value_usd: face,
+        discount_rate_bps: 0,
+        due_date: 9_999_999_999,
+        currency: String::from_str(&s.env, "USD"),
+        ipfs_doc_hash: String::from_str(&s.env, ""),
+        transfer_fee_bps: 100, // 1%
+        fee_recipient: Some(fee_recipient.clone()),
+        notification_webhook: String::from_str(&s.env, ""),
+    };
+    let token_id = s.env.register(
+        invoice_token::InvoiceToken,
+        (s.admin.clone(), s.kyc_id.clone(), s.ce_id.clone(), meta),
+    );
+    let token = invoice_token::InvoiceTokenClient::new(&s.env, &token_id);
+    let inv = String::from_str(&s.env, "INV-INT-001");
+
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    token.issue(&inv, &alice, &face);
+
+    // Blocklist the fee recipient.
+    s.ce.add_to_blocklist(&fee_recipient);
+
+    // Transfer must fail because fee_recipient is blocklisted and FeeRecipientExempt = false.
+    assert!(
+        token.try_transfer(&inv, &alice, &bob, &1_000).is_err(),
+        "transfer to blocklisted fee recipient must fail"
+    );
+
+    // Set exempt — now transfer should succeed.
+    token.set_fee_recipient_exempt(&true);
+    token.transfer(&inv, &alice, &bob, &1_000);
+    assert_eq!(token.balance(&alice, &inv), 9_000);
+    assert_eq!(token.balance(&bob, &inv), 990);
+    // Fee still goes to the recipient despite blocklist (exempt path).
+    assert_eq!(token.balance(&fee_recipient, &inv), 10);
+}
