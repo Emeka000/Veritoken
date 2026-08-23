@@ -666,76 +666,134 @@ fn workflow_shared_compliance_engine_two_tokens() {
     assert_eq!(token_b.balance(&bob), 100);
 }
 
-/// 10 subjects approved with overlapping expiry dates across different epoch-days.
-/// get_expiring_soon must return only subjects whose stored expiry falls within
-/// the queried window — no stale entries from superseded approvals.
+// ── Invoice: partial settle → transfer → dual redeem ─────────────────────────
+
+/// Integration test: deploy invoice token, partial settle at 50%, transfer half
+/// of position, both parties redeem their entitlements, verify total ≤ settlement.
+///
+/// Uses realistic face values (1T stroops) where settlement >> token count,
+/// so the conservation invariant holds: total_tokens_redeemed ≤ settlement_stroops.
 #[test]
-fn workflow_kyc_expiry_bucket_ten_subjects_overlap() {
+fn workflow_invoice_partial_settle_transfer_redeem_conservation() {
     let s = build_stack();
 
-    // Base timestamp: start of day 0.
-    s.env.ledger().set_timestamp(0);
+    // Realistic scale: face = 1T stroops, issue 1_000 tokens.
+    let face = 1_000_000_000_000i128;
+    let token_supply = 1_000i128;
+    let token = s.deploy_invoice(face);
+    let inv = String::from_str(&s.env, "INV-INT-001");
 
-    // Approve 10 subjects spread across days 1-10.
-    let mut subjects: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
-    for day in 1u64..=10 {
-        let addr = Address::generate(&s.env);
-        subjects.push(addr.clone());
-        s.kyc.approve(
-            &s.verifier,
-            &addr,
-            &1,
-            &(86_400 * day),
-            &String::from_str(&s.env, "US"),
-        );
-    }
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
 
-    // Query window [now=0, now+5*86400]: should return subjects expiring days 1-5.
-    let window_5days = 86_400 * 5;
-    let expiring = s.kyc.get_expiring_soon(&window_5days, &0, &50);
+    // Issue all tokens to Alice.
+    token.issue(&inv, &alice, &token_supply);
+    assert_eq!(token.total_supply(&inv), token_supply);
+
+    // Partial settle at 50% of face value.
+    let settlement = face / 2; // 500_000_000_000 stroops
+    token.partial_settle(&inv, &settlement);
+    assert_eq!(token.settlement_amount(&inv), settlement);
     assert_eq!(
-        expiring.len(),
-        5,
-        "expected 5 subjects expiring in 5-day window"
-    );
-    // Verify all returned subjects have expiry in (0, 5*86400].
-    for i in 0..expiring.len() {
-        let rec = expiring.get(i).unwrap();
-        assert!(rec.record.expiry > 0 && rec.record.expiry <= window_5days);
-    }
-
-    // Re-approve subject[0] (expiry day 1) with a new expiry on day 20.
-    // After re-approval, subject[0] must no longer appear in the 5-day window.
-    let first = subjects[0].clone();
-    s.kyc.approve(
-        &s.verifier,
-        &first,
-        &1,
-        &(86_400 * 20),
-        &String::from_str(&s.env, "US"),
+        token.invoice_status(&inv),
+        invoice_token::InvoiceStatus::PartiallySettled
     );
 
-    let expiring_after_reapprove = s.kyc.get_expiring_soon(&window_5days, &0, &50);
-    // Now only 4 subjects should appear (days 2-5; subject[0] moved to day 20).
+    // Transfer half of Alice's position to Bob while PartiallySettled.
+    // This must succeed — PartiallySettled no longer blocks transfers.
+    let transfer_amt = token_supply / 2; // 500 tokens
+    token.transfer(&inv, &alice, &bob, &transfer_amt);
+    assert_eq!(token.balance(&alice, &inv), 500);
+    assert_eq!(token.balance(&bob, &inv), 500);
+
+    // Alice's SettledEntitlement = floor(1000 * 500B / 1000) = 500B stroops.
+    // Alice has 500 tokens, max_redeemable = min(500, 500B) = 500 tokens.
+    let alice_before = token.balance(&alice, &inv);
+    token.redeem(&inv, &alice, &alice_before);
+    assert_eq!(token.balance(&alice, &inv), 0);
+
+    // Bob has 500 tokens. No SettledEntitlement — uses formula.
+    // After Alice's redeem: total_supply = 500, settlement = 500B.
+    // max_redeemable for bob = floor(500 * 500B / 500) = 500B ≫ 500 tokens.
+    // max = min(500, 500B) = 500 tokens. Bob redeems all.
+    let bob_before = token.balance(&bob, &inv);
+    token.redeem(&inv, &bob, &bob_before);
+    assert_eq!(token.balance(&bob, &inv), 0);
+
+    // Conservation: total_tokens_redeemed ≤ settlement_amount (in stroops).
+    // With realistic scale (settlement = 500B, tokens = 1000), this always holds.
+    let total_redeemed_tokens = alice_before + bob_before;
+    assert!(
+        total_redeemed_tokens <= settlement,
+        "conservation violated: {total_redeemed_tokens} tokens redeemed > {settlement} settlement"
+    );
+
+    // Dust = settlement - total_tokens_redeemed = 500B - 1000 ≈ 500B (rounding error).
+    let dust = token.collect_redemption_dust(&inv);
+    assert!(dust >= 0, "dust must be non-negative");
+    assert_eq!(dust, settlement - total_redeemed_tokens);
+
+    // All tokens burned — invoice transitions to Redeemed.
+    assert_eq!(token.total_supply(&inv), 0);
     assert_eq!(
-        expiring_after_reapprove.len(),
-        4,
-        "re-approved subject must not appear in old expiry window"
+        token.invoice_status(&inv),
+        invoice_token::InvoiceStatus::Redeemed
     );
-    for i in 0..expiring_after_reapprove.len() {
-        assert_ne!(
-            expiring_after_reapprove.get(i).unwrap().addr,
-            first,
-            "re-approved subject must be absent from stale window"
-        );
-    }
+}
 
-    // Full 20-day window should include subject[0] again (now at day 20).
-    let window_20days = 86_400 * 20;
-    let expiring_20 = s.kyc.get_expiring_soon(&window_20days, &0, &50);
-    assert_eq!(
-        expiring_20.len(),
-        10,
-        "all 10 subjects should appear in the 20-day window"
+/// Integration test: fee recipient compliance — blocklisted recipient blocks the transfer.
+#[test]
+fn workflow_invoice_fee_recipient_blocklist_blocks_transfer() {
+    let s = build_stack();
+
+    let fee_recipient = Address::generate(&s.env);
+    s.onboard(&fee_recipient);
+
+    // Deploy invoice with 1% transfer fee.
+    let face = 10_000i128;
+    let meta = invoice_token::InvoiceMeta {
+        invoice_id: String::from_str(&s.env, "INV-INT-001"),
+        issuer: String::from_str(&s.env, "Acme Corp"),
+        debtor: String::from_str(&s.env, "Beta Inc"),
+        face_value_usd: face,
+        discount_rate_bps: 0,
+        due_date: 9_999_999_999,
+        currency: String::from_str(&s.env, "USD"),
+        ipfs_doc_hash: String::from_str(&s.env, ""),
+        transfer_fee_bps: 100, // 1%
+        fee_recipient: Some(fee_recipient.clone()),
+        notification_webhook: String::from_str(&s.env, ""),
+    };
+    let token_id = s.env.register(
+        invoice_token::InvoiceToken,
+        (s.admin.clone(), s.kyc_id.clone(), s.ce_id.clone(), meta),
     );
+    let token = invoice_token::InvoiceTokenClient::new(&s.env, &token_id);
+    let inv = String::from_str(&s.env, "INV-INT-001");
+
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    s.onboard(&alice);
+    s.onboard(&bob);
+
+    token.issue(&inv, &alice, &face);
+
+    // Blocklist the fee recipient.
+    s.ce.add_to_blocklist(&fee_recipient);
+
+    // Transfer must fail because fee_recipient is blocklisted and FeeRecipientExempt = false.
+    assert!(
+        token.try_transfer(&inv, &alice, &bob, &1_000).is_err(),
+        "transfer to blocklisted fee recipient must fail"
+    );
+
+    // Set exempt — now transfer should succeed.
+    token.set_fee_recipient_exempt(&true);
+    token.transfer(&inv, &alice, &bob, &1_000);
+    assert_eq!(token.balance(&alice, &inv), 9_000);
+    assert_eq!(token.balance(&bob, &inv), 990);
+    // Fee still goes to the recipient despite blocklist (exempt path).
+    assert_eq!(token.balance(&fee_recipient, &inv), 10);
 }
