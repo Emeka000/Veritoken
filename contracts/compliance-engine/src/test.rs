@@ -1001,3 +1001,221 @@ fn test_version_returns_nonempty() {
     let (_, ce, _) = setup();
     assert!(!ce.version().is_empty());
 }
+
+// ── Persistent blocklist / allowlist (schema v2) ──────────────────────────────
+
+#[test]
+fn test_is_blocklisted_single_persistent_lookup() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    assert!(!ce.is_blocklisted(&addr));
+    ce.add_to_blocklist(&addr);
+    assert!(ce.is_blocklisted(&addr));
+    ce.remove_from_blocklist(&addr);
+    assert!(!ce.is_blocklisted(&addr));
+}
+
+#[test]
+fn test_blocklist_get_paginated_25_addresses() {
+    let (env, ce, _) = setup();
+    // Add 25 distinct addresses
+    for _ in 0..25 {
+        ce.add_to_blocklist(&Address::generate(&env));
+    }
+    assert_eq!(ce.blocklist_count(), 25);
+
+    let page0 = ce.get_blocklist(&0, &10);
+    assert_eq!(page0.len(), 10);
+
+    let page1 = ce.get_blocklist(&1, &10);
+    assert_eq!(page1.len(), 10);
+
+    let page2 = ce.get_blocklist(&2, &10);
+    assert_eq!(page2.len(), 5);
+
+    // page beyond end is empty
+    let page3 = ce.get_blocklist(&3, &10);
+    assert_eq!(page3.len(), 0);
+}
+
+#[test]
+fn test_blocklist_remove_compaction_preserves_integrity() {
+    let (env, ce, _) = setup();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    ce.add_to_blocklist(&a);
+    ce.add_to_blocklist(&b);
+    ce.add_to_blocklist(&c);
+    assert_eq!(ce.blocklist_count(), 3);
+
+    // Remove the first element — compaction should swap c into position 0
+    ce.remove_from_blocklist(&a);
+    assert_eq!(ce.blocklist_count(), 2);
+    assert!(!ce.is_blocklisted(&a));
+    assert!(ce.is_blocklisted(&b));
+    assert!(ce.is_blocklisted(&c));
+
+    // Full page must have exactly 2 distinct members
+    let page = ce.get_blocklist(&0, &10);
+    assert_eq!(page.len(), 2);
+    assert!(!page.contains(&a));
+    assert!(page.contains(&b));
+    assert!(page.contains(&c));
+}
+
+#[test]
+fn test_blocklist_remove_last_element() {
+    let (env, ce, _) = setup();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    ce.add_to_blocklist(&a);
+    ce.add_to_blocklist(&b);
+    // Remove the last inserted element
+    ce.remove_from_blocklist(&b);
+    assert_eq!(ce.blocklist_count(), 1);
+    assert!(ce.is_blocklisted(&a));
+    assert!(!ce.is_blocklisted(&b));
+    let page = ce.get_blocklist(&0, &10);
+    assert_eq!(page.len(), 1);
+}
+
+#[test]
+fn test_allowlist_crud() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    assert!(!ce.is_allowlisted(&addr));
+    ce.add_to_allowlist(&addr);
+    assert!(ce.is_allowlisted(&addr));
+    ce.remove_from_allowlist(&addr);
+    assert!(!ce.is_allowlisted(&addr));
+}
+
+#[test]
+fn test_allowlist_count_and_get_paginated() {
+    let (env, ce, _) = setup();
+    for _ in 0..15 {
+        ce.add_to_allowlist(&Address::generate(&env));
+    }
+    assert_eq!(ce.allowlist_count(), 15);
+    let page0 = ce.get_allowlist(&0, &10);
+    assert_eq!(page0.len(), 10);
+    let page1 = ce.get_allowlist(&1, &10);
+    assert_eq!(page1.len(), 5);
+}
+
+#[test]
+fn test_allowlist_remove_compaction() {
+    let (env, ce, _) = setup();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    ce.add_to_allowlist(&a);
+    ce.add_to_allowlist(&b);
+    ce.add_to_allowlist(&c);
+    ce.remove_from_allowlist(&a);
+    assert_eq!(ce.allowlist_count(), 2);
+    assert!(!ce.is_allowlisted(&a));
+    assert!(ce.is_allowlisted(&b));
+    assert!(ce.is_allowlisted(&c));
+    let page = ce.get_allowlist(&0, &10);
+    assert_eq!(page.len(), 2);
+    assert!(!page.contains(&a));
+}
+
+#[test]
+fn test_duplicate_blocklist_add_idempotent() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    ce.add_to_blocklist(&addr);
+    ce.add_to_blocklist(&addr); // duplicate — must not double-insert
+    assert_eq!(ce.blocklist_count(), 1);
+    assert_eq!(ce.get_blocklist(&0, &10).len(), 1);
+}
+
+#[test]
+fn test_duplicate_allowlist_add_idempotent() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    ce.add_to_allowlist(&addr);
+    ce.add_to_allowlist(&addr);
+    assert_eq!(ce.allowlist_count(), 1);
+    assert_eq!(ce.get_allowlist(&0, &10).len(), 1);
+}
+
+#[test]
+fn test_remove_absent_blocklist_entry_is_noop() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    // Remove from empty list — must not panic and count stays 0
+    ce.remove_from_blocklist(&addr);
+    assert_eq!(ce.blocklist_count(), 0);
+}
+
+#[test]
+fn test_evaluate_transfer_uses_persistent_blocklist() {
+    let (env, ce, _) = setup();
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    ce.add_to_blocklist(&from);
+    // Single persistent lookup blocks the transfer, no vec iteration
+    assert!(!ce.can_transfer(&from, &to, &1));
+    assert!(!ce.can_transfer(&to, &from, &1));
+    ce.remove_from_blocklist(&from);
+    assert!(ce.can_transfer(&from, &to, &1));
+}
+
+// ── Schema v2 migration ───────────────────────────────────────────────────────
+
+#[test]
+fn test_migration_v2_on_fresh_persistent_data() {
+    let (env, ce, _) = setup();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    // Add addresses using new persistent code (no old Vec in instance)
+    ce.add_to_blocklist(&a);
+    ce.add_to_blocklist(&b);
+    // Migrate v1 → v2: old instance Vec absent, persistent data untouched
+    ce.migrate_schema(&2, &String::from_str(&env, "v1->v2"));
+    assert_eq!(ce.schema_version(), 2);
+    // Existing persistent data survives migration
+    assert!(ce.is_blocklisted(&a));
+    assert!(ce.is_blocklisted(&b));
+    assert_eq!(ce.blocklist_count(), 2);
+}
+
+#[test]
+fn test_migration_v2_twice_fails_safely() {
+    let (env, ce, _) = setup();
+    ce.migrate_schema(&2, &String::from_str(&env, "v1->v2"));
+    assert_eq!(
+        ce.try_migrate_schema(&2, &String::from_str(&env, "dup")),
+        Err(Ok(Error::from(ComplianceError::AlreadyAtSchemaVersion)))
+    );
+    // Data intact after rejected second call
+    assert_eq!(ce.schema_version(), 2);
+}
+
+#[test]
+fn test_migration_v2_records_migration_audit_entry() {
+    let (env, ce, _) = setup();
+    ce.migrate_schema(&2, &String::from_str(&env, "blocklist-persistent"));
+    assert_eq!(ce.migration_count(), 1);
+    let rec = ce.get_migration_record(&0);
+    assert_eq!(rec.from_version, 1);
+    assert_eq!(rec.to_version, 2);
+}
+
+#[test]
+fn test_blocklist_and_allowlist_independent() {
+    let (env, ce, _) = setup();
+    let addr = Address::generate(&env);
+    ce.add_to_blocklist(&addr);
+    ce.add_to_allowlist(&addr);
+    // Same address can be in both lists simultaneously
+    assert!(ce.is_blocklisted(&addr));
+    assert!(ce.is_allowlisted(&addr));
+    ce.remove_from_blocklist(&addr);
+    assert!(!ce.is_blocklisted(&addr));
+    assert!(ce.is_allowlisted(&addr));
+}

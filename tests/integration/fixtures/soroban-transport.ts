@@ -147,7 +147,7 @@ export class SorobanTransport implements FixtureTransport {
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(Operation.uploadContractWasm({ wasm: wasmBytes }))
-        .setTimeout(30)
+        .setTimeout(60)
         .build();
       const result = await this.submit(transaction, request.source, operation);
       const wasmHash = this.returnValue(result)
@@ -190,7 +190,7 @@ export class SorobanTransport implements FixtureTransport {
             wasmHash: Buffer.from(request.wasmHash, "hex"),
           }),
         )
-        .setTimeout(30)
+        .setTimeout(60)
         .build();
       const result = await this.submit(transaction, request.source, operation);
       const contractId = Address.fromScVal(this.returnValue(result)).toString();
@@ -222,7 +222,7 @@ export class SorobanTransport implements FixtureTransport {
         .addOperation(
           new Contract(request.contractId).call(request.method, ...request.args),
         )
-        .setTimeout(30)
+        .setTimeout(60)
         .build();
       const result = await this.submit(transaction, request.source, operation);
       return this.returnValue(result);

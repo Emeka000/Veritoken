@@ -347,3 +347,90 @@ describe("Invoice Token multi-invoice lifecycle", () => {
     expect(invoices.vec()?.length).toBe(2);
   });
 });
+
+describe("Compliance Engine blocklist lifecycle (20-address scale)", () => {
+  let fixture: FixtureContext | undefined;
+
+  beforeEach(async () => {
+    fixture = await runner.setup(complianceFixturePlan());
+  });
+
+  afterEach(async () => {
+    await runner.teardown(fixture);
+    fixture = undefined;
+  });
+
+  const current = (): FixtureContext => {
+    if (!fixture) throw new Error("Compliance blocklist fixture was not initialized");
+    return fixture;
+  };
+
+  it("adds 20 addresses, migrates schema, and verifies blocklist integrity", async () => {
+    const { Keypair } = await import("@stellar/stellar-sdk");
+    const { createHash } = await import("node:crypto");
+
+    const blocklistKeypair = (n: number) =>
+      Keypair.fromRawEd25519Seed(
+        createHash("sha256")
+          .update(`veritoken-blocklist-test:${n}`)
+          .digest(),
+      );
+
+    const blocklistedAddress = (n: number): xdr.ScVal => {
+      const kp = blocklistKeypair(n);
+      return xdr.ScVal.scvAddress(
+        xdr.ScAddress.scAddressTypeAccount(
+          xdr.PublicKey.publicKeyTypeEd25519(Buffer.from(kp.rawPublicKey())),
+        ),
+      );
+    };
+
+    for (let i = 0; i < 20; i++) {
+      await current().invoke("compliance", "add_to_blocklist", [
+        blocklistedAddress(i),
+      ]);
+    }
+
+    const countBefore = await current().invoke(
+      "compliance",
+      "blocklist_count",
+      [],
+    );
+    expect(countBefore.u32()).toBe(20);
+
+    await current().invoke("compliance", "migrate_schema", [
+      xdr.ScVal.scvU32(2),
+      xdr.ScVal.scvString("blocklist-to-persistent"),
+    ]);
+
+    const ver = await current().invoke("compliance", "schema_version", []);
+    expect(scValToNative(ver)).toBe(2);
+
+    for (let i = 0; i < 20; i++) {
+      const result = await current().invoke(
+        "compliance",
+        "is_blocklisted",
+        [blocklistedAddress(i)],
+      );
+      expect(scValToNative(result)).toBe(true);
+    }
+
+    const page0 = await current().invoke("compliance", "get_blocklist", [
+      xdr.ScVal.scvU32(0),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(page0.vec()?.length).toBe(10);
+
+    const page1 = await current().invoke("compliance", "get_blocklist", [
+      xdr.ScVal.scvU32(1),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(page1.vec()?.length).toBe(10);
+
+    const page2 = await current().invoke("compliance", "get_blocklist", [
+      xdr.ScVal.scvU32(2),
+      xdr.ScVal.scvU32(10),
+    ]);
+    expect(page2.vec()?.length).toBe(0);
+  });
+});

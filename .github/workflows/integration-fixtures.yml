@@ -112,6 +112,8 @@ jobs:
 
       - name: Run isolated lifecycle tests
         working-directory: tests/integration
+        env:
+          STELLAR_TRANSACTION_TIMEOUT_MS: "60000"
         run: npm run test:lifecycle
 
       - name: Print Quickstart logs after a failure
