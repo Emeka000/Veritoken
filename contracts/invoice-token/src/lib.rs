@@ -9,7 +9,8 @@
 //! ## Lifecycle state machine
 //! ```text
 //! Created ──issue()──► Issued ──partial_settle()──► PartiallySettled ──settle()──► FullySettled
-//!                         │                                                              │
+//!                         │                                │                             │
+//!                         │                         transfer() OK                        │
 //!                         └──────────────────settle()────────────────────────────────────┘
 //!                                                                              redeem()/supply→0
 //!                                                                           ► Redeemed
@@ -69,6 +70,7 @@ pub enum InvoiceStatus {
     /// At least one token minted; settlement not yet initiated.
     Issued = 1,
     /// Partial payment recorded; redemption is proportional to the settlement ratio.
+    /// Secondary-market transfers are still permitted in this state.
     PartiallySettled = 2,
     /// Full face-value payment recorded; holders may redeem their entire balance.
     FullySettled = 3,
@@ -84,6 +86,15 @@ pub struct JournalEntry {
     pub to_status: InvoiceStatus,
     pub ledger: u32,
     pub timestamp: u64,
+}
+
+/// Result entry for batch_settle — one per invoice processed.
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchSettleResult {
+    pub invoice_id: String,
+    /// None on success; Some(InvoiceError code) on failure.
+    pub error: Option<u32>,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -103,6 +114,16 @@ pub enum DataKey {
     HolderList,
     /// When true, settle() and redeem() are blocked for all invoices.
     LifecyclePaused,
+    /// Contract-level fee recipient role address (instance storage).
+    FeeRecipientRole,
+    /// When true, skip the per-transfer compliance check for the fee recipient (instance storage).
+    FeeRecipientExempt,
+    /// Locked-in redemption entitlement for a holder who transferred during PartiallySettled.
+    /// Stores the remaining entitlement cap (i128, persistent).
+    SettledEntitlement(String, Address),
+    /// Accumulated unredeeemed settlement for an invoice (persistent, i128).
+    /// Initialized to settlement_amount; decremented by each successful redeem().
+    RedemptionDust(String),
 }
 
 // ── Supporting types ──────────────────────────────────────────────────────────
@@ -188,10 +209,65 @@ impl InvoiceToken {
         th::accept_admin(&env);
     }
 
+    // ── Fee recipient role ────────────────────────────────────────────────────
+
+    /// Set the contract-level fee recipient role. Admin-only.
+    /// Validates that `addr` is KYC-approved and not compliance-blocklisted
+    /// at the time of assignment.
+    pub fn set_fee_recipient(env: Env, addr: Address) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        th::require_admin(&env);
+        if th::get_kyc_state_of(&env, &addr) != th::KycState::Approved {
+            panic_with_error!(env, InvoiceError::KycNotApproved);
+        }
+        // Verify the address passes a self-to-self compliance check (catches blocklist/pause).
+        match th::evaluate_transfer_compliance(&env, &addr, &addr, 0) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, InvoiceError::KycNotApproved);
+                } else {
+                    panic_with_error!(env, InvoiceError::TransferBlocked);
+                }
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeRecipientRole, &addr);
+        env.events().publish((symbol_short!("fee_role"),), addr);
+    }
+
+    /// Set or clear the fee recipient exempt flag. When true, per-transfer compliance
+    /// checks for the fee recipient are skipped and a `fee_skip` event is emitted.
+    /// Admin-only.
+    pub fn set_fee_recipient_exempt(env: Env, exempt: bool) {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        th::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeRecipientExempt, &exempt);
+        env.events().publish((symbol_short!("fee_xmpt"),), exempt);
+    }
+
+    /// Returns the contract-level fee recipient role address, if set.
+    pub fn get_fee_recipient_role(env: Env) -> Option<Address> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage().instance().get(&DataKey::FeeRecipientRole)
+    }
+
+    /// Returns whether the fee recipient compliance check is currently exempt.
+    pub fn is_fee_recipient_exempt(env: Env) -> bool {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeRecipientExempt)
+            .unwrap_or(false)
+    }
+
     // ── Lifecycle pause ───────────────────────────────────────────────────────
 
     /// Pause settlement and redemption for all invoices in this contract.
-    /// Ordinary transfers (while in `Issued` state) are unaffected.
+    /// Ordinary transfers (while in `Issued` or `PartiallySettled` state) are unaffected.
     /// Admin-only.
     pub fn pause_lifecycle(env: Env) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
@@ -400,6 +476,18 @@ impl InvoiceToken {
             THRESHOLD,
             BUMP,
         );
+
+        // Initialize redemption dust accumulator.
+        env.storage().persistent().set(
+            &DataKey::RedemptionDust(invoice_id.clone()),
+            &meta.face_value_usd,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::RedemptionDust(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+
         env.events().publish(
             (symbol_short!("settled"),),
             (invoice_id, meta.notification_webhook),
@@ -446,6 +534,18 @@ impl InvoiceToken {
             THRESHOLD,
             BUMP,
         );
+
+        // Initialize redemption dust accumulator.
+        env.storage().persistent().set(
+            &DataKey::RedemptionDust(invoice_id.clone()),
+            &settlement_amount,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::RedemptionDust(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+
         env.events().publish(
             (symbol_short!("p_settld"),),
             (invoice_id, settlement_amount),
@@ -458,6 +558,37 @@ impl InvoiceToken {
             .persistent()
             .get(&DataKey::SettlementAmount(invoice_id))
             .unwrap_or(0)
+    }
+
+    /// Returns the remaining unredeemed settlement amount (dust) for an invoice.
+    /// Admin-only.
+    pub fn collect_redemption_dust(env: Env, invoice_id: String) -> i128 {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        th::require_admin(&env);
+        env.storage()
+            .persistent()
+            .get(&DataKey::RedemptionDust(invoice_id))
+            .unwrap_or(0)
+    }
+
+    /// Batch-settle up to 10 invoices in a single admin call.
+    /// Each `(invoice_id, amount)` pair runs the partial_settle state machine.
+    /// Failures are recorded in the result map; processing continues on error.
+    pub fn batch_settle(env: Env, settlements: Vec<(String, i128)>) -> Vec<BatchSettleResult> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        th::require_admin(&env);
+
+        let total = settlements.len();
+        let cap: u32 = 10;
+        let effective = if total > cap { cap } else { total };
+
+        let mut results: Vec<BatchSettleResult> = Vec::new(&env);
+        for i in 0..effective {
+            let (invoice_id, amount) = settlements.get(i).expect("index in bounds");
+            let error = Self::try_do_partial_settle(&env, &invoice_id, amount);
+            results.push_back(BatchSettleResult { invoice_id, error });
+        }
+        results
     }
 
     /// Redeem (burn) tokens after settlement.
@@ -500,11 +631,26 @@ impl InvoiceToken {
             .persistent()
             .get(&DataKey::TotalSupply(invoice_id.clone()))
             .unwrap_or(0);
-        if settlement > 0 && total_supply > 0 {
-            let max_redeemable = bal * settlement / total_supply;
-            if amount > max_redeemable {
-                panic_with_error!(env, InvoiceError::OverSettlement);
-            }
+
+        // Compute max_redeemable: use SettledEntitlement if set (PartiallySettled transfer path),
+        // otherwise use u128 arithmetic to avoid truncation-to-zero for small balances.
+        let ent_key = DataKey::SettledEntitlement(invoice_id.clone(), from.clone());
+        let has_entitlement = env.storage().persistent().has(&ent_key);
+        let max_redeemable: i128 = if has_entitlement {
+            let stored: i128 = env.storage().persistent().get(&ent_key).unwrap_or(0);
+            stored.min(bal)
+        } else if settlement > 0 && total_supply > 0 {
+            (bal as u128)
+                .checked_mul(settlement as u128)
+                .and_then(|x| x.checked_div(total_supply as u128))
+                .and_then(|x| i128::try_from(x).ok())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        if amount > max_redeemable {
+            panic_with_error!(env, InvoiceError::OverSettlement);
         }
 
         let new_bal = bal - amount;
@@ -521,6 +667,30 @@ impl InvoiceToken {
             THRESHOLD,
             BUMP,
         );
+
+        // Decrement SettledEntitlement by amount redeemed.
+        if has_entitlement {
+            let stored: i128 = env.storage().persistent().get(&ent_key).unwrap_or(0);
+            let remaining = stored.saturating_sub(amount);
+            if remaining == 0 {
+                env.storage().persistent().remove(&ent_key);
+            } else {
+                env.storage().persistent().set(&ent_key, &remaining);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&ent_key, THRESHOLD, BUMP);
+            }
+        }
+
+        // Decrement dust accumulator.
+        let dust_key = DataKey::RedemptionDust(invoice_id.clone());
+        if let Some(dust) = env.storage().persistent().get::<DataKey, i128>(&dust_key) {
+            let new_dust = dust.saturating_sub(amount);
+            env.storage().persistent().set(&dust_key, &new_dust);
+            env.storage()
+                .persistent()
+                .extend_ttl(&dust_key, THRESHOLD, BUMP);
+        }
 
         if new_supply == 0 {
             Self::transition_status(&env, &invoice_id, status, InvoiceStatus::Redeemed);
@@ -653,17 +823,20 @@ impl InvoiceToken {
         Self::read_balance(&env, id, invoice_id)
     }
 
-    /// Transfer tokens between holders. Blocked once settlement has begun.
+    /// Transfer tokens between holders.
+    /// Blocked in FullySettled and Redeemed states; allowed in Issued and PartiallySettled.
+    /// When in PartiallySettled, the sender's redemption entitlement is snapshotted
+    /// to prevent over-redemption after the transfer.
     pub fn transfer(env: Env, invoice_id: String, from: Address, to: Address, amount: i128) {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         from.require_auth();
 
         let status = Self::read_status(&env, &invoice_id);
         match status {
-            InvoiceStatus::Issued => {}
-            InvoiceStatus::PartiallySettled
-            | InvoiceStatus::FullySettled
-            | InvoiceStatus::Redeemed => panic_with_error!(env, InvoiceError::AlreadySettled),
+            InvoiceStatus::Issued | InvoiceStatus::PartiallySettled => {}
+            InvoiceStatus::FullySettled | InvoiceStatus::Redeemed => {
+                panic_with_error!(env, InvoiceError::AlreadySettled)
+            }
             InvoiceStatus::Created => {
                 panic_with_error!(env, InvoiceError::InvalidLifecycleTransition)
             }
@@ -705,6 +878,39 @@ impl InvoiceToken {
         };
         let net_amount = amount - fee;
 
+        // ── PartiallySettled entitlement snapshot ────────────────────────
+        // Record the sender's redemption cap before balances change.
+        if status == InvoiceStatus::PartiallySettled {
+            let settlement: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SettlementAmount(invoice_id.clone()))
+                .unwrap_or(0);
+            let total_supply: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TotalSupply(invoice_id.clone()))
+                .unwrap_or(0);
+            let from_bal_now = Self::read_balance(&env, from.clone(), invoice_id.clone());
+            if total_supply > 0 && settlement > 0 {
+                let computed = (from_bal_now as u128)
+                    .checked_mul(settlement as u128)
+                    .and_then(|x| x.checked_div(total_supply as u128))
+                    .unwrap_or(0) as i128;
+                let ent_key = DataKey::SettledEntitlement(invoice_id.clone(), from.clone());
+                let existing: Option<i128> = env.storage().persistent().get(&ent_key);
+                // Take the minimum to prevent entitlement from growing on repeated transfers.
+                let to_store = match existing {
+                    None => computed,
+                    Some(e) => e.min(computed),
+                };
+                env.storage().persistent().set(&ent_key, &to_store);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&ent_key, THRESHOLD, BUMP);
+            }
+        }
+
         let from_bal = Self::read_balance(&env, from.clone(), invoice_id.clone());
         if from_bal < amount {
             panic_with_error!(env, InvoiceError::InsufficientBalance);
@@ -730,6 +936,27 @@ impl InvoiceToken {
         );
         if fee > 0 {
             if let Some(ref recipient) = meta.fee_recipient {
+                // Compliance check for the fee recipient unless exempt.
+                let exempt: bool = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::FeeRecipientExempt)
+                    .unwrap_or(false);
+                if exempt {
+                    env.events()
+                        .publish((symbol_short!("fee_skip"),), recipient.clone());
+                } else {
+                    match th::evaluate_transfer_compliance(&env, &from, recipient, fee) {
+                        th::TransferDecision::Allow => {}
+                        th::TransferDecision::Deny(ref reason) => {
+                            if th::is_kyc_deny_reason(reason) {
+                                panic_with_error!(env, InvoiceError::KycNotApproved);
+                            } else {
+                                panic_with_error!(env, InvoiceError::TransferBlocked);
+                            }
+                        }
+                    }
+                }
                 let rec_bal = Self::read_balance(&env, recipient.clone(), invoice_id.clone());
                 env.storage().persistent().set(
                     &DataKey::Balance(recipient.clone(), invoice_id.clone()),
@@ -748,7 +975,8 @@ impl InvoiceToken {
             .publish((symbol_short!("transfer"), from, to), (invoice_id, amount));
     }
 
-    /// Delegated transfer. Blocked once settlement has begun.
+    /// Delegated transfer.
+    /// Blocked in FullySettled and Redeemed states; allowed in Issued and PartiallySettled.
     pub fn transfer_from(
         env: Env,
         spender: Address,
@@ -761,10 +989,10 @@ impl InvoiceToken {
 
         let status = Self::read_status(&env, &invoice_id);
         match status {
-            InvoiceStatus::Issued => {}
-            InvoiceStatus::PartiallySettled
-            | InvoiceStatus::FullySettled
-            | InvoiceStatus::Redeemed => panic_with_error!(env, InvoiceError::AlreadySettled),
+            InvoiceStatus::Issued | InvoiceStatus::PartiallySettled => {}
+            InvoiceStatus::FullySettled | InvoiceStatus::Redeemed => {
+                panic_with_error!(env, InvoiceError::AlreadySettled)
+            }
             InvoiceStatus::Created => {
                 panic_with_error!(env, InvoiceError::InvalidLifecycleTransition)
             }
@@ -808,8 +1036,38 @@ impl InvoiceToken {
             },
         );
 
+        // ── PartiallySettled entitlement snapshot ────────────────────────
+        if status == InvoiceStatus::PartiallySettled {
+            let settlement: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SettlementAmount(invoice_id.clone()))
+                .unwrap_or(0);
+            let total_supply: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TotalSupply(invoice_id.clone()))
+                .unwrap_or(0);
+            let from_bal_now = Self::read_balance(&env, from.clone(), invoice_id.clone());
+            if total_supply > 0 && settlement > 0 {
+                let computed = (from_bal_now as u128)
+                    .checked_mul(settlement as u128)
+                    .and_then(|x| x.checked_div(total_supply as u128))
+                    .unwrap_or(0) as i128;
+                let ent_key = DataKey::SettledEntitlement(invoice_id.clone(), from.clone());
+                let existing: Option<i128> = env.storage().persistent().get(&ent_key);
+                let to_store = match existing {
+                    None => computed,
+                    Some(e) => e.min(computed),
+                };
+                env.storage().persistent().set(&ent_key, &to_store);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&ent_key, THRESHOLD, BUMP);
+            }
+        }
+
         // ── Fee deduction ────────────────────────────────────────────────
-        // `meta` was already fetched above for the due_date check; reuse it here.
         let fee = if meta.transfer_fee_bps > 0 {
             if meta.fee_recipient.is_some() {
                 amount * meta.transfer_fee_bps as i128 / 10_000
@@ -846,6 +1104,27 @@ impl InvoiceToken {
         );
         if fee > 0 {
             if let Some(ref recipient) = meta.fee_recipient {
+                // Compliance check for the fee recipient unless exempt.
+                let exempt: bool = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::FeeRecipientExempt)
+                    .unwrap_or(false);
+                if exempt {
+                    env.events()
+                        .publish((symbol_short!("fee_skip"),), recipient.clone());
+                } else {
+                    match th::evaluate_transfer_compliance(&env, &from, recipient, fee) {
+                        th::TransferDecision::Allow => {}
+                        th::TransferDecision::Deny(ref reason) => {
+                            if th::is_kyc_deny_reason(reason) {
+                                panic_with_error!(env, InvoiceError::KycNotApproved);
+                            } else {
+                                panic_with_error!(env, InvoiceError::TransferBlocked);
+                            }
+                        }
+                    }
+                }
                 let rec_bal = Self::read_balance(&env, recipient.clone(), invoice_id.clone());
                 env.storage().persistent().set(
                     &DataKey::Balance(recipient.clone(), invoice_id.clone()),
@@ -1101,5 +1380,70 @@ impl InvoiceToken {
                 amount: 0,
                 expiration_ledger: 0,
             })
+    }
+
+    /// Non-panicking settlement helper used by `batch_settle`.
+    /// Returns None on success, Some(InvoiceError code) on failure.
+    fn try_do_partial_settle(
+        env: &Env,
+        invoice_id: &String,
+        settlement_amount: i128,
+    ) -> Option<u32> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::LifecyclePaused)
+            .unwrap_or(false);
+        if paused {
+            return Some(InvoiceError::LifecyclePaused as u32);
+        }
+        if settlement_amount <= 0 {
+            return Some(InvoiceError::UnderSettlement as u32);
+        }
+        let meta: Option<InvoiceMeta> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InvoiceMeta(invoice_id.clone()));
+        let meta = match meta {
+            None => return Some(InvoiceError::InvoiceNotFound as u32),
+            Some(m) => m,
+        };
+        if settlement_amount > meta.face_value_usd {
+            return Some(InvoiceError::OverSettlement as u32);
+        }
+        let from_status = Self::read_status(env, invoice_id);
+        match from_status {
+            InvoiceStatus::Created | InvoiceStatus::Issued => {}
+            _ => return Some(InvoiceError::AlreadySettled as u32),
+        }
+        let to_status = if settlement_amount == meta.face_value_usd {
+            InvoiceStatus::FullySettled
+        } else {
+            InvoiceStatus::PartiallySettled
+        };
+        Self::transition_status(env, invoice_id, from_status, to_status);
+        env.storage().persistent().set(
+            &DataKey::SettlementAmount(invoice_id.clone()),
+            &settlement_amount,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::SettlementAmount(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+        env.storage().persistent().set(
+            &DataKey::RedemptionDust(invoice_id.clone()),
+            &settlement_amount,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::RedemptionDust(invoice_id.clone()),
+            THRESHOLD,
+            BUMP,
+        );
+        env.events().publish(
+            (symbol_short!("p_settld"),),
+            (invoice_id.clone(), settlement_amount),
+        );
+        None
     }
 }
