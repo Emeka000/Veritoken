@@ -729,7 +729,7 @@ fn test_dividend_history_running_total_dps_legacy() {
     h.token.deposit_dividend(&2_000, &2);
 
     let history = h.token.get_dividend_history(&0, &10);
-    assert_eq!(history.get(0).unwrap().running_total_dps, 1 * SCALE);
+    assert_eq!(history.get(0).unwrap().running_total_dps, SCALE);
     assert_eq!(history.get(1).unwrap().running_total_dps, 3 * SCALE);
 }
 
@@ -1268,7 +1268,7 @@ fn test_dividend_history_running_total_dps_checkpoint_audit() {
     h.token.deposit_dividend(&2_000, &0);
 
     let history = h.token.get_dividend_history(&0, &10);
-    assert_eq!(history.get(0).unwrap().running_total_dps, 1 * SCALE);
+    assert_eq!(history.get(0).unwrap().running_total_dps, SCALE);
     assert_eq!(history.get(1).unwrap().running_total_dps, 3 * SCALE);
 }
 
@@ -1350,7 +1350,7 @@ fn test_dividend_history_running_total_dps() {
     h.token.deposit_dividend(&2_000, &0);
 
     let history = h.token.get_dividend_history(&0, &10);
-    assert_eq!(history.get(0).unwrap().running_total_dps, 1 * SCALE);
+    assert_eq!(history.get(0).unwrap().running_total_dps, SCALE);
     assert_eq!(history.get(1).unwrap().running_total_dps, 3 * SCALE);
 }
 
