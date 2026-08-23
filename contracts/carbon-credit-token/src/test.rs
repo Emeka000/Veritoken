@@ -881,9 +881,7 @@ fn test_verify_receipt_valid() {
     h.token.mint(&alice, &50);
 
     // Set a non-zero ledger timestamp so the receipt is valid.
-    h.env
-        .ledger()
-        .with_mut(|li| li.timestamp = 1_700_000_000);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
 
     h.token.retire(
         &alice,
@@ -960,9 +958,7 @@ fn test_verify_receipt_zero_amount_is_invalid() {
     h.token.mint(&alice, &10);
 
     // Set non-zero timestamp so the stored receipt is itself valid.
-    h.env
-        .ledger()
-        .with_mut(|li| li.timestamp = 1_700_000_000);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
 
     h.token.retire(
         &alice,
@@ -1237,9 +1233,7 @@ fn test_verify_receipt_nonzero_timestamp_is_valid() {
     h.token.mint(&alice, &100);
 
     // Advance ledger timestamp so the receipt carries a non-zero timestamp.
-    h.env
-        .ledger()
-        .with_mut(|li| li.timestamp = 1_700_000_000);
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
 
     h.token.retire(
         &alice,
