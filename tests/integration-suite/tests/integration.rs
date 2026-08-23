@@ -665,3 +665,161 @@ fn workflow_shared_compliance_engine_two_tokens() {
     assert_eq!(token_a.balance(&bob), 100);
     assert_eq!(token_b.balance(&bob), 100);
 }
+
+/// 10 subjects approved with overlapping expiry dates across different epoch-days.
+/// get_expiring_soon must return only subjects whose stored expiry falls within
+/// the queried window — no stale entries from superseded approvals.
+#[test]
+fn workflow_kyc_expiry_bucket_ten_subjects_overlap() {
+    let s = build_stack();
+
+    // Base timestamp: start of day 0.
+    s.env.ledger().set_timestamp(0);
+
+    // Approve 10 subjects spread across days 1-10.
+    let mut subjects: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+    for day in 1u64..=10 {
+        let addr = Address::generate(&s.env);
+        subjects.push(addr.clone());
+        s.kyc.approve(
+            &s.verifier,
+            &addr,
+            &1,
+            &(86_400 * day),
+            &String::from_str(&s.env, "US"),
+        );
+    }
+
+    // Query window [now=0, now+5*86400]: should return subjects expiring days 1-5.
+    let window_5days = 86_400 * 5;
+    let expiring = s.kyc.get_expiring_soon(&window_5days, &0, &50);
+    assert_eq!(
+        expiring.len(),
+        5,
+        "expected 5 subjects expiring in 5-day window"
+    );
+    // Verify all returned subjects have expiry in (0, 5*86400].
+    for i in 0..expiring.len() {
+        let rec = expiring.get(i).unwrap();
+        assert!(rec.record.expiry > 0 && rec.record.expiry <= window_5days);
+    }
+
+    // Re-approve subject[0] (expiry day 1) with a new expiry on day 20.
+    // After re-approval, subject[0] must no longer appear in the 5-day window.
+    let first = subjects[0].clone();
+    s.kyc.approve(
+        &s.verifier,
+        &first,
+        &1,
+        &(86_400 * 20),
+        &String::from_str(&s.env, "US"),
+    );
+
+    let expiring_after_reapprove = s.kyc.get_expiring_soon(&window_5days, &0, &50);
+    // Now only 4 subjects should appear (days 2-5; subject[0] moved to day 20).
+    assert_eq!(
+        expiring_after_reapprove.len(),
+        4,
+        "re-approved subject must not appear in old expiry window"
+    );
+    for i in 0..expiring_after_reapprove.len() {
+        assert_ne!(
+            expiring_after_reapprove.get(i).unwrap().addr,
+            first,
+            "re-approved subject must be absent from stale window"
+        );
+    }
+
+    // Full 20-day window should include subject[0] again (now at day 20).
+    let window_20days = 86_400 * 20;
+    let expiring_20 = s.kyc.get_expiring_soon(&window_20days, &0, &50);
+    assert_eq!(
+        expiring_20.len(),
+        10,
+        "all 10 subjects should appear in the 20-day window"
+    );
+}
+
+/// Verifies conservation across 2 distributions with 3 holders of different
+/// balances: sum(all_claims) + dust_reserve <= total_deposited, and
+/// the difference is bounded by holders * distributions (at most 1 stroop
+/// per-holder per-distribution from integer division rounding).
+#[test]
+fn workflow_property_dividend_three_holders_conservation() {
+    let s = build_stack();
+
+    let meta = PropertyMeta {
+        property_id: String::from_str(&s.env, "PROP-CONS"),
+        legal_name: String::from_str(&s.env, "Conservation Property LLC"),
+        jurisdiction: String::from_str(&s.env, "US"),
+        address: String::from_str(&s.env, "1 Main St"),
+        total_valuation_usd: 10_000_000,
+        total_shares: 1_000,
+        property_type: String::from_str(&s.env, "residential"),
+        ipfs_title_hash: String::from_str(&s.env, ""),
+        kyc_tier_required: 0,
+    };
+    let token_id = s.env.register(
+        PropertyToken,
+        (s.admin.clone(), s.kyc_id.clone(), s.ce_id.clone(), meta),
+    );
+    let token = PropertyTokenClient::new(&s.env, &token_id);
+
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+
+    for addr in [&alice, &bob, &carol] {
+        s.kyc
+            .approve(&s.verifier, addr, &0, &0, &String::from_str(&s.env, "US"));
+    }
+
+    // Allocate 300 + 500 + 200 = 1000 shares.
+    token.mint(&alice, &300);
+    token.mint(&bob, &500);
+    token.mint(&carol, &200);
+
+    let deposit_1: i128 = 999;
+    let deposit_2: i128 = 1_234_567;
+    let total_deposited = deposit_1 + deposit_2;
+
+    token.deposit_dividend(&deposit_1, &2);
+    token.deposit_dividend(&deposit_2, &2);
+
+    let pending_alice = token.pending_dividend(&alice);
+    let pending_bob = token.pending_dividend(&bob);
+    let pending_carol = token.pending_dividend(&carol);
+    let dust = token.dust_reserve();
+
+    let sum = pending_alice + pending_bob + pending_carol + dust;
+    assert!(
+        sum <= total_deposited,
+        "conservation violated (overpay): alice={pending_alice}, bob={pending_bob}, carol={pending_carol}, dust={dust}, sum={sum}, total={total_deposited}"
+    );
+    // At most 1 stroop per-holder per-distribution lost to integer rounding.
+    let max_rounding_loss: i128 = 3 * 2; // 3 holders * 2 distributions
+    assert!(
+        total_deposited - sum <= max_rounding_loss,
+        "excess rounding loss: lost={}, max_allowed={max_rounding_loss}",
+        total_deposited - sum
+    );
+
+    // Each holder claims their dividend.
+    token.claim_dividend(&alice);
+    token.claim_dividend(&bob);
+    token.claim_dividend(&carol);
+
+    // After all claims, pending should be zero for all.
+    assert_eq!(token.pending_dividend(&alice), 0);
+    assert_eq!(token.pending_dividend(&bob), 0);
+    assert_eq!(token.pending_dividend(&carol), 0);
+
+    // Pool remainder = dust_reserve + per-holder rounding residual.
+    // Per-holder rounding is at most 1 stroop per holder per distribution.
+    let pool = token.dividend_pool();
+    assert!(pool >= dust, "pool must be at least dust_reserve");
+    assert!(
+        pool <= dust + max_rounding_loss,
+        "pool={pool} exceeds dust={dust} + rounding allowance"
+    );
+}

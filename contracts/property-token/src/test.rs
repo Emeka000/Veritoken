@@ -8,6 +8,8 @@ use soroban_sdk::{
     Address, Env, String,
 };
 
+const SCALE: i128 = 10_000_000;
+
 struct Harness {
     env: Env,
     token: PropertyTokenClient<'static>,
@@ -81,6 +83,54 @@ impl Harness {
             &0,
             &String::from_str(&self.env, "US"),
         );
+    }
+}
+
+fn setup_with_shares(total_shares: i128) -> Harness {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    let verifier = Address::generate(&env);
+    kyc.add_verifier(&admin, &verifier);
+
+    let compliance_id = env.register(ComplianceEngine, ());
+    let compliance = ComplianceEngineClient::new(&env, &compliance_id);
+    compliance.initialize(&admin, &kyc_id, &0u64);
+
+    let custom_meta = PropertyMeta {
+        property_id: String::from_str(&env, "PROP-X"),
+        legal_name: String::from_str(&env, "Custom Shares LLC"),
+        jurisdiction: String::from_str(&env, "US"),
+        address: String::from_str(&env, "1 Custom St"),
+        total_valuation_usd: 1_000_000,
+        total_shares,
+        property_type: String::from_str(&env, "residential"),
+        ipfs_title_hash: String::from_str(&env, ""),
+        kyc_tier_required: 0,
+    };
+
+    let token_id = env.register(
+        PropertyToken,
+        (
+            admin.clone(),
+            kyc_id.clone(),
+            compliance_id.clone(),
+            custom_meta,
+        ),
+    );
+    let token = PropertyTokenClient::new(&env, &token_id);
+
+    Harness {
+        env,
+        token,
+        kyc,
+        compliance,
+        verifier,
+        admin,
     }
 }
 
@@ -294,10 +344,11 @@ fn test_holder_list_updated_on_mint() {
 
     h.token.mint(&alice, &100);
     assert_eq!(h.token.holder_count(), 1);
-    assert_eq!(h.token.get_holders(&0, &50).len(), 1);
+    assert!(h.token.is_holder(&alice));
 
     h.token.mint(&bob, &50);
     assert_eq!(h.token.holder_count(), 2);
+    assert!(h.token.is_holder(&bob));
 
     // Minting again to alice is idempotent — count stays at 2.
     h.token.mint(&alice, &10);
@@ -314,13 +365,13 @@ fn test_holder_removed_when_balance_hits_zero() {
 
     h.token.mint(&alice, &100);
     assert_eq!(h.token.holder_count(), 1);
+    assert!(h.token.is_holder(&alice));
 
     // Transfer entire balance — alice drops to 0, bob is added.
     h.token.transfer(&alice, &bob, &100);
     assert_eq!(h.token.holder_count(), 1);
-    let holders = h.token.get_holders(&0, &50);
-    assert_eq!(holders.len(), 1);
-    assert_eq!(holders.get(0).unwrap(), bob);
+    assert!(!h.token.is_holder(&alice));
+    assert!(h.token.is_holder(&bob));
 }
 
 #[test]
@@ -336,14 +387,13 @@ fn test_get_holders_pagination() {
     h.token.mint(&alice, &10);
     h.token.mint(&bob, &10);
     h.token.mint(&carol, &10);
+    // O(1) IsHolder tracking — holder_count correct.
     assert_eq!(h.token.holder_count(), 3);
-
-    // Page size 2 starting from 0.
-    assert_eq!(h.token.get_holders(&0, &2).len(), 2);
-    // Page size 2 starting from 2 — only 1 remaining.
-    assert_eq!(h.token.get_holders(&2, &2).len(), 1);
-    // Out of range start returns empty.
-    assert_eq!(h.token.get_holders(&10, &2).len(), 0);
+    assert!(h.token.is_holder(&alice));
+    assert!(h.token.is_holder(&bob));
+    assert!(h.token.is_holder(&carol));
+    // get_holders reflects HolderList (populated by migration, not new mints).
+    assert_eq!(h.token.get_holders(&0, &50).len(), 0);
 }
 
 #[test]
@@ -583,11 +633,10 @@ fn test_buyback_removes_holder_on_zero_balance() {
     // Buy back all of alice's shares
     h.token.buyback(&alice, &50);
 
-    // Alice is removed from holder list
+    // Alice is removed from holder tracking
     assert_eq!(h.token.holder_count(), 1);
-    let holders = h.token.get_holders(&0, &50);
-    assert_eq!(holders.len(), 1);
-    assert_eq!(holders.get(0).unwrap(), bob);
+    assert!(!h.token.is_holder(&alice));
+    assert!(h.token.is_holder(&bob));
 }
 
 #[test]
@@ -674,12 +723,14 @@ fn test_dividend_history_running_total_dps_legacy() {
     h.approve_kyc(&alice);
     h.token.mint(&alice, &1_000);
 
+    // deposit(1000) on 1000 shares → per_share_scaled = 10_000_000.
+    // deposit(2000) on 1000 shares → per_share_scaled = 20_000_000 → cumulative = 30_000_000.
     h.token.deposit_dividend(&1_000, &2);
     h.token.deposit_dividend(&2_000, &2);
 
     let history = h.token.get_dividend_history(&0, &10);
-    assert_eq!(history.get(0).unwrap().running_total_dps, 1);
-    assert_eq!(history.get(1).unwrap().running_total_dps, 3);
+    assert_eq!(history.get(0).unwrap().running_total_dps, 1 * SCALE);
+    assert_eq!(history.get(1).unwrap().running_total_dps, 3 * SCALE);
 }
 
 // ── Checkpointed dividend accounting (#509) ──────────────────────────────────
@@ -691,6 +742,9 @@ fn test_distribution_checkpoint_reconciles_rounding() {
     h.approve_kyc(&alice);
     h.token.mint(&alice, &1_000);
 
+    // deposit(1250) on 1000 total_shares.
+    // per_share_scaled = floor(1250 * 10^7 / 1000) = 12_500_000 (exact).
+    // alice (1000 shares) gets floor(1000 * 12_500_000 / 10^7) = 1250 (full amount).
     h.token.deposit_dividend(&1_250, &0);
 
     assert_eq!(h.token.dividend_accounting_version(), 1);
@@ -698,23 +752,32 @@ fn test_distribution_checkpoint_reconciles_rounding() {
     assert_eq!(checkpoint.id, 0);
     assert_eq!(checkpoint.amount, 1_250);
     assert_eq!(checkpoint.total_shares, 1_000);
+    // per_share = per_share_scaled / SCALE = 12_500_000 / 10_000_000 = 1 (unscaled audit field).
     assert_eq!(checkpoint.per_share, 1);
-    assert_eq!(checkpoint.allocated_amount, 1_000);
+    // per_share_scaled = (1250 * 10^7) / 1000 = 12_500_000.
+    assert_eq!(checkpoint.per_share_scaled, 12_500_000);
+    // allocated_amount uses scaled calculation: 12_500_000 * 1000 / 10^7 = 1250.
+    assert_eq!(checkpoint.allocated_amount, 1_250);
+    // remainder = amount - per_share * total_shares (unscaled audit field) = 1250 - 1000 = 250.
     assert_eq!(checkpoint.remainder, 250);
-    assert_eq!(checkpoint.cumulative_per_share, 1);
-    assert_eq!(checkpoint.rent_cumulative_per_share, 1);
+    // dust_reserve = amount - allocated_amount (scaled) = 0 (fully allocated by SCALE_FACTOR).
+    assert_eq!(h.token.dust_reserve(), 0);
+    // cumulative_per_share is now scaled.
+    assert_eq!(checkpoint.cumulative_per_share, 12_500_000);
+    assert_eq!(checkpoint.rent_cumulative_per_share, 12_500_000);
     assert_eq!(checkpoint.capital_cumulative_per_share, 0);
     assert_eq!(checkpoint.other_cumulative_per_share, 0);
-    assert_eq!(checkpoint.type_cumulative_per_share, 1);
+    assert_eq!(checkpoint.type_cumulative_per_share, 12_500_000);
     assert_eq!(checkpoint.distribution_type, 0);
 
     let page = h.token.get_distributions(&0, &10);
     assert_eq!(page.len(), 1);
     assert_eq!(page.get(0).unwrap().id, 0);
 
+    // Alice holds all 1000 shares — receives the full 1250.
     let unclaimed = h.token.unclaimed_balance(&alice);
-    assert_eq!(unclaimed.total, 1_000);
-    assert_eq!(unclaimed.rent, 1_000);
+    assert_eq!(unclaimed.total, 1_250);
+    assert_eq!(unclaimed.rent, 1_250);
     assert_eq!(unclaimed.capital, 0);
     assert_eq!(unclaimed.other, 0);
     assert_eq!(unclaimed.distribution_count, 1);
@@ -732,11 +795,12 @@ fn test_claim_all_clears_typed_claims_and_cannot_overdraw_pool() {
     h.token.deposit_dividend(&3_000, &2);
 
     assert_eq!(h.token.claim_dividend(&alice), 6_000);
-    assert_eq!(h.token.dividend_pool(), 0);
     assert_eq!(h.token.pending_dividend(&alice), 0);
     assert_eq!(h.token.claim_rent_yield(&alice), 0);
     assert_eq!(h.token.claim_capital_return(&alice), 0);
-    assert_eq!(h.token.dividend_pool(), 0);
+    // Dust reserve may hold any SCALE_FACTOR truncation remainder; subtract it.
+    let dust = h.token.dust_reserve();
+    assert_eq!(h.token.dividend_pool(), dust);
 }
 
 #[test]
@@ -765,6 +829,8 @@ fn test_claims_derive_indexes_from_distribution_journal() {
             .instance()
             .set(&DataKey::DividendPerShareCapital, &0i128);
     });
+    // Deposits: 1000 rent + 2000 capital on 1000 shares (all exact).
+    // per_share_scaled for rent = 10M, capital = 20M → unclaimed_rent = 1000, capital = 2000.
 
     let unclaimed = h.token.unclaimed_balance(&alice);
     assert_eq!(unclaimed.total, 3_000);
@@ -787,11 +853,16 @@ fn test_legacy_claim_all_state_cannot_restore_stale_typed_claims() {
 
     // Recreate the pre-checkpoint bug: claim-all cleared the aggregate amount
     // and pool, but left a stale typed rent counter.
+    // Also remove LegacyMigrationComplete so the lazy bridge runs.
     h.env.as_contract(&h.token.address, || {
         h.env
             .storage()
             .persistent()
             .remove(&DataKey::HolderDividendCheckpoint(alice.clone()));
+        h.env
+            .storage()
+            .persistent()
+            .remove(&DataKey::LegacyMigrationComplete(alice.clone()));
         h.env
             .storage()
             .instance()
@@ -803,7 +874,8 @@ fn test_legacy_claim_all_state_cannot_restore_stale_typed_claims() {
     assert_eq!(migrated.rent, 0);
     assert_eq!(migrated.capital, 0);
     assert_eq!(h.token.claim_rent_yield(&alice), 0);
-    assert_eq!(h.token.dividend_pool(), 0);
+    let dust = h.token.dust_reserve();
+    assert_eq!(h.token.dividend_pool(), dust);
 }
 
 #[test]
@@ -1190,14 +1262,14 @@ fn test_dividend_history_running_total_dps_checkpoint_audit() {
     h.approve_kyc_with_tier(&alice, 1);
     h.token.mint(&alice, &1_000); // 1000 shares
 
-    // Deposit 1000 → dps += 1000/1000 = 1
+    // Deposit 1000 → dps += per_share_scaled = 10_000_000
     h.token.deposit_dividend(&1_000, &0);
-    // Deposit 2000 → dps += 2000/1000 = 2 (cumulative = 3)
+    // Deposit 2000 → dps += 20_000_000 (cumulative = 30_000_000)
     h.token.deposit_dividend(&2_000, &0);
 
     let history = h.token.get_dividend_history(&0, &10);
-    assert_eq!(history.get(0).unwrap().running_total_dps, 1);
-    assert_eq!(history.get(1).unwrap().running_total_dps, 3);
+    assert_eq!(history.get(0).unwrap().running_total_dps, 1 * SCALE);
+    assert_eq!(history.get(1).unwrap().running_total_dps, 3 * SCALE);
 }
 
 // ── Dividend auditability tests (#355) ───────────────────────────────────────
@@ -1272,12 +1344,137 @@ fn test_dividend_history_running_total_dps() {
     h.approve_kyc_with_tier(&alice, 1);
     h.token.mint(&alice, &1_000); // 1000 shares
 
-    // Deposit 1000 → dps += 1000/1000 = 1
+    // Deposit 1000 → per_share_scaled = 10_000_000
     h.token.deposit_dividend(&1_000, &0);
-    // Deposit 2000 → dps += 2000/1000 = 2 (cumulative = 3)
+    // Deposit 2000 → per_share_scaled = 20_000_000 (cumulative = 30_000_000)
     h.token.deposit_dividend(&2_000, &0);
 
     let history = h.token.get_dividend_history(&0, &10);
-    assert_eq!(history.get(0).unwrap().running_total_dps, 1);
-    assert_eq!(history.get(1).unwrap().running_total_dps, 3);
+    assert_eq!(history.get(0).unwrap().running_total_dps, 1 * SCALE);
+    assert_eq!(history.get(1).unwrap().running_total_dps, 3 * SCALE);
+}
+
+// ── O(1) holder tracking tests ────────────────────────────────────────────────
+
+#[test]
+fn test_is_holder_add_dedup() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+
+    assert!(!h.token.is_holder(&alice));
+    assert_eq!(h.token.holder_count(), 0);
+
+    h.token.mint(&alice, &100);
+    assert!(h.token.is_holder(&alice));
+    assert_eq!(h.token.holder_count(), 1);
+
+    // Minting more shares is idempotent for IsHolder.
+    h.token.mint(&alice, &10);
+    assert_eq!(h.token.holder_count(), 1);
+}
+
+#[test]
+fn test_is_holder_remove_on_zero_balance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &100);
+    assert!(h.token.is_holder(&alice));
+    assert_eq!(h.token.holder_count(), 1);
+
+    h.token.transfer(&alice, &bob, &100);
+    assert!(!h.token.is_holder(&alice));
+    assert!(h.token.is_holder(&bob));
+    assert_eq!(h.token.holder_count(), 1);
+}
+
+#[test]
+fn test_holder_count_consistent_after_buyback() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    h.token.mint(&alice, &50);
+    h.token.mint(&bob, &30);
+    assert_eq!(h.token.holder_count(), 2);
+
+    h.token.buyback(&alice, &50);
+    assert_eq!(h.token.holder_count(), 1);
+    assert!(!h.token.is_holder(&alice));
+    assert!(h.token.is_holder(&bob));
+}
+
+// ── Fixed-point dividend arithmetic tests ─────────────────────────────────────
+
+#[test]
+fn test_per_share_scaled_prime_total_shares() {
+    // Use 7 shares (prime) — classic precision killer for integer division.
+    // deposit(1_000_000) / 7: per_share_scaled = floor(10^7 * 10^6 / 7) = 1_428_571_428
+    // alice (7 shares): floor(7 * 1_428_571_428 / 10^7) = 999_999. dust = 1.
+    let h = setup_with_shares(7);
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &7);
+
+    h.token.deposit_dividend(&1_000_000, &2);
+
+    assert_eq!(h.token.pending_dividend(&alice), 999_999);
+    assert_eq!(h.token.dust_reserve(), 1);
+    assert_eq!(
+        h.token.pending_dividend(&alice) + h.token.dust_reserve(),
+        1_000_000
+    );
+}
+
+#[test]
+fn test_dust_reserve_accumulates_across_distributions() {
+    // 3 shares, deposit(10): per_share_scaled = floor(10^8/3) = 33_333_333
+    // alice(3): floor(3 * 33_333_333 / 10^7) = 9. dust = 1 per distribution.
+    let h = setup_with_shares(3);
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &3);
+
+    h.token.deposit_dividend(&10, &2);
+    assert_eq!(h.token.dust_reserve(), 1);
+
+    h.token.deposit_dividend(&10, &2);
+    assert_eq!(h.token.dust_reserve(), 2);
+}
+
+#[test]
+fn test_collect_dust_reserve_admin_only() {
+    let h = setup_with_shares(3);
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &3);
+    h.token.deposit_dividend(&10, &2); // dust = 1
+
+    assert_eq!(h.token.dust_reserve(), 1);
+    let collected = h.token.collect_dust_reserve(&h.admin);
+    assert_eq!(collected, 1);
+    assert_eq!(h.token.dust_reserve(), 0);
+}
+
+// ── Force-migrate holder checkpoint test ─────────────────────────────────────
+
+#[test]
+fn test_force_migrate_holder_checkpoint() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &500);
+    h.token.deposit_dividend(&1_000, &2);
+
+    // Before any claim or access, force_migrate_holder_checkpoint eagerly settles.
+    h.token.force_migrate_holder_checkpoint(&h.admin, &alice);
+
+    // Pending should still be correct post-migration.
+    assert_eq!(h.token.pending_dividend(&alice), 500);
 }

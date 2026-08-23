@@ -1028,3 +1028,209 @@ fn fuzz_recovery_with_concurrent_pending_handover() {
         "AdminNonce must be incremented after recovery"
     );
 }
+
+// ── KYC expiry-bucket fuzz tests ──────────────────────────────────────────────
+
+/// Approve a subject with expiry A, re-approve with expiry B (B > A).
+/// After time advances past A, get_expiring_soon must never return the subject
+/// for a window that covers A but not B — i.e., stale bucket entries from the
+/// first approval must not produce ghost results.
+#[test]
+fn prop_expiry_index_no_stale_results() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let verifier = Address::generate(&env);
+
+    let kyc_id = env.register(KycRegistry, ());
+    let kyc = KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    kyc.add_verifier(&admin, &verifier);
+
+    // Matrix: (expiry_A, expiry_B) pairs where B >> A.
+    let pairs: &[(u64, u64)] = &[
+        (86_400, 86_400 * 10),
+        (86_400 * 2, 86_400 * 30),
+        (86_400 * 5, 86_400 * 100),
+    ];
+
+    for &(expiry_a, expiry_b) in pairs {
+        let subject = Address::generate(&env);
+
+        // Approve with expiry A, then immediately re-approve with expiry B.
+        env.ledger().set_timestamp(0);
+        kyc.approve(
+            &verifier,
+            &subject,
+            &0,
+            &expiry_a,
+            &String::from_str(&env, "US"),
+        );
+        kyc.approve(
+            &verifier,
+            &subject,
+            &0,
+            &expiry_b,
+            &String::from_str(&env, "US"),
+        );
+
+        // Advance ledger to just after expiry_a but well before expiry_b.
+        let now = expiry_a + 1;
+        env.ledger().set_timestamp(now);
+
+        // Query window: covers expiry_a (already past) but not expiry_b.
+        // Result must be empty — the stale bucket entry for day(A) should not
+        // surface because SubjectExpiry now holds B (and A is in the past).
+        let window = (expiry_a + 100).saturating_sub(now);
+        let expiring = kyc.get_expiring_soon(&window, &0, &50);
+        for i in 0..expiring.len() {
+            assert_ne!(
+                expiring.get(i).unwrap().addr,
+                subject,
+                "stale entry for expiry_a={expiry_a} returned after re-approve with expiry_b={expiry_b}"
+            );
+        }
+
+        // Now advance to just before expiry_b — the subject SHOULD appear.
+        let before_b = expiry_b - 1;
+        env.ledger().set_timestamp(before_b);
+        let window_b = 86_400 * 2;
+        let expiring_b = kyc.get_expiring_soon(&window_b, &0, &50);
+        let found = (0..expiring_b.len()).any(|i| expiring_b.get(i).unwrap().addr == subject);
+        assert!(
+            found,
+            "subject not found before expiry_b={expiry_b} (expiry_a={expiry_a})"
+        );
+    }
+}
+
+// ── Property-token fuzz tests ─────────────────────────────────────────────────
+
+use property_token::{PropertyMeta, PropertyToken, PropertyTokenClient};
+
+/// prop_dividend_precision: for a single holder owning all shares,
+/// pending_dividend(alice) + dust_reserve() == deposited amount for all inputs.
+#[test]
+fn prop_dividend_precision() {
+    // (total_shares, deposit_amount) pairs exercising edge cases.
+    let cases: &[(i128, i128)] = &[
+        (1, 1),
+        (1, 1_000_000),
+        (3, 10),
+        (3, 100),
+        (7, 1_000_000),
+        (13, 999),
+        (100, 1),
+        (1_000, 999),
+        (1_000, 1_000_000),
+        (999, 1_000_000),
+        (997, 123_456_789),
+        (10_000, 9_999),
+        (10_000, 10_001),
+    ];
+
+    for &(total_shares, deposit) in cases {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let kyc_id = env.register(KycRegistry, ());
+        let kyc = KycRegistryClient::new(&env, &kyc_id);
+        kyc.initialize(&admin);
+        kyc.add_verifier(&admin, &verifier);
+        let ce_id = env.register(ComplianceEngine, ());
+        let ce = ComplianceEngineClient::new(&env, &ce_id);
+        ce.initialize(&admin, &kyc_id, &0u64);
+        let meta = PropertyMeta {
+            property_id: String::from_str(&env, "P"),
+            legal_name: String::from_str(&env, "L"),
+            jurisdiction: String::from_str(&env, "US"),
+            address: String::from_str(&env, "A"),
+            total_valuation_usd: 1_000_000,
+            total_shares,
+            property_type: String::from_str(&env, "residential"),
+            ipfs_title_hash: String::from_str(&env, ""),
+            kyc_tier_required: 0,
+        };
+        let token_id = env.register(PropertyToken, (admin.clone(), kyc_id, ce_id, meta));
+        let token = PropertyTokenClient::new(&env, &token_id);
+        let alice = Address::generate(&env);
+        kyc.approve(&verifier, &alice, &0, &0, &String::from_str(&env, "US"));
+        token.mint(&alice, &total_shares);
+        token.deposit_dividend(&deposit, &2);
+        let pending = token.pending_dividend(&alice);
+        let dust = token.dust_reserve();
+        assert_eq!(
+            pending + dust,
+            deposit,
+            "conservation failed: total_shares={total_shares}, deposit={deposit}, pending={pending}, dust={dust}"
+        );
+    }
+}
+
+/// prop_holder_set_consistency: add N distinct addresses, remove N/2,
+/// holder_count() == remaining unique addresses.
+#[test]
+fn prop_holder_set_consistency() {
+    let sizes: &[usize] = &[1, 2, 4, 8, 10, 16];
+
+    for &n in sizes {
+        let total_shares = (n as i128) * 100;
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let kyc_id = env.register(KycRegistry, ());
+        let kyc = KycRegistryClient::new(&env, &kyc_id);
+        kyc.initialize(&admin);
+        kyc.add_verifier(&admin, &verifier);
+        let ce_id = env.register(ComplianceEngine, ());
+        let ce = ComplianceEngineClient::new(&env, &ce_id);
+        ce.initialize(&admin, &kyc_id, &0u64);
+        let meta = PropertyMeta {
+            property_id: String::from_str(&env, "P"),
+            legal_name: String::from_str(&env, "L"),
+            jurisdiction: String::from_str(&env, "US"),
+            address: String::from_str(&env, "A"),
+            total_valuation_usd: 1_000_000,
+            total_shares,
+            property_type: String::from_str(&env, "residential"),
+            ipfs_title_hash: String::from_str(&env, ""),
+            kyc_tier_required: 0,
+        };
+        let token_id = env.register(PropertyToken, (admin.clone(), kyc_id, ce_id, meta));
+        let token = PropertyTokenClient::new(&env, &token_id);
+
+        let mut holders: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+        for _ in 0..n {
+            let addr = Address::generate(&env);
+            kyc.approve(&verifier, &addr, &0, &0, &String::from_str(&env, "US"));
+            token.mint(&addr, &100);
+            holders.push(addr);
+        }
+        assert_eq!(token.holder_count(), n as u32, "n={n}: count after adding");
+
+        // Buyback the first n/2 holders (removing them).
+        let remove_count = n / 2;
+        for i in 0..remove_count {
+            token.buyback(&holders[i], &100);
+        }
+
+        let expected_remaining = (n - remove_count) as u32;
+        assert_eq!(
+            token.holder_count(),
+            expected_remaining,
+            "n={n}: count after removing {remove_count}"
+        );
+
+        // Verify IsHolder flags are accurate.
+        for i in 0..n {
+            let expected = i >= remove_count;
+            assert_eq!(
+                token.is_holder(&holders[i]),
+                expected,
+                "n={n}: is_holder mismatch at index {i}"
+            );
+        }
+    }
+}
