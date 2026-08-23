@@ -251,25 +251,28 @@ fn invariant_i4_claim_with_no_distribution_yields_zero() {
 
 // ── I5 — Rounding stays in the contract ──────────────────────────────────────
 
-/// When the deposit is not perfectly divisible by the share count, the
-/// remainder is ≤ total_shares - 1 and never credited to any holder.
+/// With fixed-point arithmetic (SCALE_FACTOR = 10^7), per-share precision
+/// is far higher than with integer division.
 ///
-/// Example: 999 stroops / 1_000 shares → 0 per share (remainder 999).
-/// The contract must not panic and all pending values must be 0.
+/// Example: 999 stroops / 1_000 shares → per_share_scaled = 9_990_000.
+/// Alice holds all 1_000 shares: claimable = floor(1000 × 9_990_000 / 10^7) = 999.
+/// Total claimable + dust_reserve == 999 (no stroop is lost for a single holder
+/// owning all shares).
 #[test]
 fn invariant_i5_rounding_remainder_not_credited() {
     let h = setup(1_000);
     let alice = h.new_holder();
     h.token.mint(&alice, &1_000);
 
-    // 999 < 1_000 → floor division yields 0 per share.
+    // 999 stroops over 1_000 shares.
+    // Old (broken): per_share = 0, nothing distributed.
+    // New (fixed):  per_share_scaled = 9_990_000; alice (all shares) gets 999.
     h.token.deposit_dividend(&999, &DIST_OTHER);
 
-    // No holder receives anything.
     assert_eq!(
         h.token.pending_dividend(&alice),
-        0,
-        "remainder must not be credited to any holder"
+        999,
+        "alice holds 100% of shares and must receive the full deposit"
     );
 }
 
