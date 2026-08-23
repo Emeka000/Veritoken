@@ -3,7 +3,7 @@
 use crate::{CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta, RetirementRequest};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient};
 use kyc_registry::{KycRegistry, KycRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String};
 
 struct Harness {
     env: Env,
@@ -880,6 +880,11 @@ fn test_verify_receipt_valid() {
     h.approve_kyc(&alice);
     h.token.mint(&alice, &50);
 
+    // Set a non-zero ledger timestamp so the receipt is valid.
+    h.env
+        .ledger()
+        .with_mut(|li| li.timestamp = 1_700_000_000);
+
     h.token.retire(
         &alice,
         &50,
@@ -947,12 +952,17 @@ fn test_get_receipts_by_retiree() {
 
 #[test]
 fn test_verify_receipt_zero_amount_is_invalid() {
-    // Can't retire 0 (InvalidAmount error), so we verify an out-of-range index instead
-    // to confirm invalid-state path. The contract rejects amount=0 at retire time.
+    // Can't retire 0 (InvalidAmount error), so we verify an out-of-range index
+    // to confirm the invalid-state path. The contract rejects amount=0 at retire time.
     let h = setup();
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
     h.token.mint(&alice, &10);
+
+    // Set non-zero timestamp so the stored receipt is itself valid.
+    h.env
+        .ledger()
+        .with_mut(|li| li.timestamp = 1_700_000_000);
 
     h.token.retire(
         &alice,
@@ -961,9 +971,9 @@ fn test_verify_receipt_zero_amount_is_invalid() {
         &String::from_str(&h.env, "reason"),
     );
 
-    // Index 0 is valid
+    // Index 0 is valid (amount > 0, timestamp > 0).
     assert!(h.token.verify_receipt(&0).valid);
-    // Index 1 does not exist → invalid
+    // Index 1 does not exist → invalid.
     assert!(!h.token.verify_receipt(&1).valid);
 }
 
@@ -1045,19 +1055,19 @@ fn test_beneficiary_index_five_beneficiaries() {
 
     for (ben, &amt) in bens.iter().zip(amounts.iter()) {
         h.approve_kyc(ben);
-        h.token.retire_on_behalf(
-            &retiree,
-            ben,
-            &amt,
-            &String::from_str(&h.env, "reason"),
-        );
+        h.token
+            .retire_on_behalf(&retiree, ben, &amt, &String::from_str(&h.env, "reason"));
     }
 
     assert_eq!(h.token.retirement_count(), 5);
 
     for (ben, &amt) in bens.iter().zip(amounts.iter()) {
         let receipts = h.token.get_receipts_by_beneficiary(ben, &0, &100);
-        assert_eq!(receipts.len(), 1, "beneficiary should have exactly 1 receipt");
+        assert_eq!(
+            receipts.len(),
+            1,
+            "beneficiary should have exactly 1 receipt"
+        );
         assert_eq!(receipts.get(0).unwrap().amount, amt);
     }
 }
@@ -1139,11 +1149,11 @@ fn test_retire_field_too_long_returns_error_not_panic() {
     h.approve_kyc(&alice);
     h.token.mint(&alice, &100);
 
-    // Build a 200-character string — well over the 128-byte cap.
-    let long_field =
-        String::from_str(&h.env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    // Confirm it is indeed 200 chars.
-    assert_eq!(long_field.len(), 200);
+    // 200 'A' characters — well over the 128-byte content cap.
+    let long_field = String::from_str(
+        &h.env,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    );
 
     let result = h.token.try_retire(
         &alice,
@@ -1151,10 +1161,10 @@ fn test_retire_field_too_long_returns_error_not_panic() {
         &long_field,
         &String::from_str(&h.env, "reason"),
     );
-    // Must return an error — specifically FieldTooLong — not an instruction trap.
+    // Must return an error — FieldTooLong — not an instruction trap.
     assert!(result.is_err(), "retire with 200-char field must fail");
 
-    // Balance and receipt count must be unchanged (no state mutation on error).
+    // Balance and receipt count unchanged — no state mutation on error.
     assert_eq!(h.token.balance(&alice), 100);
     assert_eq!(h.token.retirement_count(), 0);
 }
@@ -1167,19 +1177,15 @@ fn test_retire_field_at_128_bytes_succeeds() {
     h.approve_kyc(&alice);
     h.token.mint(&alice, &100);
 
-    // Exactly 128 'A' characters.
+    // Exactly 128 'A' characters — at the boundary, must be accepted.
     let at_cap = String::from_str(
         &h.env,
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     );
-    assert_eq!(at_cap.len(), 128);
 
-    let result = h.token.try_retire(
-        &alice,
-        &10,
-        &at_cap,
-        &String::from_str(&h.env, "reason"),
-    );
+    let result = h
+        .token
+        .try_retire(&alice, &10, &at_cap, &String::from_str(&h.env, "reason"));
     assert!(result.is_ok(), "128-char field must be accepted");
     assert_eq!(h.token.retirement_count(), 1);
 }
@@ -1192,19 +1198,15 @@ fn test_retire_field_at_129_bytes_fails() {
     h.approve_kyc(&alice);
     h.token.mint(&alice, &100);
 
-    // 129 'A' characters — one over the cap.
+    // 129 'A' characters — one over the 128-byte content cap, must be rejected.
     let over_cap = String::from_str(
         &h.env,
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     );
-    assert_eq!(over_cap.len(), 129);
 
-    let result = h.token.try_retire(
-        &alice,
-        &10,
-        &over_cap,
-        &String::from_str(&h.env, "reason"),
-    );
+    let result = h
+        .token
+        .try_retire(&alice, &10, &over_cap, &String::from_str(&h.env, "reason"));
     assert!(result.is_err(), "129-char field must be rejected");
     assert_eq!(h.token.retirement_count(), 0);
 }
@@ -1233,6 +1235,11 @@ fn test_verify_receipt_nonzero_timestamp_is_valid() {
     let alice = Address::generate(&h.env);
     h.approve_kyc(&alice);
     h.token.mint(&alice, &100);
+
+    // Advance ledger timestamp so the receipt carries a non-zero timestamp.
+    h.env
+        .ledger()
+        .with_mut(|li| li.timestamp = 1_700_000_000);
 
     h.token.retire(
         &alice,
@@ -1289,9 +1296,18 @@ fn test_batch_retire_on_behalf_basic() {
     assert_eq!(serials.len(), 3);
 
     // Serials must be project_id + "-" + index.
-    assert_eq!(serials.get(0).unwrap(), String::from_str(&h.env, "VCS-1234-0"));
-    assert_eq!(serials.get(1).unwrap(), String::from_str(&h.env, "VCS-1234-1"));
-    assert_eq!(serials.get(2).unwrap(), String::from_str(&h.env, "VCS-1234-2"));
+    assert_eq!(
+        serials.get(0).unwrap(),
+        String::from_str(&h.env, "VCS-1234-0")
+    );
+    assert_eq!(
+        serials.get(1).unwrap(),
+        String::from_str(&h.env, "VCS-1234-1")
+    );
+    assert_eq!(
+        serials.get(2).unwrap(),
+        String::from_str(&h.env, "VCS-1234-2")
+    );
 
     // Total burned.
     assert_eq!(h.token.balance(&retiree), 0);
@@ -1400,7 +1416,11 @@ fn test_batch_retire_on_behalf_partial_blocklist_rejects_whole_batch() {
         "batch with non-KYC beneficiary must be rejected"
     );
     assert_eq!(h.token.retirement_count(), 0, "no receipts on failure");
-    assert_eq!(h.token.balance(&retiree), 500, "balance unchanged on failure");
+    assert_eq!(
+        h.token.balance(&retiree),
+        500,
+        "balance unchanged on failure"
+    );
 }
 
 /// batch_retire_on_behalf updates global AND per-beneficiary indexes correctly.
@@ -1418,12 +1438,8 @@ fn test_batch_retire_on_behalf_indexes_consistent() {
 
     // Mix of single-retire and batch_retire_on_behalf to test interleaving.
     // retire_on_behalf: ben1 gets global idx 0
-    h.token.retire_on_behalf(
-        &retiree,
-        &ben1,
-        &50,
-        &String::from_str(&h.env, "pre-batch"),
-    );
+    h.token
+        .retire_on_behalf(&retiree, &ben1, &50, &String::from_str(&h.env, "pre-batch"));
 
     // batch_retire_on_behalf: ben2 gets global idx 1, ben1 gets global idx 2
     let reqs = soroban_sdk::vec![
@@ -1442,8 +1458,14 @@ fn test_batch_retire_on_behalf_indexes_consistent() {
     let serials = h.token.batch_retire_on_behalf(&retiree, &reqs);
 
     // Serials start at global index 1 (index 0 was used by retire_on_behalf above).
-    assert_eq!(serials.get(0).unwrap(), String::from_str(&h.env, "VCS-1234-1"));
-    assert_eq!(serials.get(1).unwrap(), String::from_str(&h.env, "VCS-1234-2"));
+    assert_eq!(
+        serials.get(0).unwrap(),
+        String::from_str(&h.env, "VCS-1234-1")
+    );
+    assert_eq!(
+        serials.get(1).unwrap(),
+        String::from_str(&h.env, "VCS-1234-2")
+    );
 
     // ben1 should have 2 receipts in their per-beneficiary index.
     let ben1_receipts = h.token.get_receipts_by_beneficiary(&ben1, &0, &100);

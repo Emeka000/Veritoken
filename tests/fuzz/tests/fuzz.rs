@@ -1241,12 +1241,14 @@ fn prop_partial_settlement_transfer_conservation() {
 
 // ── Issue #541: Carbon-credit beneficiary index and batch retire conservation ─
 
-use carbon_credit_token::{CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta, RetirementRequest};
+use carbon_credit_token::{
+    CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta, RetirementRequest,
+};
 
 fn build_carbon_suite() -> (
     Env,
-    Address,   // admin
-    Address,   // verifier
+    Address, // admin
+    Address, // verifier
     kyc_registry::KycRegistryClient<'static>,
     compliance_engine::ComplianceEngineClient<'static>,
     CarbonCreditTokenClient<'static>,
@@ -1308,22 +1310,17 @@ fn approve_carbon(
 #[test]
 fn prop_beneficiary_index_consistency() {
     // (n_retirements_per_beneficiary, m_beneficiaries)
-    let cases: &[(u32, u32)] = &[
-        (1, 1),
-        (1, 3),
-        (3, 1),
-        (2, 5),
-        (3, 3),
-        (1, 10),
-        (5, 2),
-    ];
+    let cases: &[(u32, u32)] = &[(1, 1), (1, 3), (3, 1), (2, 5), (3, 3), (1, 10), (5, 2)];
 
     for &(retires_each, m) in cases {
         let (env, _admin, verifier, kyc, _ce, token) = build_carbon_suite();
 
         let retiree = Address::generate(&env);
         approve_carbon(&env, &kyc, &verifier, &retiree);
-        let total_amount = (retires_each as i128) * (m as i128) * 10;
+        // Total tokens needed: for each of M beneficiaries, retire (1+2+...+retires_each)*10
+        // = m * retires_each * (retires_each + 1) / 2 * 10
+        let total_amount =
+            (m as i128) * (retires_each as i128) * (retires_each as i128 + 1) / 2 * 10;
         token.mint(&retiree, &total_amount);
 
         // Build beneficiary list.
@@ -1341,12 +1338,7 @@ fn prop_beneficiary_index_consistency() {
             for ben in &bens {
                 // Amount varies by round to distinguish receipts.
                 let amt = (round as i128 + 1) * 10;
-                token.retire_on_behalf(
-                    &retiree,
-                    ben,
-                    &amt,
-                    &String::from_str(&env, "fuzz-reason"),
-                );
+                token.retire_on_behalf(&retiree, ben, &amt, &String::from_str(&env, "fuzz-reason"));
             }
         }
 

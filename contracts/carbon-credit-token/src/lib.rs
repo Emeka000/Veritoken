@@ -141,19 +141,13 @@ impl CarbonCreditToken {
     /// Append `global_idx` to the per-beneficiary receipt index for `beneficiary`.
     fn index_beneficiary_receipt(env: &Env, beneficiary: &Address, global_idx: u32) {
         let count_key = DataKey::BeneficiaryReceiptCount(beneficiary.clone());
-        let count: u32 = env
-            .storage()
-            .persistent()
-            .get(&count_key)
-            .unwrap_or(0);
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
         let idx_key = DataKey::BeneficiaryReceiptIdx(beneficiary.clone(), count);
         env.storage().persistent().set(&idx_key, &global_idx);
         env.storage()
             .persistent()
             .extend_ttl(&idx_key, THRESHOLD, BUMP);
-        env.storage()
-            .persistent()
-            .set(&count_key, &(count + 1));
+        env.storage().persistent().set(&count_key, &(count + 1));
         env.storage()
             .persistent()
             .extend_ttl(&count_key, THRESHOLD, BUMP);
@@ -810,7 +804,10 @@ impl CarbonCreditToken {
             let global_idx: u32 = env
                 .storage()
                 .persistent()
-                .get(&DataKey::BeneficiaryReceiptIdx(beneficiary.clone(), local_i))
+                .get(&DataKey::BeneficiaryReceiptIdx(
+                    beneficiary.clone(),
+                    local_i,
+                ))
                 .expect("beneficiary receipt index not found");
             let r: RetirementReceipt = env
                 .storage()

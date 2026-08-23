@@ -798,7 +798,6 @@ fn workflow_invoice_fee_recipient_blocklist_blocks_transfer() {
     assert_eq!(token.balance(&fee_recipient, &inv), 10);
 }
 
-
 // ── Issue #541: batch_retire_on_behalf integration test ──────────────────────
 
 use carbon_credit_token::RetirementRequest;
@@ -827,6 +826,8 @@ fn workflow_carbon_batch_retire_on_behalf_three_beneficiaries() {
     s.onboard(&ben3);
 
     // Mint 5 credits total to the retiree.
+    // Advance timestamp so receipts carry a non-zero timestamp (valid=true).
+    s.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
     carbon.mint(&retiree, &5);
     assert_eq!(carbon.total_supply(), 5);
     assert_eq!(carbon.balance(&retiree), 5);
@@ -855,9 +856,18 @@ fn workflow_carbon_batch_retire_on_behalf_three_beneficiaries() {
 
     // Three serials returned with correct project prefix.
     assert_eq!(serials.len(), 3);
-    assert_eq!(serials.get(0).unwrap(), String::from_str(&s.env, "VCS-INT-001-0"));
-    assert_eq!(serials.get(1).unwrap(), String::from_str(&s.env, "VCS-INT-001-1"));
-    assert_eq!(serials.get(2).unwrap(), String::from_str(&s.env, "VCS-INT-001-2"));
+    assert_eq!(
+        serials.get(0).unwrap(),
+        String::from_str(&s.env, "VCS-INT-001-0")
+    );
+    assert_eq!(
+        serials.get(1).unwrap(),
+        String::from_str(&s.env, "VCS-INT-001-1")
+    );
+    assert_eq!(
+        serials.get(2).unwrap(),
+        String::from_str(&s.env, "VCS-INT-001-2")
+    );
 
     // Balance fully burned.
     assert_eq!(carbon.balance(&retiree), 0);
@@ -918,12 +928,7 @@ fn workflow_carbon_mixed_retire_beneficiary_index_consistency() {
     carbon.mint(&retiree, &100);
 
     // 1. Single retire_on_behalf: ben1 gets global idx 0, amount=10.
-    carbon.retire_on_behalf(
-        &retiree,
-        &ben1,
-        &10,
-        &String::from_str(&s.env, "single-1"),
-    );
+    carbon.retire_on_behalf(&retiree, &ben1, &10, &String::from_str(&s.env, "single-1"));
 
     // 2. Batch: ben2 gets global idx 1 (amount=20), ben1 gets global idx 2 (amount=30).
     let reqs = soroban_sdk::vec![
@@ -942,12 +947,7 @@ fn workflow_carbon_mixed_retire_beneficiary_index_consistency() {
     carbon.batch_retire_on_behalf(&retiree, &reqs);
 
     // 3. Another single retire_on_behalf: ben2 gets global idx 3, amount=15.
-    carbon.retire_on_behalf(
-        &retiree,
-        &ben2,
-        &15,
-        &String::from_str(&s.env, "single-2"),
-    );
+    carbon.retire_on_behalf(&retiree, &ben2, &15, &String::from_str(&s.env, "single-2"));
 
     assert_eq!(carbon.retirement_count(), 4);
     assert_eq!(carbon.total_retired(), 75);
