@@ -1,0 +1,32 @@
+{
+  "name": "veritoken-event-indexer",
+  "version": "0.1.0",
+  "description": "Off-chain Soroban contract event indexer for Veritoken",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "migrate": "tsx src/db/migrate.ts",
+    "test": "vitest run",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "12.3.0",
+    "express": "4.21.2",
+    "pg": "8.13.3",
+    "zod": "3.24.2"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/node": "20.17.10",
+    "@types/pg": "8.11.10",
+    "@typescript-eslint/eslint-plugin": "7.13.0",
+    "@typescript-eslint/parser": "7.13.0",
+    "eslint": "8.57.1",
+    "tsx": "4.19.2",
+    "typescript": "5.7.3",
+    "vitest": "1.6.0"
+  }
+}

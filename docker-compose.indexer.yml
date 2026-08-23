@@ -1,0 +1,66 @@
+services:
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       veritoken_indexer
+      POSTGRES_USER:     veritoken
+      POSTGRES_PASSWORD: veritoken
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veritoken -d veritoken_indexer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ── Stellar local node ─────────────────────────────────────────────────────
+  stellar:
+    image: stellar/quickstart:latest
+    command: --standalone --enable-soroban-rpc
+    ports:
+      - "8000:8000"
+    environment:
+      - NETWORK=standalone
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/soroban/rpc"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ── Event Indexer ──────────────────────────────────────────────────────────
+  indexer:
+    build:
+      context: ./services/event-indexer
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL:       postgres://veritoken:veritoken@postgres:5432/veritoken_indexer
+      RPC_URL:            http://stellar:8000/soroban/rpc
+      STELLAR_NETWORK:    standalone
+      NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+      POLL_INTERVAL_MS:   "5000"
+      PORT:               "3001"
+      # Set CONTRACT_IDS after deploying contracts, e.g.:
+      # CONTRACT_IDS:     rwa:CABC...,kyc:CDEF...
+      CONTRACT_IDS:       "${CONTRACT_IDS:-}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      stellar:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  postgres-data:
