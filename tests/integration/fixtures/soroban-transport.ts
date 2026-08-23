@@ -4,6 +4,7 @@ import {
   Address,
   BASE_FEE,
   Contract,
+  Keypair,
   Operation,
   TransactionBuilder,
   rpc,
@@ -16,6 +17,36 @@ import type {
   InvokeContractRequest,
   UploadWasmRequest,
 } from "./fixture-runner";
+
+// ── Fee-bump types (mirrored from frontend/src/lib/feeBump.ts) ─────────────────
+// Duplicated here to keep the integration-test package independent from the
+// frontend package.  Keep the shape in sync with FeeBumpConfig.
+
+/**
+ * Optional fee-bump configuration for SorobanTransport.
+ * When set, every transaction submitted through this transport is wrapped in a
+ * fee-bump envelope and retried with exponential fee escalation on transient
+ * failures, matching the behaviour of the frontend's submitWithFeeBump.
+ */
+export interface FeeBumpConfig {
+  /** Account that pays the fee-bump fee. */
+  feeBumpSource: Keypair;
+  /** Starting fee in stroops. Default BASE_FEE * 10 = 1 000. */
+  initialFeeStroops: number;
+  /** Hard cap on fee in stroops. */
+  maxFeeStroops: number;
+  /** Maximum retry attempts after the initial submission. Default 4. */
+  maxRetries: number;
+  /** Base back-off interval (ms). Actual wait = backoffMs * 2^retryN. */
+  backoffMs: number;
+}
+
+export const DEFAULT_FEE_BUMP_CONFIG: Omit<FeeBumpConfig, "feeBumpSource"> = {
+  initialFeeStroops: Number(BASE_FEE) * 10,
+  maxFeeStroops: Number(BASE_FEE) * 1_000,
+  maxRetries: 4,
+  backoffMs: 500,
+};
 
 type TransactionResult = Awaited<
   ReturnType<rpc.Server["getTransaction"]>
@@ -118,6 +149,17 @@ export interface SorobanTransportOptions {
   pollIntervalMs?: number;
   rpc: rpc.Server;
   transactionTimeoutMs?: number;
+  /**
+   * When provided, every transaction submitted through this transport is
+   * wrapped in a fee-bump envelope.  On TransientError / TimeoutError the
+   * inner XDR is re-wrapped with a doubled fee (capped at maxFeeStroops) and
+   * resubmitted up to maxRetries times.  This mirrors the frontend's
+   * submitWithFeeBump behaviour so integration tests can exercise fee
+   * escalation paths without a browser environment.
+   *
+   * When omitted the transport behaves exactly as before (backward-compatible).
+   */
+  feeBumpConfig?: FeeBumpConfig;
 }
 
 export class SorobanTransport implements FixtureTransport {
@@ -126,12 +168,14 @@ export class SorobanTransport implements FixtureTransport {
   private readonly rpc: rpc.Server;
   private readonly transactionTimeoutMs: number;
   private readonly wasmHashes = new Map<string, string>();
+  private readonly feeBumpConfig?: FeeBumpConfig;
 
   constructor(options: SorobanTransportOptions) {
     this.networkPassphrase = options.networkPassphrase;
     this.pollIntervalMs = options.pollIntervalMs ?? 250;
     this.rpc = options.rpc;
     this.transactionTimeoutMs = options.transactionTimeoutMs ?? 30_000;
+    this.feeBumpConfig = options.feeBumpConfig;
   }
 
   async uploadWasm(request: UploadWasmRequest): Promise<string> {
@@ -254,9 +298,8 @@ export class SorobanTransport implements FixtureTransport {
     source: UploadWasmRequest["source"],
     operation: string,
   ): Promise<Extract<TransactionResult, { status: "SUCCESS" }>> {
-    let prepared: Awaited<
-      ReturnType<rpc.Server["prepareTransaction"]>
-    >;
+    // ── Prepare & sign the inner transaction ──────────────────────────────────
+    let prepared: Awaited<ReturnType<rpc.Server["prepareTransaction"]>>;
     try {
       prepared = await this.rpc.prepareTransaction(transaction);
       prepared.sign(source);
@@ -266,9 +309,73 @@ export class SorobanTransport implements FixtureTransport {
       });
     }
 
+    // ── If no fee-bump config is set, use the original single-attempt path ────
+    if (!this.feeBumpConfig) {
+      return this.sendAndPoll(prepared, operation);
+    }
+
+    // ── Fee-bump retry path ───────────────────────────────────────────────────
+    const cfg = this.feeBumpConfig;
+    let currentFee = cfg.initialFeeStroops;
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt <= cfg.maxRetries; attempt++) {
+      // On retries, escalate before building the next envelope.
+      if (attempt > 0) {
+        const next = Math.min(currentFee * 2, cfg.maxFeeStroops);
+        if (currentFee >= cfg.maxFeeStroops) {
+          throw new SorobanFixtureError(
+            operation,
+            "send",
+            `fee-bump exhausted: fee ${currentFee} reached cap ${cfg.maxFeeStroops}`,
+            { cause: lastError ?? undefined },
+          );
+        }
+        currentFee = next;
+      }
+
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        cfg.feeBumpSource,
+        String(currentFee),
+        prepared,
+        this.networkPassphrase,
+      );
+      feeBumpTx.sign(cfg.feeBumpSource);
+
+      try {
+        return await this.sendAndPoll(feeBumpTx, operation);
+      } catch (err) {
+        lastError = err;
+
+        // Only poll-timeout errors are retryable.
+        const isTimeout =
+          err instanceof SorobanFixtureError && err.stage === "poll";
+        if (!isTimeout || attempt >= cfg.maxRetries) throw err;
+
+        // Exponential back-off before next attempt.
+        const waitMs = cfg.backoffMs * Math.pow(2, attempt);
+        await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+
+    // This line is only reached when maxRetries is 0 and the loop exits
+    // without throwing — surface the last error as a fixture error.
+    throw new SorobanFixtureError(
+      operation,
+      "send",
+      "fee-bump retry loop exited without a result",
+      { cause: lastError ?? undefined },
+    );
+  }
+
+  /** Send a prepared/signed transaction and poll until SUCCESS. */
+  private async sendAndPoll(
+    tx: Parameters<rpc.Server["sendTransaction"]>[0],
+    operation: string,
+  ): Promise<Extract<TransactionResult, { status: "SUCCESS" }>> {
     let submission: Awaited<ReturnType<rpc.Server["sendTransaction"]>>;
     try {
-      submission = await this.rpc.sendTransaction(prepared);
+      submission = await this.rpc.sendTransaction(tx);
     } catch (cause) {
       throw new SorobanFixtureError(operation, "send", "submission failed", {
         cause,
