@@ -31,31 +31,31 @@ const OUT_DIR = join(__dirname, "../src/types/generated");
  * Map of friendly name → WASM path (relative to repo root) and the optional
  * contract ID for pulling live spec from the network.
  *
- * WASM paths are built artifacts produced by `cargo build --target wasm32-unknown-unknown`.
+ * WASM paths are built artifacts produced by `cargo build --target wasm32v1-none`.
  */
 const CONTRACT_SCHEMAS: Record<string, { wasm: string; envVar: string }> = {
   kyc_registry: {
-    wasm: "../../target/wasm32-unknown-unknown/release/kyc_registry.wasm",
+    wasm: "../../target/wasm32v1-none/release/kyc_registry.wasm",
     envVar: "VITE_KYC_REGISTRY_CONTRACT_ID",
   },
   compliance_engine: {
-    wasm: "../../target/wasm32-unknown-unknown/release/compliance_engine.wasm",
+    wasm: "../../target/wasm32v1-none/release/compliance_engine.wasm",
     envVar: "VITE_COMPLIANCE_ENGINE_CONTRACT_ID",
   },
   invoice_token: {
-    wasm: "../../target/wasm32-unknown-unknown/release/invoice_token.wasm",
+    wasm: "../../target/wasm32v1-none/release/invoice_token.wasm",
     envVar: "VITE_INVOICE_TOKEN_CONTRACT_ID",
   },
   property_token: {
-    wasm: "../../target/wasm32-unknown-unknown/release/property_token.wasm",
+    wasm: "../../target/wasm32v1-none/release/property_token.wasm",
     envVar: "VITE_PROPERTY_TOKEN_CONTRACT_ID",
   },
   carbon_credit_token: {
-    wasm: "../../target/wasm32-unknown-unknown/release/carbon_credit_token.wasm",
+    wasm: "../../target/wasm32v1-none/release/carbon_credit_token.wasm",
     envVar: "VITE_CARBON_TOKEN_CONTRACT_ID",
   },
   rwa_token: {
-    wasm: "../../target/wasm32-unknown-unknown/release/rwa_token.wasm",
+    wasm: "../../target/wasm32v1-none/release/rwa_token.wasm",
     envVar: "VITE_RWA_TOKEN_CONTRACT_ID",
   },
 };
@@ -70,7 +70,7 @@ function generateBindings(contractName: string, wasmPath: string): string | null
   const absWasm = join(__dirname, wasmPath);
   if (!existsSync(absWasm)) {
     console.warn(`  ⚠  WASM not found at ${absWasm} — skipping ${contractName}`);
-    console.warn(`     Run: cargo build --release --target wasm32-unknown-unknown`);
+    console.warn(`     Run: cargo build --release --target wasm32v1-none`);
     return null;
   }
 

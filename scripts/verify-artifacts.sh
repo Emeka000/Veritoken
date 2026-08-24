@@ -15,13 +15,13 @@
 #
 # Environment:
 #   WASM_DIR  — override the directory containing built WASM files
-#               (default: target/wasm32-unknown-unknown/release)
+#               (default: target/wasm32v1-none/release)
 
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-WASM_DIR="${WASM_DIR:-target/wasm32-unknown-unknown/release}"
+WASM_DIR="${WASM_DIR:-target/wasm32v1-none/release}"
 
 # Minimum size: a valid (non-empty) compiled Soroban contract is several KB.
 # Anything smaller is almost certainly a build error or a stub.
@@ -80,7 +80,7 @@ echo ""
 
 if [[ ! -d "$WASM_DIR" ]]; then
   echo "ERROR: WASM output directory not found: $WASM_DIR" >&2
-  echo "       Run 'cargo build --release --target wasm32-unknown-unknown' first." >&2
+  echo "       Run 'cargo build --release --target wasm32v1-none' first." >&2
   if $DRY_RUN; then exit 0; fi
   exit 1
 fi

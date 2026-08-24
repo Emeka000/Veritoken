@@ -44,12 +44,12 @@ services:
     command: >
       bash -c "
         echo '==> Veritoken contract toolchain ready' &&
-        cargo check --target wasm32-unknown-unknown --quiet &&
+        cargo check --target wasm32v1-none --quiet &&
         echo '==> cargo check passed — container is healthy' &&
         tail -f /dev/null
       "
     healthcheck:
-      test: ["CMD", "cargo", "check", "--target", "wasm32-unknown-unknown", "--quiet"]
+      test: ["CMD", "cargo", "check", "--target", "wasm32v1-none", "--quiet"]
       interval: 60s
       timeout: 30s
       retries: 3

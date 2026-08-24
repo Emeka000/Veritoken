@@ -50,7 +50,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Cache Cargo registry & build
         uses: actions/cache@v4
@@ -98,7 +98,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Cache Cargo registry & build
         uses: actions/cache@v4
@@ -120,11 +120,11 @@ jobs:
         run: cargo test -p integration-tests --features testutils
 
       - name: Build WASM (release)
-        run: cargo build --release --target wasm32-unknown-unknown
+        run: cargo build --release --target wasm32v1-none
 
       - name: Verify artifacts (existence, magic bytes, size bounds)
         shell: bash
-        run: bash scripts/verify-artifacts.sh
+        run: WASM_DIR=target/wasm32v1-none/release bash scripts/verify-artifacts.sh
 
       - name: Check WASM sizes against CI threshold
         shell: bash
@@ -132,7 +132,7 @@ jobs:
           # ── Configurable threshold ─────────────────────────────────────────
           THRESHOLD_BYTES=131072   # 128 KB
 
-          WASM_DIR="target/wasm32-unknown-unknown/release"
+          WASM_DIR="target/wasm32v1-none/release"
           EXIT_CODE=0
 
           echo "──────────────────────────────────────────────"
@@ -174,7 +174,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wasm-release
-          path: target/wasm32-unknown-unknown/release/*.wasm
+          path: target/wasm32v1-none/release/*.wasm
           retention-days: 7
 
   # ── Frontend: lint ───────────────────────────────────────────────────────────

@@ -387,7 +387,7 @@ def _add_common_config(
         default=Path(
             os.environ.get(
                 "WASM_DIR",
-                "target/wasm32-unknown-unknown/release",
+                "target/wasm32v1-none/release",
             )
         ),
     )

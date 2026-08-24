@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 IDENTITY="${1:-${STELLAR_IDENTITY:-alice}}"
 NETWORK="${STELLAR_NETWORK:-testnet}"
-WASM_DIR="${WASM_DIR:-target/wasm32-unknown-unknown/release}"
+WASM_DIR="${WASM_DIR:-target/wasm32v1-none/release}"
 DEPLOY_CONFIG="${DEPLOY_CONFIG:-deployment/config.testnet.json}"
 DEPLOY_MANIFEST="${DEPLOY_MANIFEST:-deploy-manifest.json}"
 DEPLOY_VERIFICATION_REPORT="${DEPLOY_VERIFICATION_REPORT:-deployment-verification-report.json}"
@@ -42,7 +42,7 @@ cd "$REPO_ROOT"
 
 if [[ "${DEPLOY_SKIP_BUILD:-0}" != "1" ]]; then
   echo "==> Building release WASM artifacts..."
-  cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 fi
 
 echo "==> Validating release WASM artifacts..."
