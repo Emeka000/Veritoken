@@ -93,7 +93,7 @@ const mockContracts = contracts as unknown as {
 import { PortfolioSummaryCard } from "../PortfolioSummaryCard";
 
 describe("PortfolioSummaryCard", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); });
 
   it("shows connect wallet placeholder when walletAddress is null", () => {
     render(<PortfolioSummaryCard walletAddress={null} />, { wrapper });
@@ -139,7 +139,7 @@ describe("PortfolioSummaryCard", () => {
 import { KycExpiryPanel } from "../KycExpiryPanel";
 
 describe("KycExpiryPanel", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); });
 
   it("shows connect wallet placeholder when walletAddress is null", () => {
     render(<KycExpiryPanel walletAddress={null} />, { wrapper });
@@ -212,7 +212,7 @@ describe("KycExpiryPanel", () => {
 import { InvoicePortfolioTable } from "../InvoicePortfolioTable";
 
 describe("InvoicePortfolioTable", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); });
 
   it("shows connect wallet placeholder when walletAddress is null", () => {
     render(<InvoicePortfolioTable walletAddress={null} />, { wrapper });
@@ -329,7 +329,7 @@ describe("ComplianceAlertTimeline", () => {
 import { DividendHistoryChart } from "../DividendHistoryChart";
 
 describe("DividendHistoryChart", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); });
 
   it("shows connect wallet placeholder when walletAddress is null", () => {
     render(<DividendHistoryChart walletAddress={null} />, { wrapper });
