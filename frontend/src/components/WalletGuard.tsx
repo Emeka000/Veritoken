@@ -1,172 +1,110 @@
-import { type ReactNode, useEffect, useState } from "react";
+/**
+ * WalletGuard — updated for issue #545 multi-wallet provider abstraction.
+ *
+ * When no wallet is connected, shows `WalletSelectorModal` which presents
+ * cards for every detected provider (Freighter, Ledger, WalletConnect).
+ * The previous inline "Freighter not detected" error path is gone.
+ *
+ * Handles the WalletConnect pairing URI callback by displaying a QR code
+ * directly in the modal until the session is established.
+ */
+
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import { useWallet } from "../lib/wallet";
-import { isFreighterAvailable, isMobile, buildSep7Uri, generateQrDataUrl } from "../lib/sep7";
-import { Card } from "./ui";
+import type { ProviderType, WalletProvider } from "../lib/walletProvider";
+import { WalletConnectProvider } from "../lib/walletProvider";
 import { NETWORK_PASSPHRASE } from "../lib/stellar";
+import WalletSelectorModal from "./WalletSelectorModal";
 
-// ── QR code panel shown to desktop users without Freighter ──────────────────
+export default function WalletGuard({
+  children,
+  message: _message,
+}: {
+  children: ReactNode;
+  /** @deprecated — no longer rendered; kept for API compatibility. */
+  message?: string;
+}) {
+  const { connected, selectProvider } = useWallet();
+  const [connectingType, setConnectingType] = useState<ProviderType | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [wcUri, setWcUri] = useState<string | null>(null);
 
-function Sep7QrPanel() {
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [copying, setCopying] = useState(false);
+  // Keep a ref to the WalletConnectProvider instance so we can attach the
+  // onUri callback before calling connect().
+  const wcProviderRef = useRef<WalletConnectProvider | null>(null);
 
-  // Build a SEP-7 URI with placeholder XDR so users can see the scheme and
-  // scan it with any Stellar-compatible QR reader.
-  const placeholderUri = buildSep7Uri({
-    xdr: "AAAAAAAAAA==",  // minimal valid-looking placeholder
-    networkPassphrase: NETWORK_PASSPHRASE,
-    msg: "Sign with your mobile Stellar wallet",
-  });
+  const handleSelect = useCallback(
+    async (type: ProviderType) => {
+      setConnectError(null);
+      setConnectingType(type);
+      setWcUri(null);
 
-  useEffect(() => {
-    generateQrDataUrl(placeholderUri)
-      .then(setQrDataUrl)
-      .catch(() => setQrDataUrl(null));
-  }, [placeholderUri]);
+      try {
+        if (type === "walletconnect") {
+          // Create the provider manually so we can hook into the URI callback
+          // before connect() is called — the modal renders the QR code in-place.
+          const wc = new WalletConnectProvider(NETWORK_PASSPHRASE);
+          wc.onUri = (uri) => setWcUri(uri);
+          wcProviderRef.current = wc;
 
-  async function copyUri() {
-    await navigator.clipboard.writeText(placeholderUri);
-    setCopying(true);
-    setTimeout(() => setCopying(false), 1500);
-  }
+          const address = await wc.connect();
+          setWcUri(null);
 
-  return (
-    <div style={{ marginTop: "1.5rem", textAlign: "center" }}>
-      <p style={{ fontSize: "0.85rem", color: "var(--text-muted, #6b7280)", marginBottom: "0.75rem" }}>
-        Or scan with a Stellar mobile wallet (LOBSTR, xBull…)
-      </p>
-      {qrDataUrl ? (
-        <img
-          src={qrDataUrl}
-          alt="SEP-7 QR code — scan with your mobile Stellar wallet"
-          style={{
-            width: 180,
-            height: 180,
-            borderRadius: 8,
-            border: "1px solid var(--border, #e2e8f0)",
-            display: "block",
-            margin: "0 auto 0.75rem",
-          }}
-        />
-      ) : (
-        <div
-          style={{
-            width: 180,
-            height: 180,
-            borderRadius: 8,
-            background: "var(--surface-2, #f1f5f9)",
-            margin: "0 auto 0.75rem",
-            display: "grid",
-            placeItems: "center",
-            fontSize: "0.8rem",
-            color: "var(--text-muted, #6b7280)",
-          }}
-        >
-          Generating QR…
-        </div>
-      )}
-      <button
-        className="btn-secondary"
-        onClick={copyUri}
-        style={{ fontSize: "0.8rem", padding: "0.35rem 0.9rem" }}
-      >
-        {copying ? "Copied!" : "Copy SEP-7 URI"}
-      </button>
-    </div>
+          // Inject the already-connected provider into the store.
+          // We call selectProvider which also handles persistence.
+          // Since the provider is already connected, we patch the store directly
+          // via the selectProvider path — but selectProvider will re-create the
+          // instance. To avoid a double-connect we use the provider directly.
+          useWallet.setState({
+            provider: wc as unknown as WalletProvider,
+            providerType: "walletconnect",
+            address,
+            connected: true,
+            freighterAvailable: false,
+          });
+
+          // Persist the type for auto-reconnect.
+          try {
+            localStorage.setItem("veritoken-wallet-provider", "walletconnect");
+          } catch {
+            // Ignore
+          }
+        } else {
+          await selectProvider(type);
+        }
+      } catch (err: unknown) {
+        setWcUri(null);
+        setConnectError(err instanceof Error ? err.message : "Connection failed.");
+      } finally {
+        setConnectingType(null);
+      }
+    },
+    [selectProvider],
   );
-}
-
-// ── Mobile deep-link panel ───────────────────────────────────────────────────
-
-function Sep7MobilePanel() {
-  const { signTxSep7 } = useWallet();
-
-  function handleOpenWallet() {
-    // Open a SEP-7 URI with a minimal placeholder so the user's wallet app
-    // launches.  Real transaction signing happens when the app calls back with
-    // the prepared XDR.
-    signTxSep7("AAAAAAAAAA==", { msg: "Connect your Stellar wallet" });
-  }
-
-  return (
-    <div style={{ marginTop: "1.25rem" }}>
-      <p style={{ fontSize: "0.85rem", color: "var(--text-muted, #6b7280)", marginBottom: "0.75rem" }}>
-        Freighter is a desktop browser extension. On mobile, use a SEP-7
-        compatible wallet like LOBSTR or xBull.
-      </p>
-      <button className="btn-block" onClick={handleOpenWallet}>
-        Sign with mobile wallet
-      </button>
-    </div>
-  );
-}
-
-// ── No-wallet panel (detects Freighter availability on mount) ────────────────
-
-function NoWalletPanel({ onConnect, message }: { onConnect: () => void; message?: string }) {
-  const [mobile] = useState(() => isMobile());
-  const [freighterPresent, setFreighterPresent] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    isFreighterAvailable().then(setFreighterPresent);
-  }, []);
-
-  const loading = freighterPresent === null;
-
-  return (
-    <div style={{ display: "flex", justifyContent: "center", marginTop: "3rem" }}>
-      <Card style={{ textAlign: "center", maxWidth: 400 }}>
-        <p style={{ marginBottom: "1.25rem", fontSize: "0.95rem" }}>
-          {loading
-            ? "Detecting wallet…"
-            : freighterPresent
-              ? message ?? "Connect your Freighter wallet to continue"
-              : mobile
-                ? "No browser wallet detected"
-                : "Freighter not detected"}
-        </p>
-
-        {/* Freighter connect button — shown when the extension is available */}
-        {!loading && freighterPresent && (
-          <button className="btn-block" onClick={onConnect}>
-            Connect Freighter
-          </button>
-        )}
-
-        {/* Mobile deep-link fallback */}
-        {!loading && !freighterPresent && mobile && <Sep7MobilePanel />}
-
-        {/* Desktop QR fallback when Freighter is absent */}
-        {!loading && !freighterPresent && !mobile && (
-          <>
-            <p style={{ fontSize: "0.85rem", color: "var(--text-muted, #6b7280)" }}>
-              Install the{" "}
-              <a
-                href="https://freighter.app"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: "var(--accent-2, #6366f1)" }}
-              >
-                Freighter extension
-              </a>{" "}
-              for the full desktop experience, or scan the QR code below with
-              your mobile Stellar wallet.
-            </p>
-            <Sep7QrPanel />
-          </>
-        )}
-      </Card>
-    </div>
-  );
-}
-
-// ── Main guard ───────────────────────────────────────────────────────────────
-
-export default function WalletGuard({ children, message }: { children: ReactNode; message?: string }) {
-  const { connected, connect } = useWallet();
 
   if (!connected) {
-    return <NoWalletPanel onConnect={() => connect().catch(() => {})} message={message} />;
+    return (
+      <div>
+        <WalletSelectorModal
+          onSelect={handleSelect}
+          connectingType={connectingType}
+          walletConnectUri={wcUri}
+        />
+        {connectError && (
+          <p
+            role="alert"
+            style={{
+              textAlign: "center",
+              color: "#ef4444",
+              fontSize: "0.85rem",
+              marginTop: "0.75rem",
+            }}
+          >
+            {connectError}
+          </p>
+        )}
+      </div>
+    );
   }
 
   return <>{children}</>;
