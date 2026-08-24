@@ -470,6 +470,8 @@ fn workflow_carbon_retire_receipt_is_permanent() {
     let alice = Address::generate(&s.env);
     s.onboard(&alice);
 
+    // Set a non-zero ledger timestamp so verify_receipt returns valid=true.
+    s.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
     carbon.mint(&alice, &50);
     carbon.retire(
         &alice,
@@ -796,4 +798,171 @@ fn workflow_invoice_fee_recipient_blocklist_blocks_transfer() {
     assert_eq!(token.balance(&bob, &inv), 990);
     // Fee still goes to the recipient despite blocklist (exempt path).
     assert_eq!(token.balance(&fee_recipient, &inv), 10);
+}
+
+// ── Issue #541: batch_retire_on_behalf integration test ──────────────────────
+
+use carbon_credit_token::RetirementRequest;
+
+/// Integration test: batch retire 5 credits on behalf of 3 beneficiaries,
+/// then call get_receipts_by_beneficiary for each and verify amounts.
+///
+/// This exercises the full cross-contract stack:
+/// - KYC registry must approve the retiree and all beneficiaries.
+/// - Compliance engine must allow the burn.
+/// - Receipt index must be consistent after batch operation.
+#[test]
+fn workflow_carbon_batch_retire_on_behalf_three_beneficiaries() {
+    let s = build_stack();
+    let carbon = s.deploy_carbon();
+
+    let retiree = Address::generate(&s.env);
+    let ben1 = Address::generate(&s.env);
+    let ben2 = Address::generate(&s.env);
+    let ben3 = Address::generate(&s.env);
+
+    // Onboard all parties through the real KYC registry.
+    s.onboard(&retiree);
+    s.onboard(&ben1);
+    s.onboard(&ben2);
+    s.onboard(&ben3);
+
+    // Mint 5 credits total to the retiree.
+    // Advance timestamp so receipts carry a non-zero timestamp (valid=true).
+    s.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
+    carbon.mint(&retiree, &5);
+    assert_eq!(carbon.total_supply(), 5);
+    assert_eq!(carbon.balance(&retiree), 5);
+
+    // Build the batch: ben1 gets 1, ben2 gets 2, ben3 gets 2 (total = 5).
+    let reqs = soroban_sdk::vec![
+        &s.env,
+        RetirementRequest {
+            beneficiary: ben1.clone(),
+            amount: 1,
+            memo: String::from_str(&s.env, "offset for ben1"),
+        },
+        RetirementRequest {
+            beneficiary: ben2.clone(),
+            amount: 2,
+            memo: String::from_str(&s.env, "offset for ben2"),
+        },
+        RetirementRequest {
+            beneficiary: ben3.clone(),
+            amount: 2,
+            memo: String::from_str(&s.env, "offset for ben3"),
+        },
+    ];
+
+    let serials = carbon.batch_retire_on_behalf(&retiree, &reqs);
+
+    // Three serials returned with correct project prefix.
+    assert_eq!(serials.len(), 3);
+    assert_eq!(
+        serials.get(0).unwrap(),
+        String::from_str(&s.env, "VCS-INT-001-0")
+    );
+    assert_eq!(
+        serials.get(1).unwrap(),
+        String::from_str(&s.env, "VCS-INT-001-1")
+    );
+    assert_eq!(
+        serials.get(2).unwrap(),
+        String::from_str(&s.env, "VCS-INT-001-2")
+    );
+
+    // Balance fully burned.
+    assert_eq!(carbon.balance(&retiree), 0);
+    assert_eq!(carbon.total_supply(), 0);
+    assert_eq!(carbon.total_retired(), 5);
+    assert_eq!(carbon.retirement_count(), 3);
+
+    // Per-beneficiary index: ben1 has 1 receipt, amount=1.
+    let ben1_receipts = carbon.get_receipts_by_beneficiary(&ben1, &0, &100);
+    assert_eq!(ben1_receipts.len(), 1);
+    assert_eq!(ben1_receipts.get(0).unwrap().amount, 1);
+    assert_eq!(
+        ben1_receipts.get(0).unwrap().beneficiary_address,
+        Some(ben1.clone())
+    );
+
+    // Per-beneficiary index: ben2 has 1 receipt, amount=2.
+    let ben2_receipts = carbon.get_receipts_by_beneficiary(&ben2, &0, &100);
+    assert_eq!(ben2_receipts.len(), 1);
+    assert_eq!(ben2_receipts.get(0).unwrap().amount, 2);
+    assert_eq!(
+        ben2_receipts.get(0).unwrap().beneficiary_address,
+        Some(ben2.clone())
+    );
+
+    // Per-beneficiary index: ben3 has 1 receipt, amount=2.
+    let ben3_receipts = carbon.get_receipts_by_beneficiary(&ben3, &0, &100);
+    assert_eq!(ben3_receipts.len(), 1);
+    assert_eq!(ben3_receipts.get(0).unwrap().amount, 2);
+    assert_eq!(
+        ben3_receipts.get(0).unwrap().beneficiary_address,
+        Some(ben3.clone())
+    );
+
+    // Verify all 3 receipts are globally accessible and valid.
+    for i in 0u32..3 {
+        let v = carbon.verify_receipt(&i);
+        assert!(v.valid, "receipt {i} must be valid");
+        assert_eq!(v.retiree, retiree, "retiree must be the retiring party");
+    }
+}
+
+/// Integration test: interleave single retire_on_behalf with batch_retire_on_behalf
+/// and verify all per-beneficiary indexes remain consistent with the global list.
+#[test]
+fn workflow_carbon_mixed_retire_beneficiary_index_consistency() {
+    let s = build_stack();
+    let carbon = s.deploy_carbon();
+
+    let retiree = Address::generate(&s.env);
+    let ben1 = Address::generate(&s.env);
+    let ben2 = Address::generate(&s.env);
+
+    s.onboard(&retiree);
+    s.onboard(&ben1);
+    s.onboard(&ben2);
+
+    carbon.mint(&retiree, &100);
+
+    // 1. Single retire_on_behalf: ben1 gets global idx 0, amount=10.
+    carbon.retire_on_behalf(&retiree, &ben1, &10, &String::from_str(&s.env, "single-1"));
+
+    // 2. Batch: ben2 gets global idx 1 (amount=20), ben1 gets global idx 2 (amount=30).
+    let reqs = soroban_sdk::vec![
+        &s.env,
+        RetirementRequest {
+            beneficiary: ben2.clone(),
+            amount: 20,
+            memo: String::from_str(&s.env, "batch-ben2"),
+        },
+        RetirementRequest {
+            beneficiary: ben1.clone(),
+            amount: 30,
+            memo: String::from_str(&s.env, "batch-ben1"),
+        },
+    ];
+    carbon.batch_retire_on_behalf(&retiree, &reqs);
+
+    // 3. Another single retire_on_behalf: ben2 gets global idx 3, amount=15.
+    carbon.retire_on_behalf(&retiree, &ben2, &15, &String::from_str(&s.env, "single-2"));
+
+    assert_eq!(carbon.retirement_count(), 4);
+    assert_eq!(carbon.total_retired(), 75);
+
+    // ben1 should have 2 receipts: amounts 10 (global 0) and 30 (global 2).
+    let ben1_rs = carbon.get_receipts_by_beneficiary(&ben1, &0, &100);
+    assert_eq!(ben1_rs.len(), 2);
+    assert_eq!(ben1_rs.get(0).unwrap().amount, 10);
+    assert_eq!(ben1_rs.get(1).unwrap().amount, 30);
+
+    // ben2 should have 2 receipts: amounts 20 (global 1) and 15 (global 3).
+    let ben2_rs = carbon.get_receipts_by_beneficiary(&ben2, &0, &100);
+    assert_eq!(ben2_rs.len(), 2);
+    assert_eq!(ben2_rs.get(0).unwrap().amount, 20);
+    assert_eq!(ben2_rs.get(1).unwrap().amount, 15);
 }

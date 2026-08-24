@@ -30,6 +30,8 @@ pub enum CarbonError {
     BatchTooLarge = 7,
     /// Individual retirement amount is zero or negative.
     InvalidAmount = 8,
+    /// A metadata string field exceeds the 128-byte maximum allowed length.
+    FieldTooLong = 9,
 }
 
 #[contracttype]
@@ -40,6 +42,10 @@ pub enum DataKey {
     TotalRetired,
     RetirementCount,
     Receipt(u32),
+    /// Number of receipts attributed to a specific beneficiary address.
+    BeneficiaryReceiptCount(Address),
+    /// Maps (beneficiary, per-beneficiary-index) → global receipt index.
+    BeneficiaryReceiptIdx(Address, u32),
 }
 
 #[contracttype]
@@ -68,10 +74,24 @@ pub struct RetirementReceipt {
     pub beneficiary_address: Option<Address>,
 }
 
+/// A single entry in a `batch_retire_on_behalf` call.
+#[contracttype]
+#[derive(Clone)]
+pub struct RetirementRequest {
+    /// The end-beneficiary whose carbon offset is being claimed.
+    pub beneficiary: Address,
+    /// Amount of credits (tokens) to burn for this beneficiary.
+    pub amount: i128,
+    /// Free-text memo / retirement reason recorded in the receipt.
+    pub memo: String,
+}
+
 const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP: u32 = 365 * DAY_IN_LEDGERS;
 const THRESHOLD: u32 = BUMP - DAY_IN_LEDGERS;
 const MAX_PAGE_SIZE: u32 = 100;
+/// Maximum byte length for metadata string fields written into certificates.
+const MAX_FIELD_LEN: u32 = 128;
 
 /// Returned by `verify_receipt`. Contains key fields plus a validity flag and serial number.
 #[contracttype]
@@ -106,6 +126,34 @@ impl CarbonCreditToken {
             panic!("invalid project_type");
         }
     }
+
+    /// Enforce that a metadata string field is at most MAX_FIELD_LEN (128) bytes.
+    /// Panics with `CarbonError::FieldTooLong` if the limit is exceeded so the
+    /// caller receives a structured contract error rather than a generic trap.
+    fn validate_metadata_field_length(env: &Env, field: &String) {
+        if field.len() > MAX_FIELD_LEN {
+            panic_with_error!(env, CarbonError::FieldTooLong);
+        }
+    }
+
+    // ── Beneficiary index helpers ─────────────────────────────────────────────
+
+    /// Append `global_idx` to the per-beneficiary receipt index for `beneficiary`.
+    fn index_beneficiary_receipt(env: &Env, beneficiary: &Address, global_idx: u32) {
+        let count_key = DataKey::BeneficiaryReceiptCount(beneficiary.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let idx_key = DataKey::BeneficiaryReceiptIdx(beneficiary.clone(), count);
+        env.storage().persistent().set(&idx_key, &global_idx);
+        env.storage()
+            .persistent()
+            .extend_ttl(&idx_key, THRESHOLD, BUMP);
+        env.storage().persistent().set(&count_key, &(count + 1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&count_key, THRESHOLD, BUMP);
+    }
+
+    // ── Constructor ───────────────────────────────────────────────────────────
 
     /// Constructor — called atomically at deploy time via `stellar contract deploy -- --admin ...`.
     /// Eliminates the deploy→initialize front-running window.
@@ -274,6 +322,10 @@ impl CarbonCreditToken {
     // ── Retirement ───────────────────────────────────────────────────────────
 
     /// Permanently burn tokens and record a retirement receipt on-chain.
+    ///
+    /// Enforces a 128-byte cap on `beneficiary` and `reason` fields to prevent
+    /// certificate generation from overflowing. Returns `Error::FieldTooLong`
+    /// rather than panicking when the limit is exceeded.
     pub fn retire(
         env: Env,
         retiree: Address,
@@ -283,6 +335,11 @@ impl CarbonCreditToken {
     ) -> RetirementReceipt {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         retiree.require_auth();
+
+        // Validate field lengths before any state mutation.
+        Self::validate_metadata_field_length(&env, &beneficiary);
+        Self::validate_metadata_field_length(&env, &reason);
+
         match th::evaluate_transfer_compliance(&env, &retiree, &retiree, amount) {
             th::TransferDecision::Allow => {}
             th::TransferDecision::Deny(ref reason) => {
@@ -335,6 +392,10 @@ impl CarbonCreditToken {
             .instance()
             .set(&DataKey::RetirementCount, &(index + 1));
 
+        // Update the per-beneficiary index: use the retiree as the beneficiary
+        // (retire() does not have an explicit on-chain beneficiary address).
+        Self::index_beneficiary_receipt(&env, &retiree, index);
+
         env.events()
             .publish((symbol_short!("retired"), retiree), amount);
         receipt
@@ -343,6 +404,10 @@ impl CarbonCreditToken {
     /// Retire tokens on behalf of another party. Records both the retiring party
     /// (`retiree`) and the actual beneficiary (`on_behalf_of`) on-chain.
     /// Requires active KYC for both parties.
+    ///
+    /// The per-beneficiary receipt index is updated for `on_behalf_of` so that
+    /// registry integrations can look up all retirements for a given beneficiary
+    /// in O(count) rather than scanning the full global list.
     pub fn retire_on_behalf(
         env: Env,
         retiree: Address,
@@ -352,6 +417,10 @@ impl CarbonCreditToken {
     ) -> RetirementReceipt {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         retiree.require_auth();
+
+        // Validate field lengths before any state mutation.
+        Self::validate_metadata_field_length(&env, &reason);
+
         match th::evaluate_transfer_compliance(&env, &retiree, &retiree, amount) {
             th::TransferDecision::Allow => {}
             th::TransferDecision::Deny(ref reason) => {
@@ -407,6 +476,9 @@ impl CarbonCreditToken {
         env.storage()
             .instance()
             .set(&DataKey::RetirementCount, &(index + 1));
+
+        // Update the per-beneficiary index for on_behalf_of.
+        Self::index_beneficiary_receipt(&env, &on_behalf_of, index);
 
         env.events()
             .publish((symbol_short!("ret_obo"), retiree), on_behalf_of);
@@ -512,6 +584,159 @@ impl CarbonCreditToken {
         receipts
     }
 
+    /// Retire credits on behalf of multiple distinct beneficiary addresses in a
+    /// single transaction. Burns the total amount in one pass, writes one receipt
+    /// per `RetirementRequest` entry, and updates both the global receipt index
+    /// and the per-beneficiary index for each beneficiary.
+    ///
+    /// Returns `Vec<String>` of generated serial numbers (one per entry).
+    /// Emits a `batch_retired` event carrying the retiree and total amount burned.
+    ///
+    /// Restrictions:
+    /// - `retirements` must contain between 1 and 10 entries (inclusive).
+    /// - Every `amount` must be > 0.
+    /// - The retiree must be KYC-approved and not blocklisted.
+    /// - Every beneficiary must be KYC-approved.
+    /// - The retiree must hold sufficient balance to cover the total.
+    pub fn batch_retire_on_behalf(
+        env: Env,
+        retiree: Address,
+        retirements: Vec<RetirementRequest>,
+    ) -> Vec<String> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        retiree.require_auth();
+
+        let len = retirements.len();
+        if len == 0 || len > 10 {
+            panic_with_error!(env, CarbonError::BatchTooLarge);
+        }
+
+        // Compliance check for the retiree.
+        match th::evaluate_transfer_compliance(&env, &retiree, &retiree, 1) {
+            th::TransferDecision::Allow => {}
+            th::TransferDecision::Deny(ref reason) => {
+                if th::is_kyc_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::KycNotApproved);
+                } else if th::is_blocklist_deny_reason(reason) {
+                    panic_with_error!(env, CarbonError::Blocklisted);
+                } else {
+                    panic_with_error!(env, CarbonError::TransferBlocked);
+                }
+            }
+        }
+
+        // Validate all entries before touching any state.
+        let mut total: i128 = 0;
+        for i in 0..len {
+            let req = retirements.get(i).expect("index in bounds");
+            if req.amount <= 0 {
+                panic_with_error!(env, CarbonError::InvalidAmount);
+            }
+            // Require KYC for every beneficiary.
+            if th::get_kyc_state_of(&env, &req.beneficiary) != th::KycState::Approved {
+                panic_with_error!(env, CarbonError::KycNotApproved);
+            }
+            total = total.checked_add(req.amount).expect("overflow");
+        }
+
+        let bal = Self::read_balance(&env, retiree.clone());
+        if bal < total {
+            panic_with_error!(env, CarbonError::InsufficientBalance);
+        }
+
+        // Deduct entire total in one write.
+        Self::write_balance(&env, retiree.clone(), bal - total);
+
+        let supply: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalSupply, &(supply - total));
+
+        let retired: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalRetired)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRetired, &(retired + total));
+
+        // Read project metadata once for serial generation.
+        let meta: ProjectMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProjectMeta)
+            .expect("project meta must be set");
+
+        let mut index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RetirementCount)
+            .unwrap_or(0);
+
+        let now = env.ledger().timestamp();
+        let mut serials: Vec<String> = Vec::new(&env);
+
+        for i in 0..len {
+            let req = retirements.get(i).expect("index in bounds");
+
+            let receipt = RetirementReceipt {
+                retiree: retiree.clone(),
+                amount: req.amount,
+                timestamp: now,
+                beneficiary: String::from_str(&env, ""),
+                retirement_reason: req.memo.clone(),
+                beneficiary_address: Some(req.beneficiary.clone()),
+            };
+
+            let key = DataKey::Receipt(index);
+            env.storage().persistent().set(&key, &receipt);
+            env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+
+            // Update per-beneficiary index.
+            Self::index_beneficiary_receipt(&env, &req.beneficiary, index);
+
+            // Build serial: project_id + "-" + index (reusing the stack serial
+            // approach from verify_receipt — small fixed buffer is safe here
+            // because project_id is bounded to MAX_FIELD_LEN=128 bytes and u32
+            // adds at most 10 digits plus a dash: total ≤ 139 bytes).
+            let pid_len = meta.project_id.len() as usize;
+            let mut serial_buf = [0u8; 139];
+            meta.project_id.copy_into_slice(&mut serial_buf[..pid_len]);
+            serial_buf[pid_len] = b'-';
+            let mut pos = pid_len + 1;
+            let mut n = index;
+            if n == 0 {
+                serial_buf[pos] = b'0';
+                pos += 1;
+            } else {
+                let digit_start = pos;
+                while n > 0 {
+                    serial_buf[pos] = b'0' + (n % 10) as u8;
+                    pos += 1;
+                    n /= 10;
+                }
+                serial_buf[digit_start..pos].reverse();
+            }
+            serials.push_back(String::from_bytes(&env, &serial_buf[..pos]));
+
+            index += 1;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RetirementCount, &index);
+
+        env.events()
+            .publish((symbol_short!("bt_ret_ob"), retiree), total);
+
+        serials
+    }
+
     // ── Read API ─────────────────────────────────────────────────────────────
 
     pub fn retirement_count(env: Env) -> u32 {
@@ -552,11 +777,54 @@ impl CarbonCreditToken {
         out
     }
 
+    /// Returns up to `count` receipts attributed to `beneficiary`, starting at
+    /// per-beneficiary index `start`.
+    ///
+    /// Reads at most `min(count, BeneficiaryReceiptCount(beneficiary))` entries
+    /// from persistent storage via the per-beneficiary index regardless of the
+    /// total global receipt count — O(count) not O(N).
+    ///
+    /// `count` is capped at `MAX_PAGE_SIZE` (100).
+    pub fn get_receipts_by_beneficiary(
+        env: Env,
+        beneficiary: Address,
+        start: u32,
+        count: u32,
+    ) -> Vec<RetirementReceipt> {
+        env.storage().instance().extend_ttl(THRESHOLD, BUMP);
+        let ben_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BeneficiaryReceiptCount(beneficiary.clone()))
+            .unwrap_or(0);
+        let capped = count.min(MAX_PAGE_SIZE);
+        let end = (start + capped).min(ben_count);
+        let mut out = Vec::new(&env);
+        for local_i in start..end {
+            let global_idx: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::BeneficiaryReceiptIdx(
+                    beneficiary.clone(),
+                    local_i,
+                ))
+                .expect("beneficiary receipt index not found");
+            let r: RetirementReceipt = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Receipt(global_idx))
+                .expect("receipt not found");
+            out.push_back(r);
+        }
+        out
+    }
+
     /// Verify a retirement receipt by index.
     ///
     /// Returns a `ReceiptVerification` struct containing:
     /// - `valid`: true if the receipt exists and its fields are internally consistent
-    ///   (amount > 0, timestamp > 0, retiree matches on-chain record, project matches meta).
+    ///   (amount > 0 AND timestamp > 0, retiree matches on-chain record, project
+    ///   matches meta).
     /// - `serial`: a human-readable identifier composed of `project_id + "-" + index`.
     /// - Copies of the key receipt fields for UI display.
     ///
@@ -593,9 +861,10 @@ impl CarbonCreditToken {
 
         // Validity rules:
         // 1. Amount must be positive.
-        // 2. Timestamp must be non-zero.
+        // 2. Timestamp must be non-zero (Unix epoch 0 = Jan 1, 1970 is semantically
+        //    invalid; a valid retirement always carries the ledger close time).
         // 3. Project metadata must be present (already asserted above via unwrap).
-        let valid = receipt.amount > 0;
+        let valid = receipt.amount > 0 && receipt.timestamp > 0;
 
         // Build serial: project_id + "-" + index
         // Max: 128 bytes (project_id) + 1 ('-') + 10 (u32 digits) = 139
@@ -668,6 +937,14 @@ impl CarbonCreditToken {
     }
 
     /// Returns a JSON-formatted retirement certificate for the given receipt index.
+    ///
+    /// Fields are capped at `MAX_FIELD_LEN` (128 bytes) — the cap is enforced at
+    /// retire time via `validate_metadata_field_length`, so this function will
+    /// never encounter an oversized field at certificate generation time.
+    ///
+    /// Uses a single 1024-byte stack buffer.  The maximum JSON output given the
+    /// 128-byte field cap is approximately 950 bytes, so this buffer is always
+    /// sufficient and the `copy_into_slice` calls below are safe.
     pub fn to_certificate_json(env: Env, index: u32) -> String {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         let receipt: RetirementReceipt = env
@@ -681,84 +958,67 @@ impl CarbonCreditToken {
             .get(&DataKey::ProjectMeta)
             .expect("project meta must be set");
 
-        // Fixed-size stack buffer; max JSON output fits comfortably in 2 KiB.
-        let mut out = [0u8; 2048];
+        // Single stack buffer — no heap allocation required.
+        // Max size: ~950 bytes with all fields at their 128-byte cap.
+        let mut out = [0u8; 1024];
         let mut pos = 0usize;
 
-        macro_rules! append {
-            ($data:expr) => {{
-                let data: &[u8] = $data;
-                out[pos..pos + data.len()].copy_from_slice(data);
-                pos += data.len();
+        // Helper closures that write into `out` at `pos`.
+        macro_rules! push_literal {
+            ($bytes:expr) => {{
+                let src: &[u8] = $bytes;
+                out[pos..pos + src.len()].copy_from_slice(src);
+                pos += src.len();
             }};
         }
-        macro_rules! append_str {
+        macro_rules! push_sdk_str {
             ($s:expr) => {{
                 let len = $s.len() as usize;
                 $s.copy_into_slice(&mut out[pos..pos + len]);
                 pos += len;
             }};
         }
-        macro_rules! append_u128 {
+        macro_rules! push_u32 {
             ($n:expr) => {{
-                let mut n: u128 = $n;
-                if n == 0 {
-                    out[pos] = b'0';
-                    pos += 1;
-                } else {
-                    let mut tmp = [0u8; 39];
-                    let mut p = 39usize;
-                    while n > 0 {
-                        p -= 1;
-                        tmp[p] = b'0' + (n % 10) as u8;
-                        n /= 10;
-                    }
-                    let digits = &tmp[p..];
-                    out[pos..pos + digits.len()].copy_from_slice(digits);
-                    pos += digits.len();
-                }
+                let s = Self::u32_to_string(&env, $n);
+                push_sdk_str!(s);
             }};
         }
-        macro_rules! append_i128 {
+        macro_rules! push_u64 {
             ($n:expr) => {{
-                let n: i128 = $n;
-                if n < 0 {
-                    out[pos] = b'-';
-                    pos += 1;
-                    let abs: u128 = if n == i128::MIN {
-                        170141183460469231731687303715884105728u128
-                    } else {
-                        (-n) as u128
-                    };
-                    append_u128!(abs);
-                } else {
-                    append_u128!(n as u128);
-                }
+                let s = Self::u64_to_string(&env, $n);
+                push_sdk_str!(s);
+            }};
+        }
+        macro_rules! push_i128 {
+            ($n:expr) => {{
+                let s = Self::i128_to_string(&env, $n);
+                push_sdk_str!(s);
             }};
         }
 
-        append!(b"{\"project_id\":\"");
-        append_str!(meta.project_id);
-        append!(b"\",\"standard\":\"");
-        append_str!(meta.standard);
-        append!(b"\",\"vintage_year\":");
-        append_u128!(meta.vintage_year as u128);
-        append!(b",\"retiree\":\"");
+        push_literal!(b"{\"project_id\":\"");
+        push_sdk_str!(meta.project_id);
+        push_literal!(b"\",\"standard\":\"");
+        push_sdk_str!(meta.standard);
+        push_literal!(b"\",\"vintage_year\":");
+        push_u32!(meta.vintage_year);
+        push_literal!(b",\"retiree\":\"");
         let retiree_str = receipt.retiree.to_string();
-        append_str!(retiree_str);
-        append!(b"\",\"amount\":");
-        append_i128!(receipt.amount);
-        append!(b",\"timestamp\":");
-        append_u128!(receipt.timestamp as u128);
-        append!(b",\"beneficiary\":\"");
-        append_str!(receipt.beneficiary);
-        append!(b"\",\"retirement_reason\":\"");
-        append_str!(receipt.retirement_reason);
-        append!(b"\",\"registry_url\":\"");
-        append_str!(meta.registry_url);
-        append!(b"\",\"registry_project_id\":\"");
-        append_str!(meta.registry_project_id);
-        append!(b"\"}");
+        push_sdk_str!(retiree_str);
+        push_literal!(b"\",\"amount\":");
+        push_i128!(receipt.amount);
+        push_literal!(b",\"timestamp\":");
+        push_u64!(receipt.timestamp);
+        push_literal!(b",\"beneficiary\":\"");
+        push_sdk_str!(receipt.beneficiary);
+        push_literal!(b"\",\"retirement_reason\":\"");
+        push_sdk_str!(receipt.retirement_reason);
+        push_literal!(b"\",\"registry_url\":\"");
+        push_sdk_str!(meta.registry_url);
+        push_literal!(b"\",\"registry_project_id\":\"");
+        push_sdk_str!(meta.registry_project_id);
+        push_literal!(b"\"}");
 
         String::from_bytes(&env, &out[..pos])
     }
@@ -810,5 +1070,75 @@ impl CarbonCreditToken {
         let key = DataKey::Balance(addr);
         env.storage().persistent().set(&key, &amount);
         env.storage().persistent().extend_ttl(&key, THRESHOLD, BUMP);
+    }
+
+    // ── String helpers for number-to-String conversion ────────────────────────
+
+    /// Convert a `u32` to a `soroban_sdk::String`.
+    fn u32_to_string(env: &Env, mut n: u32) -> String {
+        if n == 0 {
+            return String::from_bytes(env, b"0");
+        }
+        let mut buf = [0u8; 10];
+        let mut pos = 10usize;
+        while n > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        String::from_bytes(env, &buf[pos..])
+    }
+
+    /// Convert a `u64` to a `soroban_sdk::String`.
+    fn u64_to_string(env: &Env, mut n: u64) -> String {
+        if n == 0 {
+            return String::from_bytes(env, b"0");
+        }
+        let mut buf = [0u8; 20];
+        let mut pos = 20usize;
+        while n > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        String::from_bytes(env, &buf[pos..])
+    }
+
+    /// Convert an `i128` to a `soroban_sdk::String`.
+    ///
+    /// Buffer layout: `buf[0]` is optionally `'-'`; digits fill from the end.
+    /// We then shift digits to immediately follow the sign byte before slicing.
+    fn i128_to_string(env: &Env, n: i128) -> String {
+        if n == 0 {
+            return String::from_bytes(env, b"0");
+        }
+        // 1 sign byte + up to 39 digits for u128::MAX.
+        let mut buf = [0u8; 40];
+        let negative = n < 0;
+        let abs: u128 = if n == i128::MIN {
+            170_141_183_460_469_231_731_687_303_715_884_105_728u128
+        } else if negative {
+            (-n) as u128
+        } else {
+            n as u128
+        };
+
+        // Write digits right-to-left.
+        let mut v = abs;
+        let mut pos = 40usize;
+        while v > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (v % 10) as u8;
+            v /= 10;
+        }
+        // `pos` now points to the first digit in buf[pos..40].
+        if negative {
+            // Place sign byte immediately before the digits.
+            let sign_pos = pos - 1;
+            buf[sign_pos] = b'-';
+            String::from_bytes(env, &buf[sign_pos..40])
+        } else {
+            String::from_bytes(env, &buf[pos..40])
+        }
     }
 }

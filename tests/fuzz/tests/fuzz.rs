@@ -1238,3 +1238,216 @@ fn prop_partial_settlement_transfer_conservation() {
         }
     }
 }
+
+// ── Issue #541: Carbon-credit beneficiary index and batch retire conservation ─
+
+use carbon_credit_token::{
+    CarbonCreditToken, CarbonCreditTokenClient, ProjectMeta, RetirementRequest,
+};
+
+fn build_carbon_suite() -> (
+    Env,
+    Address, // admin
+    Address, // verifier
+    kyc_registry::KycRegistryClient<'static>,
+    compliance_engine::ComplianceEngineClient<'static>,
+    CarbonCreditTokenClient<'static>,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let verifier = Address::generate(&env);
+
+    let kyc_id = env.register(kyc_registry::KycRegistry, ());
+    let kyc = kyc_registry::KycRegistryClient::new(&env, &kyc_id);
+    kyc.initialize(&admin);
+    kyc.add_verifier(&admin, &verifier);
+
+    let ce_id = env.register(compliance_engine::ComplianceEngine, ());
+    let ce = compliance_engine::ComplianceEngineClient::new(&env, &ce_id);
+    ce.initialize(&admin, &kyc_id, &0u64);
+
+    let token_id = env.register(
+        CarbonCreditToken,
+        (
+            admin.clone(),
+            kyc_id.clone(),
+            ce_id.clone(),
+            ProjectMeta {
+                project_id: String::from_str(&env, "VCS-FUZZ"),
+                standard: String::from_str(&env, "VCS"),
+                vintage_year: 2024,
+                project_name: String::from_str(&env, "Fuzz Forest"),
+                project_type: String::from_str(&env, "forestry"),
+                country: String::from_str(&env, "BR"),
+                verifier: String::from_str(&env, "Verra"),
+                ipfs_cert_hash: String::from_str(&env, ""),
+                registry_url: String::from_str(&env, "https://registry.verra.org"),
+                registry_project_id: String::from_str(&env, "VCS-FUZZ"),
+            },
+        ),
+    );
+    let token = CarbonCreditTokenClient::new(&env, &token_id);
+
+    (env, admin, verifier, kyc, ce, token)
+}
+
+fn approve_carbon(
+    env: &Env,
+    kyc: &kyc_registry::KycRegistryClient,
+    verifier: &Address,
+    addr: &Address,
+) {
+    kyc.approve(verifier, addr, &1, &0, &String::from_str(env, "US"));
+}
+
+/// prop_beneficiary_index_consistency:
+///
+/// Retire N credits on behalf of M beneficiaries in random order.
+/// After all retirements, `get_receipts_by_beneficiary` for each beneficiary
+/// must return exactly the receipts attributed to them — no more, no less —
+/// regardless of the total receipt count.
+#[test]
+fn prop_beneficiary_index_consistency() {
+    // (n_retirements_per_beneficiary, m_beneficiaries)
+    let cases: &[(u32, u32)] = &[(1, 1), (1, 3), (3, 1), (2, 5), (3, 3), (1, 10), (5, 2)];
+
+    for &(retires_each, m) in cases {
+        let (env, _admin, verifier, kyc, _ce, token) = build_carbon_suite();
+
+        let retiree = Address::generate(&env);
+        approve_carbon(&env, &kyc, &verifier, &retiree);
+        // Total tokens needed: for each of M beneficiaries, retire (1+2+...+retires_each)*10
+        // = m * retires_each * (retires_each + 1) / 2 * 10
+        let total_amount =
+            (m as i128) * (retires_each as i128) * (retires_each as i128 + 1) / 2 * 10;
+        token.mint(&retiree, &total_amount);
+
+        // Build beneficiary list.
+        let mut bens: alloc::vec::Vec<Address> = alloc::vec::Vec::new();
+        for _ in 0..m {
+            let ben = Address::generate(&env);
+            approve_carbon(&env, &kyc, &verifier, &ben);
+            bens.push(ben);
+        }
+
+        // Retire `retires_each` credits for each beneficiary.
+        // We interleave: ben0, ben1, ..., benM-1, ben0, ben1, ... to exercise
+        // non-contiguous global receipt indexes per beneficiary.
+        for round in 0..retires_each {
+            for ben in &bens {
+                // Amount varies by round to distinguish receipts.
+                let amt = (round as i128 + 1) * 10;
+                token.retire_on_behalf(&retiree, ben, &amt, &String::from_str(&env, "fuzz-reason"));
+            }
+        }
+
+        let expected_count = retires_each;
+        let global_count = token.retirement_count();
+        assert_eq!(
+            global_count,
+            retires_each * m,
+            "global receipt count mismatch (retires_each={retires_each}, m={m})"
+        );
+
+        for ben in &bens {
+            let receipts = token.get_receipts_by_beneficiary(ben, &0, &200);
+            assert_eq!(
+                receipts.len(),
+                expected_count,
+                "beneficiary receipt count mismatch (retires_each={retires_each}, m={m})"
+            );
+            // Verify each receipt actually belongs to this beneficiary.
+            for i in 0..expected_count {
+                let r = receipts.get(i).unwrap();
+                assert_eq!(
+                    r.beneficiary_address,
+                    Some(ben.clone()),
+                    "receipt beneficiary_address mismatch"
+                );
+                // Amount = (round+1)*10 for round=i (since we interleaved in order).
+                let expected_amt = (i as i128 + 1) * 10;
+                assert_eq!(
+                    r.amount, expected_amt,
+                    "receipt amount mismatch at local index {i}"
+                );
+            }
+        }
+    }
+}
+
+/// prop_batch_retire_conservation:
+///
+/// For a sweep of batch sizes (1–10) and amount distributions, batch_retire_on_behalf
+/// must satisfy: sum of all individual amounts == total burned from the contract.
+/// No double-spend, no partial burn.
+#[test]
+fn prop_batch_retire_conservation() {
+    // (batch_size, amount_per_entry)
+    let cases: &[(u32, i128)] = &[
+        (1, 1),
+        (1, 1_000_000),
+        (2, 50),
+        (3, 100),
+        (5, 200),
+        (7, 77),
+        (10, 10),
+        (10, 1_000),
+    ];
+
+    for &(batch_size, amount_each) in cases {
+        let (env, _admin, verifier, kyc, _ce, token) = build_carbon_suite();
+
+        let retiree = Address::generate(&env);
+        approve_carbon(&env, &kyc, &verifier, &retiree);
+        let total_expected = (batch_size as i128) * amount_each;
+        token.mint(&retiree, &total_expected);
+
+        assert_eq!(token.total_supply(), total_expected);
+        assert_eq!(token.total_retired(), 0);
+
+        let mut reqs: soroban_sdk::Vec<RetirementRequest> = soroban_sdk::Vec::new(&env);
+        for _ in 0..batch_size {
+            let ben = Address::generate(&env);
+            approve_carbon(&env, &kyc, &verifier, &ben);
+            reqs.push_back(RetirementRequest {
+                beneficiary: ben,
+                amount: amount_each,
+                memo: String::from_str(&env, "conservation-check"),
+            });
+        }
+
+        let serials = token.batch_retire_on_behalf(&retiree, &reqs);
+
+        // Exactly batch_size serials returned.
+        assert_eq!(
+            serials.len(),
+            batch_size,
+            "serial count mismatch (batch_size={batch_size})"
+        );
+
+        // Conservation: total burned == sum of amounts.
+        assert_eq!(
+            token.total_retired(),
+            total_expected,
+            "total_retired mismatch (batch_size={batch_size}, amount_each={amount_each})"
+        );
+        assert_eq!(
+            token.balance(&retiree),
+            0,
+            "retiree balance should be zero after full burn"
+        );
+        assert_eq!(
+            token.total_supply(),
+            0,
+            "total_supply should be zero after full burn"
+        );
+
+        // batch_size distinct receipts in global index.
+        assert_eq!(
+            token.retirement_count(),
+            batch_size,
+            "retirement_count mismatch"
+        );
+    }
+}
