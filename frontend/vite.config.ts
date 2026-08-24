@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   define: {
     global: "globalThis",
@@ -14,6 +14,16 @@ export default defineConfig({
       "@veritoken/sdk": fileURLToPath(
         new URL("../sdk/src/index.ts", import.meta.url),
       ),
+      // E2E only: swap the real Freighter extension bridge for a local mock
+      // that signs with a Playwright-injected keypair. See
+      // tests/e2e/fixtures/freighter-shim.ts and src/testing/freighterApiMock.ts.
+      ...(mode === "e2e"
+        ? {
+            "@stellar/freighter-api": fileURLToPath(
+              new URL("./src/testing/freighterApiMock.ts", import.meta.url),
+            ),
+          }
+        : {}),
     },
   },
   test: {
@@ -36,4 +46,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

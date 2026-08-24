@@ -10,6 +10,15 @@ frontend/node_modules/
 frontend/dist/
 frontend/.env
 frontend/.env.bak
+frontend/.env.e2e.local
+
+# E2E tests — generated fixtures, reports, and Playwright's own output
+tests/e2e/fixtures/contract-ids.json
+tests/e2e/.standalone-container
+tests/e2e/.dev-server.pid
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+tests/e2e/blob-report/
 
 # Python deployment tooling
 __pycache__/

@@ -88,6 +88,7 @@ function KycExpiryPanelInner({ walletAddress }: Props) {
       <Card title="KYC Status">
         <div
           role="alert"
+          data-testid="kyc-not-approved"
           style={{
             padding: "0.75rem 1rem",
             borderRadius: 8,
@@ -185,6 +186,7 @@ function KycExpiryPanelInner({ walletAddress }: Props) {
       )}
 
       <dl
+        data-testid="kyc-approved"
         style={{
           display: "grid",
           gridTemplateColumns: "max-content 1fr",
@@ -196,6 +198,7 @@ function KycExpiryPanelInner({ walletAddress }: Props) {
         <dt className="muted">Status</dt>
         <dd style={{ margin: 0 }}>
           <span
+            data-testid="kyc-status-value"
             style={{
               padding: "0.15rem 0.5rem",
               borderRadius: 999,
@@ -210,13 +213,13 @@ function KycExpiryPanelInner({ walletAddress }: Props) {
         </dd>
 
         <dt className="muted">Tier</dt>
-        <dd style={{ margin: 0 }}>{record.tier}</dd>
+        <dd data-testid="kyc-tier-value" style={{ margin: 0 }}>{record.tier}</dd>
 
         <dt className="muted">Jurisdiction</dt>
         <dd style={{ margin: 0 }}>{record.jurisdiction || "—"}</dd>
 
         <dt className="muted">Expiry</dt>
-        <dd style={{ margin: 0 }}>
+        <dd data-testid="kyc-expiry-value" style={{ margin: 0 }}>
           {!hasExpiry ? (
             <span className="muted">No expiry set</span>
           ) : (

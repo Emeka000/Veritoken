@@ -55,6 +55,7 @@ function ReceiptCard({
       : (receipt.amount as number);
   return (
     <div
+      data-testid="receipt-card"
       style={{
         display: "flex",
         gap: "0.75rem",
@@ -521,6 +522,7 @@ export default function CarbonPage() {
             </form>
             {lastReceipt && (
               <div
+                data-testid="carbon-retirement-receipt"
                 style={{
                   marginTop: "1.25rem",
                   padding: "1rem",

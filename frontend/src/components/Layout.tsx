@@ -136,7 +136,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
             {connected ? (
               <div style={styles.walletInfo}>
-                <span style={styles.address} className="mono">
+                <span style={styles.address} className="mono" data-testid="wallet-address">
                   <span className="dot" />
                   {address?.slice(0, 4)}…{address?.slice(-4)}
                   {role && role !== "user" && (

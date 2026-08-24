@@ -1,0 +1,21 @@
+{
+  "name": "veritoken-e2e-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/link-stellar-sdk.mjs",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit",
+    "update-snapshots": "playwright test visual-regression.spec.ts --update-snapshots"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0",
+    "@types/node": "^20.0.0",
+    "execa": "^9.3.0",
+    "typescript": "^5.4.5"
+  }
+}

@@ -150,53 +150,225 @@ export const complianceFixturePlan = (): FixturePlan => ({
   steps: [kycStep, complianceStep],
 });
 
+const rwaStep = {
+  name: "rwa",
+  wasmPath: wasmPath("rwa_token.wasm"),
+  dependsOn: ["kyc", "compliance"],
+  constructorArgs: (context) => [
+    accountAddress(context.account("admin")),
+    xdr.ScVal.scvU32(7),
+    xdr.ScVal.scvString("Veritoken RWA"),
+    xdr.ScVal.scvString("VTRWA"),
+    xdr.ScVal.scvString("property"),
+    contractAddress(context.contract("kyc")),
+    contractAddress(context.contract("compliance")),
+    xdr.ScVal.scvVoid(),
+    i128("0"),
+  ],
+} satisfies FixturePlan["steps"][number];
+
+const invoiceStep = {
+  name: "invoice",
+  wasmPath: wasmPath("invoice_token.wasm"),
+  dependsOn: ["kyc", "compliance"],
+  constructorArgs: (context) => [
+    accountAddress(context.account("admin")),
+    contractAddress(context.contract("kyc")),
+    contractAddress(context.contract("compliance")),
+    invoiceMetadata({
+      debtor: "Globex",
+      discountRateBps: 250,
+      faceValue: "1000000000000",
+      invoiceId: "INV-001",
+      issuer: "Acme Corp",
+    }),
+  ],
+} satisfies FixturePlan["steps"][number];
+
+export interface ProjectMetaOptions {
+  projectId: string;
+  standard: string;
+  vintageYear: number;
+  projectName: string;
+  projectType: string;
+  country: string;
+  verifier: string;
+  ipfsCertHash: string;
+  registryUrl: string;
+  registryProjectId: string;
+}
+
+/** Encodes the carbon-credit-token contract's `ProjectMeta` struct as a sorted ScMap. */
+export const projectMeta = (options: ProjectMetaOptions): xdr.ScVal =>
+  xdr.scvSortedMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("project_id"),
+      val: xdr.ScVal.scvString(options.projectId),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("standard"),
+      val: xdr.ScVal.scvString(options.standard),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("vintage_year"),
+      val: xdr.ScVal.scvU32(options.vintageYear),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("project_name"),
+      val: xdr.ScVal.scvString(options.projectName),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("project_type"),
+      val: xdr.ScVal.scvString(options.projectType),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("country"),
+      val: xdr.ScVal.scvString(options.country),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("verifier"),
+      val: xdr.ScVal.scvString(options.verifier),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("ipfs_cert_hash"),
+      val: xdr.ScVal.scvString(options.ipfsCertHash),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("registry_url"),
+      val: xdr.ScVal.scvString(options.registryUrl),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("registry_project_id"),
+      val: xdr.ScVal.scvString(options.registryProjectId),
+    }),
+  ]);
+
+const carbonStep = {
+  name: "carbon",
+  wasmPath: wasmPath("carbon_credit_token.wasm"),
+  dependsOn: ["kyc", "compliance"],
+  constructorArgs: (context) => [
+    accountAddress(context.account("admin")),
+    contractAddress(context.contract("kyc")),
+    contractAddress(context.contract("compliance")),
+    projectMeta({
+      country: "BR",
+      ipfsCertHash: "",
+      projectId: "PROJ-001",
+      projectName: "Amazon Reforestation",
+      projectType: "forestry",
+      registryProjectId: "VCS-001",
+      registryUrl: "",
+      standard: "VCS",
+      verifier: "SCS Global Services",
+      vintageYear: 2024,
+    }),
+  ],
+} satisfies FixturePlan["steps"][number];
+
+export interface PropertyMetaOptions {
+  propertyId: string;
+  legalName: string;
+  jurisdiction: string;
+  address: string;
+  totalValuationUsd: string;
+  totalShares: string;
+  propertyType: string;
+  ipfsTitleHash: string;
+  kycTierRequired: number;
+}
+
+/** Encodes the property-token contract's `PropertyMeta` struct as a sorted ScMap. */
+export const propertyMeta = (options: PropertyMetaOptions): xdr.ScVal =>
+  xdr.scvSortedMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("property_id"),
+      val: xdr.ScVal.scvString(options.propertyId),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("legal_name"),
+      val: xdr.ScVal.scvString(options.legalName),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("jurisdiction"),
+      val: xdr.ScVal.scvString(options.jurisdiction),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("address"),
+      val: xdr.ScVal.scvString(options.address),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("total_valuation_usd"),
+      val: i128(options.totalValuationUsd),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("total_shares"),
+      val: i128(options.totalShares),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("property_type"),
+      val: xdr.ScVal.scvString(options.propertyType),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("ipfs_title_hash"),
+      val: xdr.ScVal.scvString(options.ipfsTitleHash),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("kyc_tier_required"),
+      val: xdr.ScVal.scvU32(options.kycTierRequired),
+    }),
+  ]);
+
+const propertyStep = {
+  name: "property",
+  wasmPath: wasmPath("property_token.wasm"),
+  dependsOn: ["kyc", "compliance"],
+  constructorArgs: (context) => [
+    accountAddress(context.account("admin")),
+    contractAddress(context.contract("kyc")),
+    contractAddress(context.contract("compliance")),
+    propertyMeta({
+      address: "1 Market St, San Francisco, CA",
+      ipfsTitleHash: "",
+      jurisdiction: "US",
+      kycTierRequired: 0,
+      legalName: "Veritoken Property Holdings LLC",
+      propertyId: "PROP-001",
+      propertyType: "commercial",
+      totalShares: "1000000",
+      totalValuationUsd: "5000000000",
+    }),
+  ],
+} satisfies FixturePlan["steps"][number];
+
 export const rwaFixturePlan = (): FixturePlan => ({
   name: "rwa-lifecycle",
-  steps: [
-    kycStep,
-    complianceStep,
-    {
-      name: "rwa",
-      wasmPath: wasmPath("rwa_token.wasm"),
-      dependsOn: ["kyc", "compliance"],
-      constructorArgs: (context) => [
-        accountAddress(context.account("admin")),
-        xdr.ScVal.scvU32(7),
-        xdr.ScVal.scvString("Veritoken RWA"),
-        xdr.ScVal.scvString("VTRWA"),
-        xdr.ScVal.scvString("property"),
-        contractAddress(context.contract("kyc")),
-        contractAddress(context.contract("compliance")),
-        xdr.ScVal.scvVoid(),
-        i128("0"),
-      ],
-    },
-  ],
+  steps: [kycStep, complianceStep, rwaStep],
 });
 
 export const invoiceFixturePlan = (): FixturePlan => ({
   name: "invoice-lifecycle",
-  steps: [
-    kycStep,
-    complianceStep,
-    {
-      name: "invoice",
-      wasmPath: wasmPath("invoice_token.wasm"),
-      dependsOn: ["kyc", "compliance"],
-      constructorArgs: (context) => [
-        accountAddress(context.account("admin")),
-        contractAddress(context.contract("kyc")),
-        contractAddress(context.contract("compliance")),
-        invoiceMetadata({
-          debtor: "Globex",
-          discountRateBps: 250,
-          faceValue: "1000000000000",
-          invoiceId: "INV-001",
-          issuer: "Acme Corp",
-        }),
-      ],
-    },
-  ],
+  steps: [kycStep, complianceStep, invoiceStep],
+});
+
+export const carbonFixturePlan = (): FixturePlan => ({
+  name: "carbon-lifecycle",
+  steps: [kycStep, complianceStep, carbonStep],
+});
+
+export const propertyFixturePlan = (): FixturePlan => ({
+  name: "property-lifecycle",
+  steps: [kycStep, complianceStep, propertyStep],
+});
+
+/**
+ * Deploys all six Veritoken contracts in one fixture — used by the E2E suite
+ * (tests/e2e/global-setup.ts), which needs every contract ID populated before
+ * the frontend dev server boots (main.tsx refuses to render without them).
+ */
+export const fullDeploymentPlan = (): FixturePlan => ({
+  name: "full-deployment",
+  steps: [kycStep, complianceStep, rwaStep, invoiceStep, propertyStep, carbonStep],
 });
 
 export interface IntegrationFixtureEnvironment {

@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
 import Layout from "./components/Layout";
+import { useWallet } from "./lib/wallet";
 import Dashboard from "./pages/Dashboard";
 import InvoicePage from "./pages/InvoicePage";
 import PropertyPage from "./pages/PropertyPage";
@@ -14,6 +16,7 @@ import ComplianceConfigIOPage from "./pages/ComplianceConfigIOPage";  // #436
 import MarketplacePage from "./pages/MarketplacePage";                // #439
 import StatusPage from "./pages/StatusPage";                          // #458
 import DashboardPage from "./pages/DashboardPage";                    // #547
+import BatchPage from "./pages/BatchPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { AdminOnly } from "./components/PermissionGate";
 import { ToastProvider } from "./lib/toast";
@@ -30,6 +33,12 @@ function AccessDenied({ role }: { role: string }) {
 }
 
 export default function App() {
+  // Restore the last-connected Freighter/WalletConnect session on page load
+  // (providerType is persisted in autoReconnect's own localStorage check).
+  useEffect(() => {
+    useWallet.getState().autoReconnect();
+  }, []);
+
   return (
     <ToastProvider>
       <Layout>
@@ -66,6 +75,7 @@ export default function App() {
           <Route path="/marketplace" element={<ErrorBoundary><MarketplacePage /></ErrorBoundary>} />
           <Route path="/status" element={<ErrorBoundary><StatusPage /></ErrorBoundary>} />
           <Route path="/dashboard" element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
+          <Route path="/batch" element={<ErrorBoundary><BatchPage /></ErrorBoundary>} />
         </Routes>
       </Layout>
     </ToastProvider>

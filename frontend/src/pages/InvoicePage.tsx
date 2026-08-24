@@ -257,6 +257,7 @@ export default function InvoicePage() {
               <span
                 role="status"
                 aria-live="polite"
+                data-testid="invoice-status-badge"
                 style={{
                   display: "inline-block", padding: "0.2rem 0.7rem", borderRadius: 99,
                   fontSize: "0.78rem", fontWeight: 700,
