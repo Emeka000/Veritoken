@@ -18,14 +18,14 @@
 #   3. Open a PR so the change is reviewed.
 #
 # To regenerate baselines after a legitimate size increase:
-#   cargo build --release --target wasm32-unknown-unknown
+#   cargo build --release --target wasm32v1-none
 #   bash scripts/check-wasm-size.sh --print-sizes
 
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-WASM_DIR="target/wasm32-unknown-unknown/release"
+WASM_DIR="target/wasm32v1-none/release"
 
 # Parse optional --wasm-dir override
 while [[ $# -gt 0 ]]; do
@@ -66,7 +66,7 @@ DEFAULT_BUDGET=262144   # 256 KB
 
 if [ ! -d "$WASM_DIR" ]; then
     echo "WASM directory not found: $WASM_DIR"
-    echo "Run 'cargo build --release --target wasm32-unknown-unknown' first."
+    echo "Run 'cargo build --release --target wasm32v1-none' first."
     exit 0
 fi
 

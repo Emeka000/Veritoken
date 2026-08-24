@@ -39,7 +39,7 @@ echo "Contracts service:"
 check "Container is running" \
   "docker compose ps contracts | grep -q 'running\|Up'"
 check "cargo check passes inside container" \
-  "docker compose exec -T contracts cargo check --target wasm32-unknown-unknown --quiet"
+  "docker compose exec -T contracts cargo check --target wasm32v1-none --quiet"
 
 # ── Frontend service ──────────────────────────────────────────────────────
 echo ""

@@ -16,9 +16,9 @@ SOURCE="--source-account $IDENTITY --network $NETWORK"
 ADMIN_ADDR="$(stellar keys address $IDENTITY)"
 
 echo "==> Building all contracts..."
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 
-WASM_DIR="target/wasm32-unknown-unknown/release"
+WASM_DIR="target/wasm32v1-none/release"
 
 build_wasm() {
   local name="$1"

@@ -48,7 +48,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -61,7 +61,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-release-
 
       - name: Build WASM (release)
-        run: cargo build --release --target wasm32-unknown-unknown
+        run: cargo build --release --target wasm32v1-none
 
       - name: Install Stellar CLI (for wasm-opt)
         shell: bash
@@ -74,7 +74,7 @@ jobs:
       - name: Optimise WASM binaries
         shell: bash
         run: |
-          WASM_DIR="target/wasm32-unknown-unknown/release"
+          WASM_DIR="target/wasm32v1-none/release"
           for contract in kyc_registry compliance_engine invoice_token property_token carbon_credit_token; do
             stellar contract optimize --wasm "$WASM_DIR/${contract}.wasm"
           done
@@ -83,7 +83,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-artifacts
-          WASM_DIR="target/wasm32-unknown-unknown/release"
+          WASM_DIR="target/wasm32v1-none/release"
           VERSION="${{ steps.changelog.outputs.version }}"
           for contract in kyc_registry compliance_engine invoice_token property_token carbon_credit_token; do
             # Prefer the optimised binary if it exists

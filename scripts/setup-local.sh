@@ -86,12 +86,12 @@ if [[ "$MISSING" == "1" ]]; then
   exit 1
 fi
 
-# Verify wasm32 target
-if rustup target list --installed 2>/dev/null | grep -q "wasm32-unknown-unknown"; then
-  ok "wasm32-unknown-unknown target installed"
+# Verify wasm32v1-none target (matches rust-toolchain.toml)
+if rustup target list --installed 2>/dev/null | grep -q "wasm32v1-none"; then
+  ok "wasm32v1-none target installed"
 else
-  step "Adding wasm32-unknown-unknown Rust target"
-  rustup target add wasm32-unknown-unknown
+  step "Adding wasm32v1-none Rust target"
+  rustup target add wasm32v1-none
 fi
 
 # ── Env file setup ────────────────────────────────────────────────────────────
@@ -123,10 +123,10 @@ fi
 
 # ── Smoke check ───────────────────────────────────────────────────────────────
 step "Smoke check"
-if cargo check --target wasm32-unknown-unknown --quiet 2>/dev/null; then
+if cargo check --target wasm32v1-none --quiet 2>/dev/null; then
   ok "cargo check passed"
 else
-  warn "cargo check reported issues — run 'cargo check --target wasm32-unknown-unknown' for details"
+  warn "cargo check reported issues — run 'cargo check --target wasm32v1-none' for details"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

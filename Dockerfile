@@ -20,8 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Add the WASM compilation target
-RUN rustup target add wasm32-unknown-unknown \
+# Add the WASM compilation target (matches rust-toolchain.toml)
+RUN rustup target add wasm32v1-none \
  && rustup component add rustfmt clippy
 
 # Install Stellar CLI (pinned version for reproducibility)
