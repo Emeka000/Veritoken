@@ -9,10 +9,10 @@ pub fn read_admin(env: &Env) -> Address {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-    env.storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .expect("admin must be set")
+    match env.storage().instance().get(&DataKey::Admin) {
+        Some(addr) => addr,
+        None => soroban_sdk::panic_with_error!(env, RwaError::NotInitialized),
+    }
 }
 
 pub fn write_admin(env: &Env, admin: &Address) {

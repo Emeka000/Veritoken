@@ -82,6 +82,10 @@ pub enum RwaError {
     ProposerCannotApprove = 27,
     /// Execute attempted before the inter-recovery cooldown has elapsed.
     RecoveryCooldown = 28,
+    /// An admin-gated call was made before the contract's admin was set.
+    NotInitialized = 29,
+    /// Constructor was called with an unrecognized `asset_type` string.
+    InvalidAssetType = 30,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -208,7 +212,7 @@ impl RwaToken {
             && asset_type != String::from_str(&env, "property")
             && asset_type != String::from_str(&env, "carbon_credit")
         {
-            panic!("invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'");
+            panic_with_error!(env, RwaError::InvalidAssetType);
         }
         if max_supply < 0 {
             panic!("max_supply must be non-negative; use 0 for unlimited");

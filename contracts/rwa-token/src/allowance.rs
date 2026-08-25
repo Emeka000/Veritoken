@@ -15,7 +15,7 @@ pub fn read_allowance(env: &Env, from: Address, spender: Address) -> AllowanceVa
         .temporary()
         .get::<DataKey, AllowanceValue>(&key)
     {
-        if allowance.expiration_ledger < env.ledger().sequence() {
+        if allowance.expiration_ledger <= env.ledger().sequence() {
             AllowanceValue {
                 amount: 0,
                 expiration_ledger: allowance.expiration_ledger,
@@ -65,5 +65,10 @@ pub fn spend_allowance(env: &Env, from: Address, spender: Address, amount: i128)
         soroban_sdk::panic_with_error!(env, RwaError::InsufficientAllowance);
     }
     let new_amount = allowance.amount - amount;
-    write_allowance(env, from, spender, new_amount, allowance.expiration_ledger);
+    if new_amount == 0 {
+        let key = DataKey::Allowance(AllowanceKey { from, spender });
+        env.storage().temporary().remove(&key);
+    } else {
+        write_allowance(env, from, spender, new_amount, allowance.expiration_ledger);
+    }
 }

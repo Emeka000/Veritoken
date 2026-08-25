@@ -294,6 +294,74 @@ fn test_approve_and_transfer_from() {
 }
 
 #[test]
+fn test_allowance_expired_at_expiration_ledger() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+
+    // Allowance expires at the current ledger sequence — it must already be
+    // treated as expired, not valid for one more ledger.
+    let current_sequence = h.env.ledger().sequence();
+    h.token.approve(&alice, &spender, &300, &current_sequence);
+
+    assert_eq!(h.token.allowance(&alice, &spender), 0);
+    assert!(h
+        .token
+        .try_transfer_from(&spender, &alice, &bob, &100)
+        .is_err());
+}
+
+#[test]
+fn test_allowance_valid_one_ledger_before_expiration() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+
+    let current_sequence = h.env.ledger().sequence();
+    h.token
+        .approve(&alice, &spender, &300, &(current_sequence + 1));
+
+    h.token.transfer_from(&spender, &alice, &bob, &100);
+    assert_eq!(h.token.balance(&bob), 100);
+    assert_eq!(h.token.allowance(&alice, &spender), 200);
+}
+
+#[test]
+fn test_spend_allowance_to_zero_removes_storage_entry() {
+    use crate::storage_types::{AllowanceKey, DataKey};
+
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &100, &expiration);
+    h.token.transfer_from(&spender, &alice, &bob, &100);
+
+    assert_eq!(h.token.allowance(&alice, &spender), 0);
+
+    let key = DataKey::Allowance(AllowanceKey {
+        from: alice.clone(),
+        spender: spender.clone(),
+    });
+    h.env.as_contract(&h.token.address, || {
+        assert!(!h.env.storage().temporary().has(&key));
+    });
+}
+
+#[test]
 fn test_burn_reduces_supply() {
     let h = setup();
     let alice = Address::generate(&h.env);
@@ -449,7 +517,7 @@ fn test_mint_twice_same_address_holder_count_is_one() {
 }
 
 #[test]
-#[should_panic(expected = "invalid asset_type: must be 'invoice', 'property', or 'carbon_credit'")]
+#[should_panic]
 fn test_invalid_asset_type() {
     let env = Env::default();
     let admin = Address::generate(&env);
@@ -470,6 +538,28 @@ fn test_invalid_asset_type() {
             Option::<ComplianceMetadata>::None,
             0i128,
         ),
+    );
+}
+
+#[test]
+fn test_read_admin_on_uninitialized_contract_fails_with_typed_error() {
+    use crate::storage_types::DataKey;
+    use crate::RwaError;
+    use soroban_sdk::Error;
+
+    let h = setup();
+
+    // Simulate an uninitialized contract by clearing the Admin key directly.
+    h.env.as_contract(&h.token.address, || {
+        h.env.storage().instance().remove(&DataKey::Admin);
+    });
+
+    let res = h
+        .token
+        .try_set_external_uri(&String::from_str(&h.env, "ipfs://Qm"));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::NotInitialized)
     );
 }
 
