@@ -354,6 +354,31 @@ impl InvoiceToken {
         env.events().publish((symbol_short!("upd_meta"),), ());
     }
 
+    /// Set or clear an invoice's notification webhook. Admin-only.
+    /// An empty string explicitly clears the webhook; any other value must be
+    /// a valid "https://" URL and is validated before storage is written.
+    pub fn set_webhook(env: Env, invoice_id: String, webhook: String) {
+        th::require_admin(&env);
+        let key = DataKey::InvoiceMeta(invoice_id.clone());
+        let mut meta: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(env, InvoiceError::InvoiceNotFound));
+        if webhook.is_empty() {
+            meta.notification_webhook = String::from_str(&env, "");
+            env.storage().persistent().set(&key, &meta);
+            env.events()
+                .publish((symbol_short!("wh_clear"),), invoice_id);
+            return;
+        }
+        Self::validate_webhook(&env, &webhook);
+        meta.notification_webhook = webhook.clone();
+        env.storage().persistent().set(&key, &meta);
+        env.events()
+            .publish((symbol_short!("wh_set"),), (invoice_id, webhook));
+    }
+
     pub fn name(env: Env) -> String {
         env.storage().instance().extend_ttl(THRESHOLD, BUMP);
         String::from_str(&env, "Veritoken Invoice")
@@ -1285,6 +1310,10 @@ impl InvoiceToken {
             panic_with_error!(env, InvoiceError::InvalidMetadata);
         }
         if meta.face_value_usd <= 0 {
+            panic_with_error!(env, InvoiceError::InvalidMetadata);
+        }
+        // Discount rate is expressed in basis points; anything above 100% is malformed.
+        if meta.discount_rate_bps > 10_000 {
             panic_with_error!(env, InvoiceError::InvalidMetadata);
         }
         if !th::is_valid_ipfs_hash(&meta.ipfs_doc_hash) {
