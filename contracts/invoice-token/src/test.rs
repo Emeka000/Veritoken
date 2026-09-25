@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::{InvoiceMeta, InvoiceStatus, InvoiceToken, InvoiceTokenClient};
+use crate::{InvoiceError, InvoiceMeta, InvoiceStatus, InvoiceToken, InvoiceTokenClient};
 use compliance_engine::{ComplianceEngine, ComplianceEngineClient, ComplianceRules};
 use kyc_registry::{KycRegistry, KycRegistryClient};
 use soroban_sdk::{
@@ -1103,6 +1103,78 @@ fn test_update_meta_webhook_validated_on_update() {
     let mut m = h.token.get_meta(&inv_id(&h.env));
     m.notification_webhook = String::from_str(&h.env, "ftp://bad-scheme.example.com");
     assert!(h.token.try_update_meta(&inv_id(&h.env), &m).is_err());
+}
+
+#[test]
+fn test_set_webhook_empty_clears_webhook() {
+    let h = setup();
+    let id = inv_id(&h.env);
+    h.token
+        .set_webhook(&id, &String::from_str(&h.env, "https://example.com/hook"));
+    assert_eq!(
+        h.token.get_meta(&id).notification_webhook,
+        String::from_str(&h.env, "https://example.com/hook")
+    );
+    // Blank value is an explicit clear, not an ambiguous stored value.
+    h.token.set_webhook(&id, &String::from_str(&h.env, ""));
+    assert_eq!(
+        h.token.get_meta(&id).notification_webhook,
+        String::from_str(&h.env, "")
+    );
+    // Whitespace-only is not a blank clear and is rejected without touching state.
+    assert_eq!(
+        h.token
+            .try_set_webhook(&id, &String::from_str(&h.env, "   ")),
+        Err(Ok(InvoiceError::InvalidWebhook.into()))
+    );
+    assert!(h.token.get_meta(&id).notification_webhook.is_empty());
+}
+
+#[test]
+fn test_duplicate_invoice_id_rejected_before_state_write() {
+    let h = setup();
+    let mut dup = meta(&h.env);
+    dup.face_value_usd = 1;
+    assert_eq!(
+        h.token.try_create_invoice(&dup),
+        Err(Ok(InvoiceError::InvoiceAlreadyExists.into()))
+    );
+    // Original metadata and the invoice list are untouched.
+    assert_eq!(
+        h.token.get_meta(&inv_id(&h.env)).face_value_usd,
+        1_000_000_000_000
+    );
+    assert_eq!(h.token.list_invoices(&0, &50).len(), 1);
+}
+
+#[test]
+fn test_create_invoice_rejects_out_of_range_discount_rate() {
+    let h = setup();
+    let mut m = h.make_invoice("INV-DISC-MAX");
+    m.discount_rate_bps = 10_000;
+    h.token.create_invoice(&m);
+
+    let mut bad = h.make_invoice("INV-DISC-BAD");
+    bad.discount_rate_bps = 10_001;
+    assert_eq!(
+        h.token.try_create_invoice(&bad),
+        Err(Ok(InvoiceError::InvalidMetadata.into()))
+    );
+    assert_eq!(h.token.list_invoices(&0, &50).len(), 2);
+}
+
+#[test]
+fn test_create_invoice_rejects_non_positive_face_value() {
+    let h = setup();
+    for (id, fv) in [("INV-FV-ZERO", 0i128), ("INV-FV-NEG", -1i128)] {
+        let mut m = h.make_invoice(id);
+        m.face_value_usd = fv;
+        assert_eq!(
+            h.token.try_create_invoice(&m),
+            Err(Ok(InvoiceError::InvalidMetadata.into()))
+        );
+    }
+    assert_eq!(h.token.list_invoices(&0, &50).len(), 1);
 }
 
 // ── Lifecycle pause tests ─────────────────────────────────────────────────────
