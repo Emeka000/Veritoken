@@ -1316,6 +1316,10 @@ impl InvoiceToken {
         if meta.discount_rate_bps > 10_000 {
             panic_with_error!(env, InvoiceError::InvalidMetadata);
         }
+        // Transfer fee is in basis points; a fee above 100% would make net_amount negative.
+        if meta.transfer_fee_bps > 10_000 {
+            panic_with_error!(env, InvoiceError::InvalidMetadata);
+        }
         if !th::is_valid_ipfs_hash(&meta.ipfs_doc_hash) {
             panic_with_error!(env, InvoiceError::InvalidMetadata);
         }

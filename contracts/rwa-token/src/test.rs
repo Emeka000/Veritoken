@@ -2272,6 +2272,40 @@ fn test_recovery_configure_rejects_more_than_ten_members() {
 }
 
 #[test]
+fn test_recovery_configure_rejects_duplicate_members() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let g = Address::generate(&h.env);
+    let other = Address::generate(&h.env);
+    // [g, g, other] with threshold 2 would let `g` alone satisfy the quorum.
+    let mut members = soroban_sdk::Vec::new(&h.env);
+    members.push_back(g.clone());
+    members.push_back(g.clone());
+    members.push_back(other);
+    let res = h.token.try_configure_recovery(&2, &members, &100);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InvalidRecoveryConfig)
+    );
+    assert!(h.token.try_recovery_members().is_err());
+}
+
+#[test]
+fn test_recovery_configure_rejects_zero_threshold() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let res = h.token.try_configure_recovery(&0, &members, &100);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InvalidRecoveryConfig)
+    );
+    assert!(h.token.try_recovery_config().is_err());
+}
+
+#[test]
 fn test_recovery_propose_and_read_active() {
     let h = setup();
     let members = make_guardians(&h, 3);

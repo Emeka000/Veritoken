@@ -1177,6 +1177,23 @@ fn test_create_invoice_rejects_non_positive_face_value() {
     assert_eq!(h.token.list_invoices(&0, &50).len(), 1);
 }
 
+#[test]
+fn test_create_invoice_rejects_transfer_fee_above_100_percent() {
+    let h = setup();
+    let mut m = h.make_invoice("INV-FEE-MAX");
+    m.transfer_fee_bps = 10_000;
+    h.token.create_invoice(&m);
+
+    let mut bad = h.make_invoice("INV-FEE-BAD");
+    bad.transfer_fee_bps = 10_001;
+    assert_eq!(
+        h.token.try_create_invoice(&bad),
+        Err(Ok(InvoiceError::InvalidMetadata.into()))
+    );
+    assert!(h.token.try_get_meta(&String::from_str(&h.env, "INV-FEE-BAD")).is_err());
+    assert_eq!(h.token.list_invoices(&0, &50).len(), 2);
+}
+
 // ── Lifecycle pause tests ─────────────────────────────────────────────────────
 
 #[test]

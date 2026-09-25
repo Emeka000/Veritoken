@@ -1034,6 +1034,13 @@ impl RwaToken {
         if threshold < 2 || threshold > n || n > 10 {
             panic_with_error!(env, RwaError::InvalidRecoveryConfig);
         }
+        // Duplicate guardians would let one address count toward the quorum more than once.
+        for i in 0..n {
+            let m = members.get_unchecked(i);
+            if members.last_index_of(&m) != Some(i) {
+                panic_with_error!(env, RwaError::InvalidRecoveryConfig);
+            }
+        }
 
         let last_executed_ledger: u64 = env
             .storage()
