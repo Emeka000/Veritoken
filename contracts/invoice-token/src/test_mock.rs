@@ -92,7 +92,10 @@ impl Harness {
             invoice_id: String::from_str(&self.env, id),
             issuer: String::from_str(&self.env, "Issuer"),
             debtor: String::from_str(&self.env, "Debtor"),
+            // face_value_usd is in stroops (7-decimal fixed-point):
+            // 500_000_000_000 stroops = $50,000.00 USD
             face_value_usd: 500_000_000_000,
+            // discount_rate_bps is in basis points: 100 bps = 1.00%
             discount_rate_bps: 100,
             due_date: 1_900_000_000,
             currency: String::from_str(&self.env, "USD"),

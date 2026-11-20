@@ -4388,3 +4388,60 @@ fn test_mint_full_max_supply_in_one_call_succeeds() {
     assert!(res.is_err(), "any mint beyond the cap must fail");
     assert_eq!(token.total_supply(), 50i128, "supply unchanged after rejection");
 }
+
+// ── Delegated transfer above allowance ───────────────────────────────────────
+//
+// Acceptance criteria:
+//   - transfer_from with amount > approved allowance is rejected with
+//     InsufficientAllowance.
+//   - On failure, alice's balance, bob's balance, and the spender's allowance
+//     are all unchanged (no partial state effect).
+
+/// Approve a small allowance, then attempt a delegated transfer that exceeds
+/// it.  The call must fail and leave all state intact.
+#[test]
+fn test_transfer_from_above_allowance_rejected_with_no_partial_state() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    let spender = Address::generate(&h.env);
+
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+
+    // Approve spender for 100 tokens — well below the 300 they will attempt.
+    let expiration = h.env.ledger().sequence() + 1_000;
+    h.token.approve(&alice, &spender, &100, &expiration);
+    assert_eq!(h.token.allowance(&alice, &spender), 100);
+
+    // Attempt to transfer 300 — exceeds the 100-token allowance.
+    let res = h
+        .token
+        .try_transfer_from(&spender, &alice, &bob, &300);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InsufficientAllowance),
+        "transfer_from above allowance must return InsufficientAllowance"
+    );
+
+    // No partial state effect: balances and allowance are unchanged.
+    assert_eq!(
+        h.token.balance(&alice),
+        1_000,
+        "alice balance must be unchanged after failed transfer_from"
+    );
+    assert_eq!(
+        h.token.balance(&bob),
+        0,
+        "bob balance must be unchanged after failed transfer_from"
+    );
+    assert_eq!(
+        h.token.allowance(&alice, &spender),
+        100,
+        "allowance must not be consumed on failure"
+    );
+}
