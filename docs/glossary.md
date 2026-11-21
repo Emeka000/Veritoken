@@ -22,6 +22,23 @@ See [tier-based-compliance.md — Overview](tier-based-compliance.md#overview).
 The country code recorded on a KYC record, in ISO-3166-1 alpha-2 format (for example `US` or `GB`). The compliance engine can block transfers by jurisdiction and can require that both parties share one.
 See [contract-api-reference.md — KYC Registry, Data structures](contract-api-reference.md#kyc-registry) and `contracts/kyc-registry/src/test.rs` for the accepted input.
 
+#### Jurisdiction input examples
+
+Jurisdiction values must be uppercase ISO 3166-1 alpha-2 codes. The contract's `validate_jurisdiction` in `contracts/kyc-registry/src/lib.rs` enforces this, so the accepted set is defined by the contract, not by a frontend-only dropdown. Any client or script that writes a KYC record is subject to the same check.
+
+| Input | Accepted? | Why |
+| --- | --- | --- |
+| `US` | Yes | Uppercase two-letter code |
+| `GB` | Yes | Uppercase two-letter code |
+| `DE` | Yes | Uppercase two-letter code |
+| `United States` | No | Country name, not a code |
+| `USA` | No | Three-letter code, not alpha-2 |
+| `us` | No | Lowercase, not uppercase |
+
+Invalid input raises `InvalidJurisdiction` (error code `5`). See [contract-api-reference.md — KYC Registry, Errors](contract-api-reference.md#kyc-registry) for the error description.
+
+These examples are illustrative and are not a complete list of accepted countries. For the full set, follow the contract's validation.
+
 **Blocklist**
 A set of addresses the compliance engine refuses to send to or receive from. Blocklisted addresses cannot be added to the allowlist.
 See [contract-api-reference.md — Compliance Engine](contract-api-reference.md#compliance-engine).

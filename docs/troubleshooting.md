@@ -15,8 +15,9 @@ concrete fix.
 4. [Stellar CLI and Deployment](#4-stellar-cli-and-deployment)
 5. [Testnet Identity and Funding](#5-testnet-identity-and-funding)
 6. [Contract Invocation Errors](#6-contract-invocation-errors)
-7. [Frontend and Wallet](#7-frontend-and-wallet)
-8. [CI Failures](#8-ci-failures)
+7. [Reading Contract Error Messages](#7-reading-contract-error-messages)
+8. [Frontend and Wallet](#8-frontend-and-wallet)
+9. [CI Failures](#9-ci-failures)
 
 ---
 
@@ -481,7 +482,81 @@ stellar contract invoke \
 
 ---
 
-## 7. Frontend and Wallet
+## 7. Reading Contract Error Messages
+
+Contract failures surface in three layers. Work through them in order: find the
+numeric code, decode it with the SDK helpers, then confirm the original
+transaction or simulation failure.
+
+### 7.1 Find the error code in the contract API reference
+
+Every contract returns a numeric error code. The canonical tables live in
+[`docs/contract-api-reference.md`](./contract-api-reference.md):
+
+- [KYC Registry error table](./contract-api-reference.md#kyc-registry-errors)
+- [Compliance Engine error table](./contract-api-reference.md#compliance-engine-errors)
+- [RWA Token error table](./contract-api-reference.md#rwa-token-errors)
+- [Invoice Token error table](./contract-api-reference.md#invoice-token-errors)
+
+Look up the contract that failed, then match the number to its variant name and
+description. The numeric code is the stable identifier — the human-readable
+message is not.
+
+### 7.2 Interpret the SDK error helpers
+
+The SDK exposes three helpers in [`sdk/src/errors.ts`](../sdk/src/errors.ts):
+
+| Helper | Purpose |
+|---|---|
+| `lookupError(contract, code)` | Returns the error definition (name, message, docs) for a numeric code, or `undefined` if the code is unknown. |
+| `parseContractError(contract, rawError)` | Extracts the numeric code from a raw Soroban string matching `Error(Contract, #N)` and returns the corresponding definition. |
+| `formatContractError(contract, err)` | Produces a user-facing message from either a raw string or a thrown error, falling back to a generic message when the code is unknown. |
+
+The frontend re-exports the same helpers from
+[`frontend/src/lib/contractErrors.ts`](../frontend/src/lib/contractErrors.ts),
+so the UI and the SDK decode errors identically. If you add a new contract
+error, update the table in `docs/contract-api-reference.md` and the definitions
+consumed by `sdk/src/errors.ts` together.
+
+### 7.3 Identify the original transaction or simulation failure
+
+Before formatting, capture the raw failure:
+
+- **Simulation failures** — `stellar contract invoke` prints the raw host error,
+  e.g. `HostError: Error(Contract, #2)`. The same string appears in the
+  `error` field of an RPC `simulateTransaction` response.
+- **Transaction failures** — query the transaction result with
+  `stellar contract invoke --is-view` or inspect the `resultMetaXdr` of the
+  submitted transaction. The contract error code is embedded in the diagnostic
+  events.
+
+Pass the raw string to `parseContractError` (or `formatContractError`) to
+resolve it to a named error.
+
+### 7.4 Worked example: `Error(Contract, #2)` on the KYC registry
+
+1. **Contract layer** — the KYC registry returns code `2`. The
+   [KYC Registry error table](./contract-api-reference.md#kyc-registry-errors)
+   maps `2` to `NotVerifier`: the signing address is not a registered verifier.
+2. **SDK layer** — `parseContractError("kyc", "Error(Contract, #2)")` returns
+   the `NotVerifier` definition. `formatContractError("kyc", err)` renders the
+   user-facing message for that definition.
+3. **Transaction layer** — the original simulation or transaction result
+   contains `Error(Contract, #2)`; the fix is to register the verifier with
+   `bash scripts/admin/add-verifier.sh <VERIFIER_ADDRESS>` (see
+   [§6](#6-contract-invocation-errors)).
+
+### 7.5 Provider messages can differ
+
+Different RPC providers may wrap or reword the error text — some return
+`Error(Contract, #2)`, others include extra diagnostic context or a different
+prefix. The underlying failure and the numeric code are the same. Always
+resolve errors by the numeric code via `lookupError` / `parseContractError`
+rather than matching on message text.
+
+---
+
+## 8. Frontend and Wallet
 
 ### `.env` variables are missing or undefined at runtime
 
@@ -580,7 +655,7 @@ Then update the RPC URL in `frontend/src/lib/stellar.ts` to `/rpc`.
 
 ---
 
-## 8. CI Failures
+## 9. CI Failures
 
 ### CI fails on `working-directory: Veritoken` but passes locally
 
