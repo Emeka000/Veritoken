@@ -2127,6 +2127,55 @@ fn test_add_admin_rejects_duplicate() {
     );
 }
 
+/// Removing a verifier that was never added is a no-op: the verifier list and
+/// the verifier count must be unchanged, and the call must succeed without error.
+///
+/// The contract's `remove_verifier` rebuilds the list by filtering out the
+/// target address.  When the address is absent the filtered list is identical
+/// to the original, so the `removed` flag stays false and the count is not
+/// decremented.  This test pins that behaviour so any future change that turns
+/// the absent-verifier path into an error is caught immediately.
+#[test]
+fn test_remove_nonexistent_verifier_is_noop() {
+    let (env, client, admin) = setup();
+
+    // Add one real verifier so the list is non-empty and we can verify it
+    // is untouched after the removal attempt.
+    let real_verifier = Address::generate(&env);
+    client.add_verifier(&admin, &real_verifier);
+    assert_eq!(client.verifier_count(), 1);
+
+    // Generate a fresh address that was never registered as a verifier.
+    let non_member = Address::generate(&env);
+
+    // The removal of a non-member address must succeed (no panic, no error).
+    client.remove_verifier(&admin, &non_member);
+
+    // The existing verifier must still be present.
+    assert_eq!(
+        client.verifier_count(),
+        1,
+        "verifier count must not change when removing a non-member"
+    );
+    let list = client.verifier_list_pub();
+    assert_eq!(
+        list.len(),
+        1,
+        "verifier list length must not change when removing a non-member"
+    );
+    assert_eq!(
+        list.get(0).unwrap(),
+        real_verifier,
+        "the existing verifier must remain after a no-op removal"
+    );
+
+    // The real verifier must still be able to perform a KYC approval,
+    // confirming it was not accidentally evicted.
+    let subject = Address::generate(&env);
+    client.approve(&real_verifier, &subject, &0, &0, &js(&env, "US"));
+    assert!(client.is_approved(&subject));
+}
+
 /// Fix #4 — remove_admin: removing the sole remaining admin must be rejected
 /// with EmptyAdminList even when the caller is that last admin.
 #[test]
