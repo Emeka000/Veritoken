@@ -79,6 +79,28 @@ confirmed `GetSuccessfulTransactionResponse`, or the call throws. See
 [Retries and timeouts](#retries-and-timeouts) for which stages are retried and
 how long confirmation can take.
 
+### Using a custom RPC endpoint
+
+`createClients` also accepts an explicit `rpcUrl` and `networkPassphrase`, so
+you can point at a custom or private Soroban RPC instead of a built-in network:
+
+```ts
+import { createClients } from "@veritoken/sdk";
+
+const { rwaToken } = createClients({
+  network: "my-custom-network", // any name; no built-in default to fall back to
+  rpcUrl: "https://rpc.example.invalid", // placeholder — use your own endpoint
+  networkPassphrase: "My Custom Network ; 2026", // placeholder passphrase
+  contractIds: { rwaToken: process.env.VITE_RWA_TOKEN_ID },
+});
+```
+
+Custom networks default `allowHttp` to `false`, so the RPC URL must use HTTPS.
+For a plaintext local endpoint (the same exception `standalone` gets), pass
+`allowHttp: true` or set `VERITOKEN_RPC_ALLOW_HTTP=true`. See
+[Custom networks and RPC endpoints](#custom-networks-and-rpc-endpoints-451)
+for the full rules.
+
 ## Network configuration
 
 _Issue #394 — Multi-Network SDK Configuration Support_

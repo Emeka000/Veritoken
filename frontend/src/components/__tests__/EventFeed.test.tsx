@@ -37,7 +37,19 @@ describe("EventFeed", () => {
 
   it("shows empty state when there are no events", () => {
     render(<EventFeed events={[]} loading={false} />);
-    expect(screen.getByText("No recent events found.")).toBeDefined();
+    expect(screen.getByText("No events recorded yet.")).toBeDefined();
+  });
+
+  it("shows no-events copy when there is no active filter", () => {
+    render(<EventFeed events={[]} loading={false} />);
+    expect(screen.getByText("No events recorded yet.")).toBeDefined();
+    expect(screen.queryByText("No events match the current filter.")).toBeNull();
+  });
+
+  it("shows filter-empty copy when a filter is active", () => {
+    render(<EventFeed events={[]} loading={false} filter="transfer" />);
+    expect(screen.getByText("No events match the current filter.")).toBeDefined();
+    expect(screen.queryByText("No events recorded yet.")).toBeNull();
   });
 
   it("renders events when provided", () => {
@@ -87,7 +99,7 @@ describe("EventFeed", () => {
 
   it("handles empty events array gracefully", () => {
     render(<EventFeed events={[]} loading={false} />);
-    expect(screen.getByText("No recent events found.")).toBeDefined();
+    expect(screen.getByText("No events recorded yet.")).toBeDefined();
   });
 
   it("shows clear non-error empty state message", () => {
@@ -96,7 +108,7 @@ describe("EventFeed", () => {
     const emptyState = screen.getByRole("status");
     expect(emptyState).toBeDefined();
     
-    expect(screen.getByText("No recent events found.")).toBeDefined();
+    expect(screen.getByText("No events recorded yet.")).toBeDefined();
     expect(screen.getByText("Events will appear here once contract activity occurs.")).toBeDefined();
   });
 
@@ -108,7 +120,7 @@ describe("EventFeed", () => {
 
   it("empty state passes with normal rendering tests", () => {
     render(<EventFeed events={[]} loading={false} />);
-    expect(screen.getByText("No recent events found.")).toBeDefined();
+    expect(screen.getByText("No events recorded yet.")).toBeDefined();
 
     render(<EventFeed events={mockEvents} loading={false} />);
     expect(screen.getByText("transfer")).toBeDefined();

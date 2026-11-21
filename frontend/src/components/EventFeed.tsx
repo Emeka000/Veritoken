@@ -21,6 +21,8 @@ interface EventFeedProps {
   /** Sorting — provided by useEventQuery. */
   sort?: { field: SortField; direction: SortDirection };
   onSortChange?: (field: SortField, direction: SortDirection) => void;
+  /** Whether a filter is currently applied — provided by useEventQuery. */
+  filterActive?: boolean;
 }
 
 export function EventFeed({
@@ -37,6 +39,7 @@ export function EventFeed({
   page,
   sort,
   onSortChange,
+  filterActive = false,
 }: EventFeedProps) {
   const [refreshing, setRefreshing] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
@@ -119,10 +122,21 @@ export function EventFeed({
             fontSize: "0.875rem",
           }}
         >
-          <p style={{ marginBottom: "0.25rem" }}>No recent events found.</p>
-          <p style={{ fontSize: "0.8rem" }}>
-            Events will appear here once contract activity occurs.
-          </p>
+          {filterActive ? (
+            <>
+              <p style={{ marginBottom: "0.25rem" }}>No events match the current filter.</p>
+              <p style={{ fontSize: "0.8rem" }}>
+                Try adjusting or clearing the filter to see more events.
+              </p>
+            </>
+          ) : (
+            <>
+              <p style={{ marginBottom: "0.25rem" }}>No events recorded yet.</p>
+              <p style={{ fontSize: "0.8rem" }}>
+                Events will appear here once contract activity occurs.
+              </p>
+            </>
+          )}
         </div>
       ) : (
         <div style={{ overflowX: "auto" }}>

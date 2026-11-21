@@ -84,6 +84,29 @@ describe("ConfirmDialog – rendering", () => {
     const heading = container.querySelector(`#${labelId}`);
     expect(heading?.textContent).toBe("My Dialog");
   });
+
+  // #1127 High-impact dialogs must name the specific action and consequence
+  it("renders an action-specific title and consequence summary", () => {
+    const { container } = render(
+      <ConfirmDialog
+        title="Pause transfers"
+        description="New transfers will be blocked until you resume them."
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+        confirmLabel="Pause transfers"
+      />,
+    );
+    const dialog = container.querySelector('[role="dialog"]');
+    const labelId = dialog?.getAttribute("aria-labelledby");
+    const heading = container.querySelector(`#${labelId}`);
+    expect(heading?.textContent).toBe("Pause transfers");
+    expect(
+      screen.getByText("New transfers will be blocked until you resume them."),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: /Pause transfers/i }),
+    ).toBeDefined();
+  });
 });
 
 describe("ConfirmDialog – interactions", () => {

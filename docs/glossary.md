@@ -96,6 +96,34 @@ See `contracts/property-token/src/lib.rs` (`dust_reserve`, `collect_dust_reserve
 
 ---
 
+## Networks
+
+The SDK supports a fixed set of built-in Soroban networks plus custom networks. These names represent different endpoints and trust contexts; they are not interchangeable environments.
+
+**Testnet**
+The Stellar test network, used for development and testing against throwaway funds and contracts.
+See [sdk/README.md — Network configuration](sdk/README.md#network-configuration).
+
+**Mainnet**
+The Stellar public network, used for production deployments and real assets.
+See [sdk/README.md — Network configuration](sdk/README.md#network-configuration).
+
+**Futurenet**
+The Stellar futurenet, used to preview upcoming protocol changes before they reach mainnet.
+See [sdk/README.md — Network configuration](sdk/README.md#network-configuration).
+
+**Standalone**
+A local Stellar node started with `--standalone`, used for local development. It is the default network for the Docker environment.
+See [Standalone network](#deployment-and-tooling) below and [docker-environment.md](docker-environment.md).
+
+**Custom network**
+Any network name other than the built-in ones. Because there is no built-in default, a custom network requires an explicit RPC URL (`rpcUrl`) and network passphrase (`networkPassphrase`).
+See [sdk/README.md — Network configuration](sdk/README.md#network-configuration).
+
+> **Caution:** Verify the selected network before signing transactions. A transaction signed for one network is not valid on another, and the built-in names point at different endpoints and trust contexts.
+
+---
+
 ## Deployment and tooling
 
 **Canonical manifest**
