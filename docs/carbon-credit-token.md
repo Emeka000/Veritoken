@@ -4,6 +4,21 @@ The `carbon-credit-token` contract represents verified carbon credits as integer
 
 This unit convention describes the token's accounting unit. It does not, by itself, assert the validity of an off-chain project, registry record, verification claim, or legal retirement. Those claims must be supported by the project's metadata and external verification processes.
 
+## Unit examples
+
+Because `decimals() == 0`, every on-chain amount is a whole number of token units, and each unit is one tonne of CO2e. The examples below use the same terminology as the contract:
+
+| Token units (`amount`) | Credits | Tonnes of CO2e |
+| --- | --- | --- |
+| `0` | 0 credits | 0 tCO2e |
+| `1` | 1 credit | 1 tCO2e |
+| `25` | 25 credits | 25 tCO2e |
+| `100` | 100 credits | 100 tCO2e |
+
+Fractional credit units are not supported by this convention: `decimals() == 0` means there is no on-chain representation for amounts such as `0.5` credits, and no such value can be minted, transferred, or retired. An amount displayed by a UI or returned by a contract call is always a whole number of credits, never a fraction of a credit. Display precision (for example, formatting with thousands separators or a trailing `.0`) is a presentation choice only and does not change the underlying integer amount; do not apply fractional-token assumptions from assets that use non-zero decimals.
+
+To follow a credit through to its permanent retirement record, see [Receipt lookup and verification](#receipt-lookup-and-verification).
+
 ## Supply lifecycle
 
 - `mint(to, amount)` creates `amount` token units for a KYC-approved holder and increases `total_supply`.

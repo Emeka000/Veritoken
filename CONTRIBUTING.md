@@ -172,7 +172,10 @@ in the same pull request unless you were asked to.
 ## Contract Size Budget
 
 Every contract in this repository has a documented maximum WASM binary size.
-CI enforces these limits automatically after every release build.
+CI enforces these limits automatically after every release build. The
+canonical budget — current limits, policy, and reduction techniques — lives in
+[docs/contract-size-budget.md](docs/contract-size-budget.md); this section does
+not repeat the thresholds.
 
 Before adding a new feature to an existing contract, check the current binary
 size:
@@ -182,13 +185,17 @@ cargo build --release --target wasm32v1-none
 bash scripts/check-wasm-size.sh --print-sizes
 ```
 
+The size-check script reads artifacts from `target/wasm32v1-none/release/`, so
+build with the `wasm32v1-none` target first (see
+[Contracts](#contracts)). Run `bash scripts/check-wasm-size.sh` to verify every
+contract is within budget before opening your PR.
+
 If your change causes a contract to exceed its budget, you must either reduce
 the size (remove unused code/deps, rely on workspace profile settings) or
-explicitly raise the budget by updating `scripts/check-wasm-size.sh` and
-`docs/contract-size-budget.md` in the same PR with a justification.
-
-See [docs/contract-size-budget.md](docs/contract-size-budget.md) for the full
-policy, current limits, and reduction techniques.
+explicitly raise the budget. Any budget increase requires a documented
+justification and must be made in the same PR by updating both
+`scripts/check-wasm-size.sh` and
+[docs/contract-size-budget.md](docs/contract-size-budget.md).
 
 ---
 

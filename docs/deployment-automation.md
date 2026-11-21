@@ -373,7 +373,15 @@ network, or deployed code hash aborts the resume instead of mixing runs.
 
 ## Canonical manifest
 
-`deploy-manifest.json` includes:
+`deploy-manifest.json` is a **generated verification and audit artifact**, not
+an input configuration file. It is produced by the deployment orchestrator
+after a run passes verification, and it is consumed by the
+[manifest verifier](../deployment/scripts/verify-manifest.ts) and the
+`verify` command. Do not hand-edit it, and do not treat it as a place to
+configure a deployment — deployment inputs live in the config files described
+under [Configuration model](#configuration-model).
+
+`deploy-manifest.json` records these public deployment facts:
 
 - schema version, deployment ID, generation, and timestamps;
 - previous manifest SHA-256 for registry lineage;
@@ -386,9 +394,20 @@ network, or deployed code hash aborts the resume instead of mixing runs.
 - canonical contract-name-to-ID registry; and
 - compatibility keys consumed by the existing drift checker.
 
-The manifest deliberately excludes secret material. Contract IDs, public
-account addresses, WASM hashes, and transaction-independent metadata are
-public deployment evidence.
+Verification consumes these recorded facts to compare local artifacts against
+on-chain state: it checks each local artifact's SHA-256 and metadata hash
+against the manifest, then queries the deployed code hash and contract
+metadata on-chain and compares them to the recorded values. A manifest that
+does not match the artifacts or the chain fails verification rather than
+being silently trusted.
+
+The manifest deliberately excludes secret material. Signing secrets, seed
+phrases, and secret keys must **never** appear in a generated manifest — the
+manifest is public deployment evidence, not a secret store. Contract IDs,
+public account addresses, WASM hashes, and transaction-independent metadata
+are the only deployment facts it records. Keep signing material in the Stellar
+CLI key store or environment variables as described in
+[docs/secret-safe-deployment.md](secret-safe-deployment.md).
 
 ## Verification report
 
