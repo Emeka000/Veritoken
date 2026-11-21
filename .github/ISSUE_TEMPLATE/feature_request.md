@@ -27,3 +27,9 @@ assignees: ''
 
 ## Alternative Approaches or Workarounds Evaluated
 <!-- List any alternative approaches or workarounds you've evaluated. -->
+
+## Sensitive Data
+<!-- Do not include secret keys, seed phrases, or unnecessary personal data in this
+     proposal. Public transaction IDs and account addresses are fine to share when
+     relevant for diagnosis. Report sensitive vulnerabilities privately via the
+     process described in SECURITY.md. -->

@@ -18,7 +18,10 @@ export function CopyButton({ text, label, className, style, onCopy }: CopyButton
     <button
       onClick={() =>
         copy(text).then((ok) => {
-          if (!ok) return;
+          if (!ok) {
+            setAnnouncement("Copy failed — please copy manually");
+            return;
+          }
           setAnnouncement("Copied to clipboard");
           onCopy?.();
         })

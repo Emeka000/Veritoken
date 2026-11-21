@@ -212,6 +212,23 @@ area.
 
 Update only the rows that your change affects.
 
+### Small documentation fixes
+
+Doc-only corrections are a good way to contribute. A few checks keep them
+accurate and easy to review:
+
+- **Verify behavior claims** against the source code or the canonical API
+  docs (for example [docs/contract-api-reference.md](docs/contract-api-reference.md))
+  rather than relying on memory or older guides.
+- **Check relative links** in the pages you touched, following
+  [Checking Documentation Links](#checking-documentation-links).
+- **Check code snippets** — commands, paths, and function signatures should
+  match what the code actually does.
+- **Use consistent terminology** with the rest of the docs (for example
+  `wasm32v1-none`, not `wasm32-unknown-unknown`).
+- Doc-only changes generally do not need a full software build; run the
+  checks relevant to what you edited.
+
 ## Good First Issues
 
 Look for issues labelled [`good first issue`](https://github.com/abore9769/Veritoken/issues?q=label%3A%22good+first+issue%22) — these are scoped to be approachable without deep familiarity with the full codebase.

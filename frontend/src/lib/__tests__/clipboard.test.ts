@@ -48,6 +48,56 @@ describe("useClipboard", () => {
     expect(result.current.copied).toBe(false);
   });
 
+  it("returns false when both clipboard API and fallback fail", async () => {
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("denied"));
+    const execCommandSpy = vi.fn().mockReturnValue(false);
+    Object.assign(document, { execCommand: execCommandSpy });
+
+    const { result } = renderHook(() => useClipboard());
+
+    let success = true;
+    await act(async () => {
+      success = await result.current.copy("test");
+    });
+
+    expect(success).toBe(false);
+    expect(result.current.copied).toBe(false);
+  });
+
+  it("returns false when fallback throws", async () => {
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("denied"));
+    const execCommandSpy = vi.fn().mockImplementation(() => {
+      throw new Error("execCommand unsupported");
+    });
+    Object.assign(document, { execCommand: execCommandSpy });
+
+    const { result } = renderHook(() => useClipboard());
+
+    let success = true;
+    await act(async () => {
+      success = await result.current.copy("test");
+    });
+
+    expect(success).toBe(false);
+    expect(result.current.copied).toBe(false);
+  });
+
+  it("falls back successfully when clipboard API fails", async () => {
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("denied"));
+    const execCommandSpy = vi.fn().mockReturnValue(true);
+    Object.assign(document, { execCommand: execCommandSpy });
+
+    const { result } = renderHook(() => useClipboard());
+
+    let success = false;
+    await act(async () => {
+      success = await result.current.copy("test");
+    });
+
+    expect(success).toBe(true);
+    expect(result.current.copied).toBe(true);
+  });
+
   it("resets copied state after the delay", async () => {
     const { result } = renderHook(() => useClipboard(1000));
 
