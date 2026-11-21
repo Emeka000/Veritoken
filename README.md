@@ -69,7 +69,7 @@ verification report. See
 [docs/deployment-automation.md](docs/deployment-automation.md) for planning,
 resume, mainnet configuration, and verification details.
 
-**Prerequisites:** Rust, `wasm32v1-none` target (`rustup target add wasm32v1-none`), Stellar CLI, Node.js ≥ 20
+**Prerequisites:** Rust, `wasm32v1-none` target (`rustup target add wasm32v1-none`), Stellar CLI, Node.js ≥ 20 (required by the frontend and workspace packages — if `node --version` reports an older release, see [Node.js version is too old](docs/troubleshooting.md#nodejs-version-is-too-old) for how to check and switch versions)
 
 ```bash
 # Clone

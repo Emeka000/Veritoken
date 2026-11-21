@@ -52,7 +52,64 @@ npm run dev
 
 ### Test commands by area
 
-Run the narrowest suite that covers your change. Cargo commands run from the
+Run the narrowest suite that covers your change, then the full suite before
+opening a PR. Focused tests are faster to iterate on and make failures easier
+to attribute; the full suite is the final gate, not the first step.
+
+#### Quick test selection
+
+| Change type | Narrowest command | Prerequisites |
+| --- | --- | --- |
+| One contract | `cargo test -p <crate> --features testutils` | None |
+| Cross-contract / integration logic | `cargo test -p integration-tests --features testutils` | None |
+| Frontend | `npm test` in `frontend/` (or `npx vitest run <file>` for one file) | None |
+| SDK | `npm test` in `sdk/` | None |
+| Deployment scripts | `bash -n` on changed scripts (see [Shell script checks](#shell-script-checks)) | None |
+| Lifecycle against a local node | `npm run test:lifecycle` in `tests/integration/` | Docker, local Soroban node, built WASMs |
+| Browser workflows | `npm test` in `tests/e2e/` | Docker, built WASMs |
+
+The full command reference, including every suite and its working directory,
+is in the table below. Suite-specific setup lives in
+[tests/integration/README.md](tests/integration/README.md) and
+[tests/e2e/README.md](tests/e2e/README.md).
+
+#### Local-only vs. networked workflows
+
+Some checks run entirely offline; others contact a local node, testnet, a
+wallet, or a remote endpoint. Prefer the offline checks while iterating, and
+treat them as necessary but not sufficient — passing offline tests does **not**
+prove deployment readiness.
+
+| Offline (no credentials or network) | Networked / service-backed |
+| --- | --- |
+| `cargo fmt --check` | `npm run test:lifecycle` in `tests/integration/` (Docker + local Soroban node + built WASMs) |
+| `cargo clippy --target wasm32v1-none` | `npm test` in `tests/e2e/` (Docker + built WASMs) |
+| `cargo test --features testutils` | Deployment scripts that submit transactions (funded Stellar identity, network access) |
+| `npm run build` / `npm run lint` in `frontend/` | Anything pointed at testnet or a remote RPC endpoint |
+| `npm test` in `sdk/` and `frontend/` | |
+| `bash -n` on shell scripts | |
+
+Deployment and lifecycle exercises are documented in
+[tests/integration/README.md](tests/integration/README.md),
+[tests/e2e/README.md](tests/e2e/README.md),
+[deployment/scripts/README.md](deployment/scripts/README.md), and
+[docs/deployment-automation.md](docs/deployment-automation.md).
+
+#### Contract vs. UI validation
+
+Frontend form validation exists for usability: it gives users early feedback
+and keeps obviously invalid input from being submitted. It is **not** a
+compliance or security boundary — browser-side checks can be bypassed by
+calling the contract directly. The contracts are the authoritative enforcement
+point for KYC status, transfer restrictions, and compliance rules; see the KYC
+and compliance contract references in
+[docs/contract-api-reference.md](docs/contract-api-reference.md) and the
+[Security Review Checklist](docs/security-checklist.md). Never rely on UI
+validation in place of an on-chain check.
+
+#### Full command reference
+
+Cargo commands run from the
 repository root; npm commands run from the directory in the **Working dir**
 column. Contract crates expose Soroban test helpers behind the `testutils`
 feature, so pass `--features testutils` where shown (the smoke crate has no
