@@ -572,6 +572,15 @@ npm run generate:client -- --name Escrow
 # or: node scripts/generate-client.mjs --name Escrow
 ```
 
+> **Generated output — don't hand-edit it.** `scripts/generate-client.mjs`
+> (run via the `generate:client` script in `sdk/package.json`) generates
+> `src/clients/<Name>Client.ts` and `src/clients/<Name>Client.test.ts`. If you
+> need to change either file's scaffolded structure, update the generator and
+> re-run `npm run generate:client -- --name <PascalCaseName>` rather than
+> editing the generated files by hand. Before opening a PR, review the
+> generated changes in your diff (`git diff`) to confirm they're what you
+> intended.
+
 This creates `src/clients/EscrowClient.ts` and `src/clients/EscrowClient.test.ts`
 following the shared convention, and prints the remaining steps:
 
