@@ -305,6 +305,8 @@ See [CHANGELOG.md](CHANGELOG.md) for a full history of changes and the versionin
 
 Pull requests are welcome. All incoming issues and pull requests must conform to the project's [contribution templates](.github/ISSUE_TEMPLATE/) and [triage workflow](.github/triage-workflow.md).
 
+New to the repository? Start with the [repository orientation guide](docs/repository-orientation.md) — a one-page map of the major folders, the most useful references, and the safest first commands to run locally.
+
 For detailed instructions, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 1. Fork the repository

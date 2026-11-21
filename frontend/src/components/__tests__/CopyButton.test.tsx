@@ -107,4 +107,25 @@ describe("CopyButton", () => {
 
     expect(status.textContent).toBe("");
   });
+
+  it("reports failure when both clipboard API and fallback fail", async () => {
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("denied"));
+    const execCommand = vi.fn().mockReturnValue(false);
+    Object.assign(document, { execCommand });
+
+    const onCopy = vi.fn();
+    render(<CopyButton text="double fail" onCopy={onCopy} />);
+    const btn = screen.getByRole("button");
+    const status = screen.getByRole("status");
+
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+
+    expect(btn.textContent).toBe("Copy");
+    expect(btn.textContent).not.toBe("Copied!");
+    expect(status.textContent).not.toBe("Copied to clipboard");
+    expect(status.textContent).not.toBe("");
+    expect(onCopy).not.toHaveBeenCalled();
+  });
 });
