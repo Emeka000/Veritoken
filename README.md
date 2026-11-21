@@ -161,6 +161,20 @@ See [docs/frontend-environment.md](docs/frontend-environment.md) for what each `
 
 For the carbon-credit unit convention, supply lifecycle, retirement behavior, and receipt lookup API, see [docs/carbon-credit-token.md](docs/carbon-credit-token.md). One on-chain token unit represents one metric tonne of CO2e, with `decimals() == 0`.
 
+### Invoice lifecycle
+
+The `invoice-token` contract tracks an invoice through a small set of on-chain states. Settlement is a payment record on the invoice, not a token transfer — moving tokens between holders does not change the invoice state.
+
+| State | Entered via | What happens on-chain |
+|---|---|---|
+| `Created` | `create` | Invoice metadata (face value, discount rate, due date, IPFS document anchor) is stored. No tokens exist yet. |
+| `Issued` | `issue` | Tokens are minted against the invoice. |
+| `PartiallySettled` | `partial_settle` | A partial payment is recorded against the invoice. Tokens are not moved. |
+| `FullySettled` | `settle` | The remaining payment is recorded and the invoice is fully settled. Tokens are not moved. |
+| `Redeemed` | `redeem` | Once the outstanding supply reaches zero, tokens are burned and the invoice is marked redeemed. |
+
+Each action maps to a method in the [Invoice Token section of the contract API reference](docs/contract-api-reference.md), which documents the full lifecycle and method signatures. For the invoice token's role in the wider kit, see the [Contracts](#contracts) table above.
+
 ---
 ## Extending Veritoken
 

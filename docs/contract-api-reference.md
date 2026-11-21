@@ -39,10 +39,17 @@ pub struct KycRecord {
     pub status:       KycStatus,  // Pending | Approved | Rejected | Revoked
     pub verifier:     Address,    // verifier who last acted on this record
     pub tier:         u32,        // 0=Basic, 1=Accredited, 2=Institutional
-    pub expiry:       u64,        // Unix timestamp; 0 = no expiry
+    pub expiry:       u64,        // Unix timestamp; 0 = no expiry (see note below)
     pub jurisdiction: String,     // ISO-3166-1 alpha-2 (e.g. "US", "GB")
 }
 ```
+
+**Zero-expiry convention.** `expiry` is a Unix timestamp in seconds, with one special value:
+
+- `expiry = 0` means the approval **never expires**. It is a permanent approval and remains valid indefinitely.
+- `expiry > 0` is an absolute timestamp. Once the current ledger time passes that timestamp the record is **expired** and transfers are denied.
+
+Zero is therefore *not* "the beginning of time" and must not be confused with a timestamp that has already elapsed. A record with `expiry = 0` is valid forever; a record with a past non-zero timestamp is expired. The value is set through [`approve`](#kyc-operations) (and `approve_batch`); see the [operator note](#approve-a-kyc-holder) for how to choose it.
 
 #### `KycStatus`
 | Value | Meaning |
@@ -134,6 +141,27 @@ update_tier(env, verifier: Address, subject: Address, new_tier: u32)
 revoke_all_by_verifier(env, caller: Address, verifier: Address)  // admin-only, cap 50/call
 ```
 `approve` / `approve_batch` require the subject to have an ISO-3166-1 alpha-2 jurisdiction. `update_tier` only works on currently Approved subjects.
+
+**`expiry` argument (zero-expiry convention).** The `expiry` parameter is stored as-is in [`KycRecord.expiry`](#kycrecord):
+
+- Pass `0` to grant an approval that **never expires** (permanent approval).
+- Pass a future Unix timestamp (seconds) to grant a time-limited approval that expires once that timestamp has elapsed.
+- Do **not** pass a past timestamp expecting "no expiry" — a past non-zero timestamp produces an already-expired record.
+
+Re-calling `approve` for an existing subject renews the record, including clearing a previously set expiry by passing `0`. This convention is unchanged by this documentation; see the [operator note](#approve-a-kyc-holder) for guidance.
+
+**Jurisdiction format.** `jurisdiction` must be an uppercase ISO 3166-1 alpha-2 code. Validation is performed by the contract (error `InvalidJurisdiction`, code 5 — see [Errors](#errors)); it is not a frontend-only dropdown. Illustrative examples:
+
+| Input | Valid? | Notes |
+|---|---|---|
+| `"US"` | ✅ | Uppercase two-letter code |
+| `"GB"` | ✅ | Uppercase two-letter code |
+| `"DE"` | ✅ | Uppercase two-letter code |
+| `"United States"` | ❌ | Country name, not a code |
+| `"USA"` | ❌ | Three-letter code (ISO 3166-1 alpha-3) |
+| `"us"` | ❌ | Lowercase; codes must be uppercase |
+
+These examples are illustrative only and are not a complete list of accepted jurisdictions; the accepted set follows the contract's validation.
 
 ---
 
@@ -1042,7 +1070,11 @@ stellar contract deploy \
 ```
 
 ### Approve a KYC holder
+
+> **Operator note — zero expiry means "never expires".** The `--expiry` argument is a Unix timestamp in seconds, with `0` as a special value meaning the approval **never expires**. Use `--expiry 0` for a permanent approval. A non-zero value is an absolute timestamp: once it has elapsed the record is expired and transfers are denied. Do not pass a past timestamp to mean "no expiry" — that yields an already-expired record. See [`KycRecord.expiry`](#kycrecord) and the [`approve`](#kyc-operations) method reference.
+
 ```bash
+# Time-limited approval (expires at the given Unix timestamp)
 stellar contract invoke --id <KYC_REGISTRY_ID> \
   --source <VERIFIER_KEY> \
   -- approve \
@@ -1051,7 +1083,19 @@ stellar contract invoke --id <KYC_REGISTRY_ID> \
   --tier 1 \
   --expiry 1893456000 \
   --jurisdiction US
+
+# Permanent approval (never expires)
+stellar contract invoke --id <KYC_REGISTRY_ID> \
+  --source <VERIFIER_KEY> \
+  -- approve \
+  --verifier <VERIFIER_ADDRESS> \
+  --subject <HOLDER_ADDRESS> \
+  --tier 1 \
+  --expiry 0 \
+  --jurisdiction GB
 ```
+
+`--jurisdiction` must be an uppercase ISO 3166-1 alpha-2 code (e.g. `US`, `GB`); country names and three-letter codes are rejected with `InvalidJurisdiction`. See the [jurisdiction examples](#kyc-operations) for valid and invalid inputs.
 
 ### Update compliance rules (with time-lock)
 ```bash
