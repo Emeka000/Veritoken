@@ -111,6 +111,36 @@ describe("StatusPage — refresh", () => {
   });
 });
 
+describe("StatusPage — contract ID copy", () => {
+  beforeEach(() => {
+    vi.mocked(deploymentHealth.fullReport).mockResolvedValue(healthyReport);
+  });
+
+  it("copies the exact displayed contract ID via an accessible copy button", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    renderPage();
+    await screen.findByRole("status");
+
+    // The displayed contract ID for kycRegistry is "CABC".
+    expect(screen.getByText("CABC")).toBeDefined();
+
+    const copyBtn = screen.getByRole("button", { name: /copy contract id/i });
+    // The accessible label should include the contract context.
+    expect(copyBtn.getAttribute("aria-label") ?? copyBtn.textContent ?? "").toMatch(/kycRegistry/i);
+
+    fireEvent.click(copyBtn);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("CABC");
+    });
+  });
+});
+
 describe("StatusPage — partial endpoint failure", () => {
   beforeEach(() => {
     vi.mocked(deploymentHealth.fullReport).mockResolvedValue(degradedReport);

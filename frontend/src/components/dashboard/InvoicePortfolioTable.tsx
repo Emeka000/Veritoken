@@ -181,8 +181,22 @@ function InvoicePortfolioTableInner({ walletAddress }: Props) {
         <div style={{ overflowX: "auto" }}>
           <table
             style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}
-            aria-label="Invoice portfolio"
           >
+            <caption
+              style={{
+                position: "absolute",
+                width: "1px",
+                height: "1px",
+                padding: 0,
+                margin: "-1px",
+                overflow: "hidden",
+                clip: "rect(0, 0, 0, 0)",
+                whiteSpace: "nowrap",
+                border: 0,
+              }}
+            >
+              Invoice portfolio positions for the connected wallet
+            </caption>
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border)" }}>
                 {["Invoice ID", "Status", "Face Value", "Balance", "Est. Redeemable"].map(

@@ -40,6 +40,13 @@ describe("validateForm / isFormValid", () => {
     expect(results.name.isValid).toBe(false);
   });
 
+  it("rejects a whitespace-only value for a required field", () => {
+    const results = validateForm(SCHEMA, { name: " ", symbol: "ACM", note: "" });
+    expect(results.name.isValid).toBe(false);
+    expect(results.name.error).toMatch(/required/i);
+    expect(isFormValid(results)).toBe(false);
+  });
+
   it("returns false for an empty results object (no fields validated)", () => {
     expect(isFormValid({})).toBe(false);
   });
