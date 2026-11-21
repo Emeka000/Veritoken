@@ -85,6 +85,12 @@ describe("validateIpfsHash", () => {
     expect(r.isValid).toBe(false);
     expect(r.error).toMatch(/Qm.*baf/i);
   });
+
+  it("rejects an unsupported URL scheme such as javascript:", () => {
+    const r = validateIpfsHash("javascript:alert(1)");
+    expect(r.isValid).toBe(false);
+    expect(r.error).toMatch(/Qm.*baf/i);
+  });
 });
 
 describe("validateLegalEntity", () => {

@@ -298,6 +298,36 @@ describe("InvoicePortfolioTable", () => {
     // header row + 1 data row
     expect(rows).toHaveLength(2);
   });
+
+  it("exposes an accessible name and keeps column headers associated", async () => {
+    mockContracts.invoice.getMeta.mockResolvedValue({
+      invoice_id: "INV-A11Y-001",
+      issuer: "Issuer Co",
+      debtor: "Debtor Co",
+      face_value_usd: 10000000n,
+      discount_rate_bps: 0,
+      due_date: 9999999999n,
+      currency: "USD",
+      ipfs_doc_hash: "",
+      transfer_fee_bps: 0,
+      fee_recipient: null,
+      notification_webhook: "",
+    });
+    mockContracts.invoice.balance.mockResolvedValue(5000000n);
+    mockContracts.invoice.invoiceStatus.mockResolvedValue(1); // Issued
+    mockContracts.invoice.isSettled.mockResolvedValue(false);
+    mockContracts.invoice.totalSupply.mockResolvedValue(10000000n);
+
+    render(
+      <InvoicePortfolioTable walletAddress="GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX" />,
+      { wrapper }
+    );
+
+    const table = await screen.findByRole("table", { name: /invoice portfolio/i });
+    expect(table).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Invoice ID" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+  });
 });
 
 // ── ComplianceAlertTimeline ───────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { PageHeader, Card, Icon } from "../components/ui";
+import { CopyButton } from "../components/CopyButton";
 import { deploymentHealth } from "../lib/deploymentHealth";
 import type { DeploymentHealthReport, ContractHealthEntry, HealthStatus } from "../lib/deploymentHealth";
 
@@ -104,9 +105,17 @@ function ContractRow({ entry }: { entry: ContractHealthEntry }) {
         <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", margin: "0.2rem 0 0", lineHeight: 1.5 }}>
           {entry.message}
         </p>
-        <p style={{ fontSize: "0.72rem", color: "var(--text-muted)", margin: "0.15rem 0 0", fontFamily: "monospace", opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {entry.contractId || "—"}
-        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginTop: "0.15rem", minWidth: 0 }}>
+          <p style={{ fontSize: "0.72rem", color: "var(--text-muted)", margin: 0, fontFamily: "monospace", opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+            {entry.contractId || "—"}
+          </p>
+          {entry.contractId && (
+            <CopyButton
+              text={entry.contractId}
+              label={`Copy contract ID for ${entry.key}`}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
