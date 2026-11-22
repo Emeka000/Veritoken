@@ -263,6 +263,14 @@ describe("parseEvents — unknown topic in a mixed page (#979)", () => {
   });
 });
 
+describe("parseEvents — empty input array", () => {
+  it("returns an empty array for an empty input without throwing", () => {
+    const result = parseEvents([]);
+    expect(result).toEqual([]);
+    expect(result).toHaveLength(0);
+  });
+});
+
 describe("parseEvents — empty event page (#978)", () => {
   // Same shape `rpc.Server.getEvents` resolves with when a cursor has no new events.
   const emptyPage = (): rpc.Api.GetEventsResponse => ({ latestLedger: 20_000, events: [] });

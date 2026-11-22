@@ -680,6 +680,31 @@ fn test_expiry_lifecycle_entry_captures_expiry_value() {
     assert_eq!(hist.get(0).unwrap().expiry, 9999);
 }
 
+// The expiry comparison in `is_approved` is `expiry <= ledger_timestamp()`,
+// so an approval whose expiry equals the current ledger timestamp is treated as
+// expired at that exact instant.  This test pins that equality boundary
+// explicitly: the subject is approved one second before expiry and checked at
+// the exact expiry timestamp, confirming `is_approved` returns `false`.
+#[test]
+fn test_expiry_equals_current_timestamp_is_not_approved() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    // Approve at T-1 so that validate_expiry (which rejects expiry == now)
+    // accepts the value.  The expiry is set to exactly T.
+    let t: u64 = 1_500;
+    env.ledger().set_timestamp(t - 1);
+    client.approve(&verifier, &subject, &0, &t, &js(&env, "US"));
+
+    // Advance the ledger to exactly T — the equality boundary.
+    env.ledger().set_timestamp(t);
+
+    // expiry (1_500) <= timestamp (1_500) → expired.
+    assert!(!client.is_approved(&subject));
+}
+
 // ── Jurisdiction validation ───────────────────────────────────────────────────
 
 #[test]
