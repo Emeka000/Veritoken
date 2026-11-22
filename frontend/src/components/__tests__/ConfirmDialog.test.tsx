@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import ConfirmDialog from "../ConfirmDialog";
@@ -112,6 +113,50 @@ describe("ConfirmDialog – rendering", () => {
 describe("ConfirmDialog – interactions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each(["unmount", "open prop"])("returns focus to the opener after cancel (%s)", (closeMode) => {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+
+    function DialogExample() {
+      const [open, setOpen] = useState(false);
+      const dialog = (
+        <ConfirmDialog
+          title="Confirm Action"
+          description="Are you sure?"
+          open={open}
+          onConfirm={onConfirm}
+          onCancel={() => {
+            onCancel();
+            setOpen(false);
+          }}
+        />
+      );
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open confirmation</button>
+          {closeMode === "open prop" ? dialog : open && dialog}
+        </>
+      );
+    }
+
+    render(<DialogExample />);
+    const trigger = screen.getByRole("button", { name: "Open confirmation" });
+    trigger.focus();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+
+    const dialog = screen.getByRole("dialog", { name: "Confirm Action" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    fireEvent.click(cancel);
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it("calls onConfirm when the confirm button is clicked", () => {
