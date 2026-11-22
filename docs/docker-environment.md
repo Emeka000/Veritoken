@@ -284,3 +284,23 @@ Run `bash scripts/deploy.sh` inside the contracts container first to populate `f
 
 **Permission errors on mounted volumes**
 On Linux the bind mount uses UID 1000 by default. If your host user has a different UID, add `user: "${UID}:${GID}"` under the relevant service in `docker-compose.yml`.
+
+## Checking environment example completeness
+
+The standard-library test in `scripts/deployment/tests/test_examples.py` checks
+that `.env.docker.example` defines every interpolation variable referenced by
+root compose files, including the optional indexer `CONTRACT_IDS` variable. It
+checks names only, so blank placeholders are sufficient. It does not read
+`.env.docker`, resolve credentials, or start Docker. The deployment automation
+workflow runs it whenever compose files or the example change.
+
+To run the existing offline suite from the repository root:
+
+```bash
+PYTHONPATH=scripts python -m unittest discover -s scripts/deployment/tests -v
+```
+
+This suite also loads `deployment/config.testnet.json` through the deployment
+parser without resolving its identity or artifact placeholders. The compose
+check is a lightweight interpolation scan, not a full YAML parser; revisit it
+if compose configuration begins using more complex YAML quoting.

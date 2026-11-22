@@ -5,6 +5,11 @@ on:
   pull_request:
     paths:
       - "deployment/**"
+      - ".env.docker.example"
+      - "docker-compose*.yml"
+      - "docker-compose*.yaml"
+      - "compose*.yml"
+      - "compose*.yaml"
       - "**/*.sh"
       - "scripts/deployment/**"
       - "scripts/deployment_cli.py"
@@ -13,6 +18,11 @@ on:
   push:
     paths:
       - "deployment/**"
+      - ".env.docker.example"
+      - "docker-compose*.yml"
+      - "docker-compose*.yaml"
+      - "compose*.yml"
+      - "compose*.yaml"
       - "**/*.sh"
       - "scripts/deployment/**"
       - "scripts/deployment_cli.py"

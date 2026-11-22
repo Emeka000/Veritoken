@@ -47,3 +47,7 @@ get_receipts_by_beneficiary(acme_foundation, 0, 100)
 verify_receipt(0)                       # valid = true, serial = "<project_id>-0"
 verify_receipt(1)                       # valid = false: no receipt at index 1
 ```
+
+For a read-only Python lookup with explicit missing-receipt handling, see
+[`examples/carbon_receipt.py`](examples/carbon_receipt.py) and its
+[usage instructions](examples/README.md#carbon-retirement-receipt-lookup).

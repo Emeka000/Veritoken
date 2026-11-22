@@ -87,6 +87,22 @@ cd frontend
 npm run dev
 ```
 
+The default `bash scripts/setup-local.sh` prepares the environment but does not
+deploy contracts. From the repository root, continue with:
+
+```bash
+STELLAR_NETWORK=testnet bash scripts/deploy.sh veritoken-dev
+npm --workspace frontend run dev
+```
+
+With `bash scripts/setup-local.sh --deploy`, contracts are deployed and verified
+and frontend contract IDs are written before setup completes. Your next command
+from the repository root is `npm --workspace frontend run dev`. If you choose a
+custom `--identity` or `--network`, use those same values for a later deployment.
+With `--docker`, the frontend starts automatically; setup does not deploy contracts,
+even if `--deploy` is also supplied. Follow the deployment steps in the
+[Docker environment guide](docs/docker-environment.md#building-and-deploying-contracts).
+
 For the full CLI reference (deploy, KYC, compliance, tests):
 
 ```bash
