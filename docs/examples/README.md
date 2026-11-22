@@ -29,6 +29,7 @@ writes; the examples below follow the same pattern in each language.
 
 | File | Language | Runtime |
 |---|---|---|
+| [`carbon_receipt.py`](carbon_receipt.py) | Python 3.10+ | `python docs/examples/carbon_receipt.py 0` (repository root) |
 | [`python_example.py`](python_example.py) | Python 3.10+ | `python python_example.py` |
 | [`javascript_example.js`](javascript_example.js) | JavaScript (Node.js) | `node javascript_example.js` |
 | [`sdk_client_factory_example.ts`](sdk_client_factory_example.ts) | TypeScript (`@veritoken/sdk`) | `npx tsx docs/examples/sdk_client_factory_example.ts` |
@@ -37,6 +38,28 @@ The TypeScript example additionally shows the SDK's client factory and
 dependency-injection pattern (`createClients` / `ClientFactory`) — composing
 several contract clients from one config object, and swapping in a mock
 client for tests without touching a real or simulated RPC endpoint.
+
+## Carbon retirement receipt lookup
+
+Install the same Python dependency as the other Python example: `stellar-sdk>=10.0.0`.
+The focused [carbon receipt example](carbon_receipt.py) needs only a deployed
+carbon contract ID; no wallet secret, signing, funded source account, or transaction
+submission is required. From the repository root:
+
+```bash
+export VITE_CARBON_TOKEN_ID=C...  # replace with your deployed contract ID
+export STELLAR_NETWORK=testnet
+python docs/examples/carbon_receipt.py 0
+```
+
+Optionally set `STELLAR_RPC_URL` for your RPC endpoint. The index is zero-based.
+The example simulates `get_receipts(index, 1)` and decodes its XDR response. An
+empty vector is represented as Python `None` and printed as
+`No retirement receipt found at index 0 (empty page).` RPC and contract errors
+remain errors rather than being reported as missing receipts. Amounts are whole
+tonnes of CO2e, with no fractional-token scaling. On-chain receipts are audit
+data, not a substitute for external project, registry, or retirement verification.
+See [carbon receipt semantics](../carbon-credit-token.md#receipt-lookup-and-verification).
 
 ## Prerequisites
 

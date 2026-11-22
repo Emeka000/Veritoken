@@ -57,7 +57,9 @@ if [[ "$USE_DOCKER" == "1" ]]; then
   step "Waiting for stack to be ready"
   bash "$SCRIPT_DIR/docker-health.sh"
   echo ""
-  echo "Docker stack is running. Frontend: http://localhost:5173"
+  echo "Docker stack is running. Frontend is already started: http://localhost:5173"
+  echo "Contracts were not deployed by setup (--deploy applies only without --docker)."
+  echo "Next: follow docs/docker-environment.md under Building and Deploying Contracts."
   exit 0
 fi
 
@@ -135,11 +137,16 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " Veritoken local environment ready"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo " Identity : $IDENTITY  (network: $NETWORK)"
+echo " Run the following commands from the repository root."
 echo ""
 echo " Next steps:"
 if [[ "$DO_DEPLOY" == "0" ]]; then
-  echo "   Deploy contracts : bash scripts/deploy.sh $IDENTITY"
+  echo " Contracts were not deployed by this setup run."
+  echo " Next: deploy contracts, then start the frontend."
+  printf '   Deploy contracts : STELLAR_NETWORK=%q bash scripts/deploy.sh %q\n' "$NETWORK" "$IDENTITY"
+else
+  echo " Contracts were deployed and verified successfully."
+  echo " Next: start the frontend."
 fi
 echo "   Start frontend   : cd frontend && npm run dev"
 echo "   Run tests        : cargo test --features testutils"
