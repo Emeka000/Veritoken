@@ -454,7 +454,8 @@ a:focus:not(:focus-visible) {
   *,
   *::before,
   *::after {
-    animation-duration: 0.001ms !important;
+    /* Stop continuous loading animations, including those declared inline. */
+    animation: none !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
