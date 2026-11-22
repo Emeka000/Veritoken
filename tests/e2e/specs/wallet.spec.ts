@@ -4,6 +4,36 @@ import { fundAccount } from "../fixtures/chain-helpers";
 import { installFreighterWallet, uninstallFreighterWallet } from "../fixtures/freighter-shim";
 
 test.describe("Wallet connect / disconnect", () => {
+  test("shows a connection action and status before connecting", async ({ page, context }) => {
+    await installFreighterWallet(context, e2eKeypair("wallet-disconnected"));
+    await page.goto("/kyc");
+
+    await expect(page.getByRole("button", { name: "Connect Wallet" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Wallet not connected" })).toBeVisible();
+    const option = page.getByRole("group", { name: "Freighter wallet option" });
+    await expect(option.getByRole("button", { name: "Connect", exact: true })).toBeEnabled();
+    await expect(page.getByTestId("wallet-address")).not.toBeVisible();
+  });
+
+  test("rejected wallet permissions leave connection available for retry", async ({ page, context }) => {
+    await installFreighterWallet(context, e2eKeypair("wallet-rejected"), { rejectPermissions: true });
+    await page.goto("/kyc");
+
+    const option = page.getByRole("group", { name: "Freighter wallet option" });
+    const connect = option.getByRole("button", { name: "Connect", exact: true });
+    await connect.click();
+
+    await expect(page.getByRole("alert")).toHaveText(
+      "The connection request was declined or cancelled. Approve the request in your wallet to continue.",
+    );
+    await expect(connect).toBeVisible();
+    await expect(connect).toBeEnabled();
+    await expect(connect).toHaveAttribute("aria-busy", "false");
+    await expect(page.getByRole("status").filter({ hasText: "Wallet not connected" })).toBeVisible();
+    await expect(page.getByTestId("wallet-address")).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect", exact: true })).not.toBeVisible();
+  });
+
   test("connect shows the truncated address, disconnect clears it", async ({ page, context }) => {
     const wallet = e2eKeypair("wallet-connect");
     await fundAccount(wallet);
