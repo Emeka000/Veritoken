@@ -12,7 +12,7 @@
  *  - Connect button (disabled when unavailable)
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProviderType } from "../lib/walletProvider";
 import { FreighterProvider, LedgerProvider, WalletConnectProvider } from "../lib/walletProvider";
 import { NETWORK_PASSPHRASE } from "../lib/stellar";
@@ -290,6 +290,9 @@ export interface WalletSelectorModalProps {
    */
   onSelect: (type: ProviderType) => void;
 
+  /** Dismiss the selector without connecting a wallet. */
+  onClose?: () => void;
+
   /** Optional connecting state — shows spinner on the active card. */
   connectingType?: ProviderType | null;
 
@@ -299,6 +302,7 @@ export interface WalletSelectorModalProps {
 
 export default function WalletSelectorModal({
   onSelect,
+  onClose,
   connectingType = null,
   walletConnectUri = null,
 }: WalletSelectorModalProps) {
@@ -309,6 +313,16 @@ export default function WalletSelectorModal({
     ledger: null,
     walletconnect: null,
   });
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    return () => {
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
 
   // Probe all providers concurrently on mount.
   useEffect(() => {
@@ -321,12 +335,39 @@ export default function WalletSelectorModal({
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && onClose) {
+          event.preventDefault();
+          onClose();
+        }
+        if (event.key === "Tab") {
+          const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), a[href], [tabindex="0"]',
+          ));
+          const first = controls[0];
+          const last = controls[controls.length - 1];
+          if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) {
+            event.preventDefault();
+            last?.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first?.focus();
+          }
+        }
+      }}
       role="dialog"
       aria-modal="true"
       aria-label="Select a wallet to connect"
       style={{ display: "flex", justifyContent: "center", marginTop: "3rem" }}
     >
       <Card style={{ maxWidth: 440, width: "100%" }}>
+        {onClose && (
+          <button type="button" onClick={onClose} aria-label="Close wallet selector">
+            Close
+          </button>
+        )}
         <h2
           style={{
             fontSize: "1.1rem",

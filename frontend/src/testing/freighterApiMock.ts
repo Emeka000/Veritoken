@@ -16,6 +16,7 @@ import { Keypair, TransactionBuilder } from "@stellar/stellar-sdk";
 interface InjectedWallet {
   publicKey: string;
   secret: string;
+  rejectPermissions?: boolean;
 }
 
 function injectedWallet(): InjectedWallet | undefined {
@@ -36,7 +37,12 @@ function requireWallet(): InjectedWallet {
 
 export const isConnected = async (): Promise<boolean> => Boolean(injectedWallet());
 
-export const setAllowed = async (): Promise<boolean> => Boolean(injectedWallet());
+export const setAllowed = async (): Promise<boolean> => {
+  if (injectedWallet()?.rejectPermissions) {
+    throw new Error("User rejected wallet permissions");
+  }
+  return Boolean(injectedWallet());
+};
 
 export const getPublicKey = async (): Promise<string> => requireWallet().publicKey;
 

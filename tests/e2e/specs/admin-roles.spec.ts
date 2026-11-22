@@ -30,12 +30,17 @@ test.describe("Admin panel role gating", () => {
     await approveKyc(wallet.publicKey(), { tier: 2, jurisdiction: "US" });
 
     await installFreighterWallet(context, wallet);
+    // The E2E bridge mocks paused rules without submitting a live-chain pause.
+    await context.addInitScript(() => {
+      Object.assign(window, { __VERITOKEN_E2E_COMPLIANCE_PAUSED__: true });
+    });
     await page.goto("/admin");
     await page.getByRole("button", { name: "Connect Wallet" }).click();
 
     await expect(page.getByRole("heading", { name: "Admin Panel" })).toBeVisible();
     await expect(page.getByText("Access restricted")).not.toBeVisible();
     await expect(page.getByRole("region", { name: "Blocklist Management" })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "All transfers are currently PAUSED" })).toBeVisible();
   });
 
   test("a wallet without admin-level KYC is denied access", async ({ page, context }) => {

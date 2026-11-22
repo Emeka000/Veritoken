@@ -11,6 +11,7 @@
 
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { useWallet } from "../lib/wallet";
+import { describeWalletError } from "../lib/walletErrors";
 import type { ProviderType, WalletProvider } from "../lib/walletProvider";
 import { WalletConnectProvider } from "../lib/walletProvider";
 import { NETWORK_PASSPHRASE } from "../lib/stellar";
@@ -26,6 +27,7 @@ export default function WalletGuard({
   message?: string;
 }) {
   const { connected, selectProvider } = useWallet();
+  const [selectorOpen, setSelectorOpen] = useState(true);
   const [connectingType, setConnectingType] = useState<ProviderType | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [wcUri, setWcUri] = useState<string | null>(null);
@@ -100,11 +102,18 @@ export default function WalletGuard({
             visibleLabel
           />
         </p>
-        <WalletSelectorModal
-          onSelect={handleSelect}
-          connectingType={connectingType}
-          walletConnectUri={wcUri}
-        />
+        {selectorOpen ? (
+          <WalletSelectorModal
+            onSelect={handleSelect}
+            onClose={() => setSelectorOpen(false)}
+            connectingType={connectingType}
+            walletConnectUri={wcUri}
+          />
+        ) : (
+          <button type="button" autoFocus onClick={() => setSelectorOpen(true)}>
+            Choose wallet
+          </button>
+        )}
         {connectError && (
           <p
             role="alert"

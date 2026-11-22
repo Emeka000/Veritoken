@@ -30,6 +30,7 @@ import type { Keypair } from "./stellar-sdk";
 export interface E2EWalletInjection {
   publicKey: string;
   secret: string;
+  rejectPermissions?: boolean;
 }
 
 declare global {
@@ -50,11 +51,12 @@ function toInjection(keypair: Keypair): E2EWalletInjection {
 export async function installFreighterWallet(
   context: BrowserContext,
   keypair: Keypair,
+  options: { rejectPermissions?: boolean } = {},
 ): Promise<void> {
   await context.addInitScript((wallet: E2EWalletInjection) => {
     window.__VERITOKEN_E2E_WALLET__ = wallet;
     window.freighter = true;
-  }, toInjection(keypair));
+  }, { ...toInjection(keypair), ...options });
 }
 
 /**
