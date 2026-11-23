@@ -13,6 +13,20 @@
  * instead of letting the factory construct one — useful for tests, or for
  * an application that wants a custom client subclass.
  *
+ * @example Partial client map — guard before calling an optional client
+ * ```ts
+ * const clients = createClients({
+ *   contractIds: { kycRegistry: "C..." },
+ * });
+ * // clients.rwaToken is undefined because no ID was supplied for it.
+ * // Check before calling to avoid a runtime error:
+ * if (clients.rwaToken) {
+ *   await clients.rwaToken.balance(addr);
+ * }
+ * // clients.kycRegistry is present, so it can be used directly:
+ * await clients.kycRegistry?.isApproved(addr);
+ * ```
+ *
  * @example Basic usage
  * ```ts
  * const clients = createClients({

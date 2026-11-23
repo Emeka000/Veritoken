@@ -63,6 +63,20 @@ CHANGELOG.md entry:
 
 _No breaking changes yet — this section will be populated when the first MAJOR bump occurs._
 
+## Finding behavioral migration information
+
+The authoritative record of every SDK change — including behavioral differences between versions — is **[CHANGELOG.md](../CHANGELOG.md)** at the repository root.
+
+Each released version has its own dated section. Breaking changes appear under a `### Breaking Changes` subsection. When upgrading across a `MAJOR` bump, read that subsection first: it lists every removed or renamed API and the corresponding call-site update.
+
+To compare two versions:
+
+1. Open `CHANGELOG.md` and locate the section for the version you are upgrading **from**.
+2. Read forward through every section up to and including the version you are upgrading **to**.
+3. Any `### Breaking Changes` block in that range requires a call-site update on your end.
+
+The version currently published to the package registry is recorded in [`sdk/package.json`](./package.json) under the `"version"` field. Do not rely on a secondary source; `CHANGELOG.md` and `package.json` are the single source of truth.
+
 ## Release process
 
 See [docs/release-process.md](../docs/release-process.md) for the full release workflow (version bump, changelog, tag, GitHub release).
