@@ -1559,6 +1559,76 @@ fn test_batch_retire_on_behalf_insufficient_balance_rejected() {
         RetirementRequest {
             beneficiary: ben1.clone(),
             amount: 30,
+            memo: String::from_str(&h.env, "batch1"),
+        },
+        RetirementRequest {
+            beneficiary: ben2.clone(),
+            amount: 30,
+            memo: String::from_str(&h.env, "batch2"),
+        },
+    ];
+
+    // Total = 60 > 50 — must fail atomically.
+    assert!(h.token.try_batch_retire_on_behalf(&retiree, &reqs).is_err());
+    assert_eq!(h.token.balance(&retiree), 50);
+    assert_eq!(h.token.retirement_count(), 0);
+}
+
+// ── Issue #1154: Receipt beneficiary metadata test ──────────────────────────
+
+/// Test that retirement receipts preserve the supplied beneficiary address
+/// and amount without changing the receipt format.
+#[test]
+fn test_receipt_lookup_preserves_beneficiary_metadata() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.token.mint(&alice, &100);
+
+    // Set a non-zero ledger timestamp.
+    h.env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
+
+    // Retire 50 credits on behalf of Bob with a distinct address.
+    let receipt = h.token.retire_on_behalf(
+        &alice,
+        &bob,
+        &50,
+        &String::from_str(&h.env, "Corporate carbon offset Q1 2024"),
+    );
+
+    // Receipt returned by retire_on_behalf contains the beneficiary address.
+    assert_eq!(receipt.retiree, alice);
+    assert_eq!(receipt.amount, 50);
+    assert_eq!(receipt.beneficiary_address, Some(bob.clone()));
+    assert!(receipt.timestamp > 0);
+
+    // Fetch the receipt by its normal identifier (index 0).
+    let stored = h.token.get_receipt(&0);
+    assert_eq!(stored.retiree, alice);
+    assert_eq!(stored.amount, 50);
+    assert_eq!(stored.beneficiary_address, Some(bob.clone()));
+    assert_eq!(stored.timestamp, receipt.timestamp);
+
+    // Verify the receipt is valid via verify_receipt.
+    let verification = h.token.verify_receipt(&0);
+    assert!(verification.valid);
+    assert_eq!(verification.retiree, alice);
+    assert_eq!(verification.amount, 50);
+    assert_eq!(verification.index, 0);
+
+    // Balance and totals updated correctly.
+    assert_eq!(h.token.balance(&alice), 50);
+    assert_eq!(h.token.total_retired(), 50);
+    assert_eq!(h.token.retirement_count(), 1);
+
+    let reqs = soroban_sdk::vec![
+        &h.env,
+        RetirementRequest {
+            beneficiary: ben1.clone(),
+            amount: 30,
             memo: String::from_str(&h.env, "r1"),
         },
         RetirementRequest {
