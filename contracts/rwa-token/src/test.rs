@@ -863,6 +863,40 @@ fn test_batch_transfer_state_unchanged_on_insufficient_balance() {
 }
 
 #[test]
+fn test_self_transfer_preserves_balance() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.mint(&alice, 1_000);
+
+    // Transfer from Alice to herself
+    h.token.transfer(&alice, &alice, &400);
+
+    // Balance must remain unchanged
+    assert_eq!(h.token.balance(&alice), 1_000);
+    assert_eq!(h.token.total_supply(), 1_000);
+
+    // Holder count must remain 1
+    assert_eq!(h.compliance.holder_count(), 1);
+}
+
+#[test]
+fn test_unauthorized_caller_cannot_set_external_uri() {
+    let h = setup();
+    let unauthorized = Address::generate(&h.env);
+    
+    // Attempt to set external URI as non-admin
+    let res = h.token.try_set_external_uri(&String::from_str(&h.env, "ipfs://QmTest"));
+    
+    // Should fail with authorization error
+    assert!(res.is_err());
+    
+    // Verify the external URI was not set by checking it remains empty
+    let uri = h.token.get_external_uri();
+    assert_eq!(uri, String::from_str(&h.env, ""));
+}
+
+#[test]
 fn test_batch_transfer_state_unchanged_on_frozen_recipient() {
     let h = setup();
     let alice = Address::generate(&h.env);

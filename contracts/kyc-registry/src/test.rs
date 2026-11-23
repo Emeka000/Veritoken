@@ -753,6 +753,55 @@ fn test_batch_approve_rejects_invalid_jurisdiction() {
     assert!(res.is_err());
 }
 
+#[test]
+fn test_subject_can_retrieve_own_full_record() {
+    let (env, client, admin) = setup();
+    let verifier = Address::generate(&env);
+    let subject = Address::generate(&env);
+    client.add_verifier(&admin, &verifier);
+
+    // Create a KYC record with at least one transition
+    env.ledger().set_timestamp(1_000);
+    client.approve(&verifier, &subject, &1, &0, &js(&env, "US"));
+    client.update_tier(&verifier, &subject, &2);
+
+    // Subject retrieves its own full record
+    let full_record = client.get_full_record(&subject, &subject);
+
+    // Verify the record matches the subject
+    assert_eq!(full_record.record.verifier, verifier);
+    assert_eq!(full_record.record.tier, 2);
+    assert_eq!(full_record.record.jurisdiction, js(&env, "US"));
+    assert!(matches!(full_record.record.status, KycStatus::Approved));
+
+    // Verify transition data is returned
+    assert_eq!(full_record.lifecycle_count, 2);
+    let history = client.get_lifecycle_history(&subject, &0, &10);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().kind, KycTransitionKind::Approve);
+    assert_eq!(history.get(1).unwrap().kind, KycTransitionKind::TierUpdate);
+}
+
+#[test]
+fn test_removing_last_admin_is_rejected() {
+    let (env, client, admin) = setup();
+
+    // Registry initialized with one admin
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 1);
+
+    // Attempt to remove the only admin as an authorized caller
+    let res = client.try_remove_admin(&admin, &admin);
+
+    // Should fail with EmptyAdminList error
+    assert_eq!(res, Err(Ok(Error::from(KycError::EmptyAdminList))));
+
+    // Verify the admin remains registered
+    let admins_after = client.get_admins();
+    assert_eq!(admins_after.len(), 1);
+    assert_eq!(admins_after.get(0).unwrap(), admin);
+}
+
 // ── Batch operations and lifecycle ────────────────────────────────────────────
 
 #[test]
