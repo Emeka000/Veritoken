@@ -2096,3 +2096,84 @@ fn test_fixed_point_remainder_conservation() {
         "holder entitlement must equal allocated_amount, not the raw deposit"
     );
 }
+
+
+// ── Issue #1155: Repeated dividend claim protection test ────────────────────
+
+/// After a holder claims accrued dividends, a repeated claim should not pay
+/// the same distribution again.
+#[test]
+fn test_repeated_claim_does_not_duplicate_payout() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.token.mint(&alice, &500);
+
+    // Distribute 1000 stroops on 1000 total_shares → alice (500 shares) gets 500.
+    h.token.deposit_dividend(&1_000, &0);
+
+    let initial_pool = h.token.dividend_pool();
+    assert_eq!(initial_pool, 1_000);
+
+    // First claim: alice receives 500.
+    let first_claim = h.token.claim_dividend(&alice);
+    assert_eq!(first_claim, 500);
+    assert_eq!(h.token.pending_dividend(&alice), 0);
+    assert_eq!(h.token.dividend_pool(), initial_pool - 500);
+
+    // Second claim without another distribution: should return 0.
+    let second_claim = h.token.claim_dividend(&alice);
+    assert_eq!(second_claim, 0);
+    assert_eq!(h.token.pending_dividend(&alice), 0);
+
+    // Pool unchanged by the second claim.
+    assert_eq!(h.token.dividend_pool(), initial_pool - 500);
+}
+
+// ── Issue #1156: Post-distribution transfer test ────────────────────────────
+
+/// A transfer after a dividend distribution can expose accounting boundary
+/// mistakes about which holder accrued the distribution.
+#[test]
+fn test_post_distribution_transfer_preserves_accrual() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+
+    // Alice holds all 1000 shares initially.
+    h.token.mint(&alice, &1_000);
+
+    // Distribute 2000 stroops: alice accrues 2000 (1 per share * 1000 shares = 1000; wait, 2 per share).
+    h.token.deposit_dividend(&2_000, &0);
+
+    // Transfer 400 shares to Bob after the distribution.
+    h.token.transfer(&alice, &bob, &400);
+
+    // Alice should retain the full 2000 accrued during the distribution
+    // (snapshot semantics: distribution happened when she held all 1000 shares).
+    let alice_unclaimed = h.token.unclaimed_balance(&alice);
+    assert_eq!(alice_unclaimed.total, 2_000, "alice retains pre-transfer accrual");
+
+    // Bob should have 0 accrued from the first distribution (he received shares after).
+    let bob_unclaimed = h.token.unclaimed_balance(&bob);
+    assert_eq!(bob_unclaimed.total, 0, "bob has no accrual from pre-transfer distribution");
+
+    // Now distribute another 1000 stroops: alice (600 shares) gets 600, bob (400) gets 400.
+    h.token.deposit_dividend(&1_000, &0);
+
+    let alice_after = h.token.unclaimed_balance(&alice);
+    let bob_after = h.token.unclaimed_balance(&bob);
+    assert_eq!(alice_after.total, 2_600, "alice accrues 600 from second distribution");
+    assert_eq!(bob_after.total, 400, "bob accrues 400 from second distribution");
+
+    // Claim and verify totals are conserved.
+    let alice_claimed = h.token.claim_dividend(&alice);
+    let bob_claimed = h.token.claim_dividend(&bob);
+    assert_eq!(alice_claimed, 2_600);
+    assert_eq!(bob_claimed, 400);
+
+    // Total paid out = 3000 (2000 + 1000 deposited).
+    assert_eq!(alice_claimed + bob_claimed, 3_000);
+}

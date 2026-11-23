@@ -4445,3 +4445,39 @@ fn test_transfer_from_above_allowance_rejected_with_no_partial_state() {
         "allowance must not be consumed on failure"
     );
 }
+
+
+// ── Issue #1157: Zero-value transfer event behavior test ────────────────────
+
+/// Zero-value transfers can be valid or invalid depending on the token
+/// implementation. This test documents the current zero-transfer result.
+#[test]
+fn test_zero_value_transfer_behavior() {
+    let h = setup();
+    let alice = Address::generate(&h.env);
+    let bob = Address::generate(&h.env);
+    h.approve_kyc(&alice);
+    h.approve_kyc(&bob);
+    h.mint(&alice, 1_000);
+
+    // Record initial balances and holder count.
+    let alice_before = h.token.balance(&alice);
+    let bob_before = h.token.balance(&bob);
+    let holders_before = h.compliance.holder_count();
+
+    // Attempt a zero-value transfer under otherwise valid conditions.
+    let result = h.token.try_transfer(&alice, &bob, &0);
+
+    // Current implementation rejects zero and negative amounts with NegativeAmount error.
+    assert!(result.is_err(), "zero-value transfer should be rejected");
+
+    // Balances and holder count must remain unchanged.
+    assert_eq!(h.token.balance(&alice), alice_before);
+    assert_eq!(h.token.balance(&bob), bob_before);
+    assert_eq!(h.compliance.holder_count(), holders_before);
+
+    // Negative amounts are also rejected.
+    let neg_result = h.token.try_transfer(&alice, &bob, &-1);
+    assert!(neg_result.is_err(), "negative transfer should be rejected");
+    assert_eq!(h.token.balance(&alice), alice_before);
+}
