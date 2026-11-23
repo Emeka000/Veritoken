@@ -234,6 +234,43 @@ const clients = createClients({
 });
 ```
 
+### `createClients` vs `ClientFactory` — which to use
+
+`createClients` is the direct path: call it, destructure the result, and you
+have your clients. Missing clients come back as `undefined`, so the caller
+decides what to do when a contract ID wasn't supplied.
+
+`ClientFactory` wraps the same construction logic but enforces that every
+client you ask for was actually configured. Its `get()` throws synchronously
+with a clear error naming the missing key; `has()` checks without throwing.
+Use it when an unconfigured client is a programming mistake that should fail
+loudly at startup rather than silently produce `undefined` at the call site.
+
+| | `createClients` | `ClientFactory` |
+|---|---|---|
+| **Returns** | Plain object — missing clients are `undefined` | Class with `get()` / `has()` accessors |
+| **Empty `contractIds: {}`** | Accepted — returns `{}` | Rejected — throws at construction |
+| **Unknown client key** | N/A (TypeScript catches it) | Throws at construction |
+| **Unconfigured client access** | Returns `undefined` | `get()` throws synchronously |
+| **Typical use** | One-off script, single-page app, destructure once | Service class, shared module, inject into DI container |
+
+```ts
+// createClients — straightforward one-off setup
+const { kycRegistry, rwaToken } = createClients({
+  network: "testnet",
+  contractIds: { kycRegistry: "C...", rwaToken: "C..." },
+});
+// kycRegistry and rwaToken are set; complianceEngine etc. are undefined.
+
+// ClientFactory — fail-fast shared setup
+const factory = new ClientFactory({
+  network: "testnet",
+  contractIds: { kycRegistry: "C...", rwaToken: "C..." },
+});
+const kyc = factory.get("kycRegistry"); // typed KycRegistryClient, never undefined
+factory.get("complianceEngine"); // throws: "complianceEngine was not configured"
+```
+
 See [docs/examples/sdk_client_factory_example.ts](../docs/examples/sdk_client_factory_example.ts)
 for a complete runnable version of both patterns.
 
@@ -241,9 +278,9 @@ for a complete runnable version of both patterns.
 
 Every client extends `BaseContractClient` and takes the same constructor
 shape: `new XClient(contractId, server, networkPassphrase)`. Reads simulate
-and decode; writes build → simulate → sign (via your `signTx`) → submit →
-confirm. Full method signatures live in the source files linked below — this
-table is the map, not the territory.
+and decode without touching a wallet; writes build → simulate → sign (via
+your `signTx` callback) → submit → confirm. Full method signatures live in
+the source files linked below — this table is the map, not the territory.
 
 | Client | Contract | Source | Highlights |
 |---|---|---|---|
@@ -254,10 +291,160 @@ table is the map, not the territory.
 | `PropertyTokenClient` | `property-token` | [src/clients/PropertyTokenClient.ts](src/clients/PropertyTokenClient.ts) | Fractional shares, `depositDividend`/`claimDividend`/`pendingDividend` |
 | `CarbonTokenClient` | `carbon-credit-token` | [src/clients/CarbonTokenClient.ts](src/clients/CarbonTokenClient.ts) | `mint`, `retire` (returns a `RetirementReceipt`), retirement history |
 
+### Signing requirements by method
+
+The rule across all six clients is the same: **reads never need a wallet;
+writes always do**. Reads call `server.simulateTransaction` using a stable
+dummy source account and return the decoded value directly. Writes require a
+`signTx: (xdr: string) => Promise<string>` callback — the wallet integration
+point. Never pass a `signTx` callback to a read method; none of them accept
+one.
+
+The clearest signal in the TypeScript signatures: if `signTx` does not appear
+in the parameter list, the method is a read.
+
+#### `KycRegistryClient`
+
+| Method | Signing? | Notes |
+|---|---|---|
+| `isApproved(addr)` | No | Simulated read |
+| `getRecord(addr)` | No | Simulated read |
+| `getTier(addr)` | No | Simulated read |
+| `verifierCount()` | No | Simulated read |
+| `getVerifiers(start, limit)` | No | Simulated read |
+| `verifierListPub()` | No | Simulated read |
+| `getAdmins()` | No | Simulated read |
+| `health(opts?)` | No | Simulated read |
+| `approve(verifier, subject, tier, expiry, jurisdiction, signTx)` | **Yes** | Verifier-signed; local pre-check runs first |
+| `reject(verifier, subject, signTx)` | **Yes** | Verifier-signed |
+| `revoke(verifier, subject, signTx)` | **Yes** | Verifier-signed |
+| `updateTier(verifier, subject, newTier, signTx)` | **Yes** | Verifier-signed |
+| `addVerifier(adminAddress, verifier, signTx)` | **Yes** | Admin-signed |
+| `removeVerifier(adminAddress, verifier, signTx)` | **Yes** | Admin-signed |
+| `addAdmin(callerAddress, newAdmin, signTx)` | **Yes** | Admin-signed |
+| `removeAdmin(callerAddress, adminToRemove, signTx)` | **Yes** | Admin-signed |
+
+#### `ComplianceEngineClient`
+
+| Method | Signing? | Notes |
+|---|---|---|
+| `getRules()` | No | Simulated read |
+| `isBlocklisted(addr)` | No | Simulated read |
+| `isAllowlisted(addr)` | No | Simulated read |
+| `canTransfer(from, to, amount)` | No | Simulated read |
+| `evaluateTransfer(from, to, amount)` | No | Simulated read; returns typed `TransferDecision` |
+| `holderCount()` | No | Simulated read |
+| `getLockupStatus(addr)` | No | Simulated read |
+| `blocklistCount()` | No | Simulated read |
+| `getBlocklist(start, limit)` | No | Simulated read |
+| `getTierPolicy(fromTier, toTier)` | No | Simulated read |
+| `tierPolicyCount()` | No | Simulated read |
+| `getRiskConfig()` | No | Simulated read |
+| `getJurisdictionRiskScore(jurisdiction)` | No | Simulated read |
+| `evaluateTransferRisk(fromJurisdiction, toJurisdiction)` | No | Simulated read |
+| `health(opts?)` | No | Simulated read |
+| `setRules(adminAddress, rules, signTx)` | **Yes** | Admin-signed |
+| `addToBlocklist(adminAddress, addr, signTx)` | **Yes** | Admin-signed |
+| `removeFromBlocklist(adminAddress, addr, signTx)` | **Yes** | Admin-signed |
+| `addToAllowlist(adminAddress, addr, signTx)` | **Yes** | Admin-signed |
+| `removeFromAllowlist(adminAddress, addr, signTx)` | **Yes** | Admin-signed |
+| `pause(adminAddress, signTx)` | **Yes** | Admin-signed |
+| `unpause(adminAddress, signTx)` | **Yes** | Admin-signed |
+| `registerHolder(callerAddress, addr, signTx)` | **Yes** | Caller-signed |
+| `unregisterHolder(callerAddress, addr, signTx)` | **Yes** | Caller-signed |
+| `setTierPolicy(adminAddress, fromTier, toTier, policy, signTx)` | **Yes** | Admin-signed |
+| `clearTierPolicy(adminAddress, fromTier, toTier, signTx)` | **Yes** | Admin-signed |
+| `setRiskConfig(adminAddress, config, signTx)` | **Yes** | Admin-signed |
+| `setJurisdictionRiskScore(adminAddress, jurisdiction, score, signTx)` | **Yes** | Admin-signed |
+| `clearJurisdictionRiskScore(adminAddress, jurisdiction, signTx)` | **Yes** | Admin-signed |
+
+#### `RwaTokenClient`
+
+| Method | Signing? | Notes |
+|---|---|---|
+| `balance(addr)` | No | Simulated read |
+| `totalSupply()` | No | Simulated read |
+| `allowance(from, spender)` | No | Simulated read |
+| `name()` | No | Simulated read |
+| `symbol()` | No | Simulated read |
+| `decimals()` | No | Simulated read |
+| `assetType()` | No | Simulated read |
+| `kycRegistry()` | No | Simulated read |
+| `complianceEngine()` | No | Simulated read |
+| `getComplianceMetadata(key)` | No | Simulated read |
+| `getTokenExport()` | No | Simulated read |
+| `getExternalUri()` | No | Simulated read |
+| `checkKycStatus(addr)` | No | Simulated read |
+| `health(opts?)` | No | Simulated read |
+| `mint(adminAddress, to, amount, signTx)` | **Yes** | Admin-signed |
+| `transfer(fromAddress, to, amount, signTx)` | **Yes** | Sender-signed |
+| `transferFrom(spenderAddress, from, to, amount, signTx)` | **Yes** | Spender-signed |
+| `approve(fromAddress, spender, amount, expirationLedger, signTx)` | **Yes** | Owner-signed |
+| `burn(fromAddress, amount, signTx)` | **Yes** | Holder-signed |
+| `burnFrom(spenderAddress, from, amount, signTx)` | **Yes** | Spender-signed |
+| `setAdmin(callerAddress, newAdmin, signTx)` | **Yes** | Admin-signed |
+| `setComplianceMetadata(adminAddress, key, value, signTx)` | **Yes** | Admin-signed |
+| `setExternalUri(adminAddress, uri, signTx)` | **Yes** | Admin-signed |
+| `syncKycStatus(callerAddress, addr, signTx)` | **Yes** | Caller-signed |
+
+#### `InvoiceTokenClient`
+
+| Method | Signing? | Notes |
+|---|---|---|
+| `getMeta()` | No | Simulated read |
+| `balance(addr)` | No | Simulated read |
+| `totalSupply()` | No | Simulated read |
+| `isSettled()` | No | Simulated read |
+| `allowance(from, spender)` | No | Simulated read |
+| `name()` | No | Simulated read |
+| `symbol()` | No | Simulated read |
+| `decimals()` | No | Simulated read |
+| `issue(adminAddress, to, amount, signTx)` | **Yes** | Admin-signed |
+| `settle(adminAddress, signTx)` | **Yes** | Admin-signed |
+| `redeem(fromAddress, amount, signTx)` | **Yes** | Holder-signed |
+| `transfer(fromAddress, to, amount, signTx)` | **Yes** | Sender-signed |
+| `transferFrom(spenderAddress, from, to, amount, signTx)` | **Yes** | Spender-signed |
+| `approve(fromAddress, spender, amount, expirationLedger, signTx)` | **Yes** | Owner-signed |
+| `updateMeta(adminAddress, meta, signTx)` | **Yes** | Admin-signed |
+
+#### `PropertyTokenClient`
+
+| Method | Signing? | Notes |
+|---|---|---|
+| `getMeta()` | No | Simulated read |
+| `balance(addr)` | No | Simulated read |
+| `totalShares()` | No | Simulated read |
+| `pendingDividend(holder)` | No | Simulated read |
+| `name()` | No | Simulated read |
+| `symbol()` | No | Simulated read |
+| `decimals()` | No | Simulated read |
+| `mint(adminAddress, to, shares, signTx)` | **Yes** | Admin-signed |
+| `transfer(fromAddress, to, shares, signTx)` | **Yes** | Sender-signed |
+| `depositDividend(adminAddress, amount, distributionType, signTx)` | **Yes** | Admin-signed |
+| `claimDividend(holderAddress, signTx)` | **Yes** | Holder-signed |
+
+#### `CarbonTokenClient`
+
+| Method | Signing? | Notes |
+|---|---|---|
+| `getMeta()` | No | Simulated read |
+| `balance(addr)` | No | Simulated read |
+| `totalSupply()` | No | Simulated read |
+| `totalRetired()` | No | Simulated read |
+| `retirementCount()` | No | Simulated read |
+| `getReceipt(index)` | No | Simulated read |
+| `getReceipts(start, limit)` | No | Simulated read |
+| `name()` | No | Simulated read |
+| `symbol()` | No | Simulated read |
+| `decimals()` | No | Simulated read |
+| `mint(adminAddress, to, amount, signTx)` | **Yes** | Admin-signed |
+| `transfer(fromAddress, to, amount, signTx)` | **Yes** | Sender-signed |
+| `retire(retireeAddress, amount, beneficiary, reason, signTx)` | **Yes** | Holder-signed; returns `RetirementReceipt` |
+| `updateMeta(adminAddress, meta, signTx)` | **Yes** | Admin-signed |
+
 ### Smallest read-only call per client
 
-Each table row is one representative read. Reads simulate the call and decode
-the result, so none of them need a wallet signature or a transaction submission.
+Each row is one representative read. All complete without a wallet.
 
 | Client | Read call | Returns | Method reference |
 |---|---|---|---|
@@ -274,8 +461,8 @@ import { KycRegistryClient, createServer, NETWORK_PASSPHRASES } from "@veritoken
 const server = createServer("testnet");
 const kyc = new KycRegistryClient(contractId, server, NETWORK_PASSPHRASES.testnet);
 
-await kyc.isApproved(address);
-await kyc.approve(verifierAddress, subjectAddress, /* tier */ 1, /* expiry */ 0n, "US", signTx);
+await kyc.isApproved(address);                                              // no wallet needed
+await kyc.approve(verifierAddress, subjectAddress, 1, 0n, "US", signTx);   // wallet required
 ```
 
 In most applications you won't construct clients directly — use

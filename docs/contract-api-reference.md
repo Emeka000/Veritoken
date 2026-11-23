@@ -3,6 +3,7 @@
 This document is the canonical reference for every public entry point, data structure, and error code in the Veritoken contract suite. Use it alongside the source code in `contracts/` when deploying, integrating, or extending the kit.
 
 > **Navigation**
+> - [SDK signing requirements](#sdk-signing-requirements)
 > - [KYC Registry](#kyc-registry)
 > - [Compliance Engine](#compliance-engine)
 > - [RWA Token](#rwa-token)
@@ -10,6 +11,168 @@ This document is the canonical reference for every public entry point, data stru
 > - [Property Token](#property-token)
 > - [Carbon Credit Token](#carbon-credit-token)
 > - [Common Workflows](#common-workflows)
+
+---
+
+## SDK signing requirements
+
+Every TypeScript client method is either a **read** (no wallet needed) or a
+**write** (requires a `signTx` callback). The rule is structural: if the
+method's last parameter is `signTx: SignTx`, it is a write; otherwise it is a
+read.
+
+**Reads** call `server.simulateTransaction` using a stable dummy source
+account. They need no wallet, no funded account, and produce no on-chain
+state change. Call them freely from dashboards, monitoring scripts, or server
+processes.
+
+**Writes** execute the full pipeline: build → simulate → assemble →
+`signTx(xdr)` → submit → confirm. The `signTx` callback is where the wallet
+integration lives — plug in Freighter's `signTransaction`, any other wallet,
+or a `Keypair.sign` helper for scripts.
+
+The tables below cover each SDK client. Contract-level on-chain authorization
+(which addresses may call each function) is in the per-contract sections
+below.
+
+### `KycRegistryClient`
+
+| Method | Signing? | On-chain caller |
+|---|---|---|
+| `isApproved(addr)` | No | — |
+| `getRecord(addr)` | No | — |
+| `getTier(addr)` | No | — |
+| `verifierCount()` | No | — |
+| `getVerifiers(start, limit)` | No | — |
+| `verifierListPub()` | No | — |
+| `getAdmins()` | No | — |
+| `health(opts?)` | No | — |
+| `approve(verifier, subject, tier, expiry, jurisdiction, signTx)` | **Yes** | Registered verifier |
+| `reject(verifier, subject, signTx)` | **Yes** | Registered verifier |
+| `revoke(verifier, subject, signTx)` | **Yes** | Registered verifier |
+| `updateTier(verifier, subject, newTier, signTx)` | **Yes** | Registered verifier |
+| `addVerifier(adminAddress, verifier, signTx)` | **Yes** | Registry admin |
+| `removeVerifier(adminAddress, verifier, signTx)` | **Yes** | Registry admin |
+| `addAdmin(callerAddress, newAdmin, signTx)` | **Yes** | Registry admin |
+| `removeAdmin(callerAddress, adminToRemove, signTx)` | **Yes** | Registry admin |
+
+### `ComplianceEngineClient`
+
+| Method | Signing? | On-chain caller |
+|---|---|---|
+| `getRules()` | No | — |
+| `isBlocklisted(addr)` | No | — |
+| `isAllowlisted(addr)` | No | — |
+| `canTransfer(from, to, amount)` | No | — |
+| `evaluateTransfer(from, to, amount)` | No | — |
+| `holderCount()` | No | — |
+| `getLockupStatus(addr)` | No | — |
+| `blocklistCount()` | No | — |
+| `getBlocklist(start, limit)` | No | — |
+| `getTierPolicy(fromTier, toTier)` | No | — |
+| `tierPolicyCount()` | No | — |
+| `getRiskConfig()` | No | — |
+| `getJurisdictionRiskScore(jurisdiction)` | No | — |
+| `evaluateTransferRisk(fromJurisdiction, toJurisdiction)` | No | — |
+| `health(opts?)` | No | — |
+| `setRules(adminAddress, rules, signTx)` | **Yes** | Compliance admin |
+| `addToBlocklist(adminAddress, addr, signTx)` | **Yes** | Compliance admin |
+| `removeFromBlocklist(adminAddress, addr, signTx)` | **Yes** | Compliance admin |
+| `addToAllowlist(adminAddress, addr, signTx)` | **Yes** | Compliance admin |
+| `removeFromAllowlist(adminAddress, addr, signTx)` | **Yes** | Compliance admin |
+| `pause(adminAddress, signTx)` | **Yes** | Compliance admin |
+| `unpause(adminAddress, signTx)` | **Yes** | Compliance admin |
+| `registerHolder(callerAddress, addr, signTx)` | **Yes** | Any authorized caller |
+| `unregisterHolder(callerAddress, addr, signTx)` | **Yes** | Any authorized caller |
+| `setTierPolicy(adminAddress, fromTier, toTier, policy, signTx)` | **Yes** | Compliance admin |
+| `clearTierPolicy(adminAddress, fromTier, toTier, signTx)` | **Yes** | Compliance admin |
+| `setRiskConfig(adminAddress, config, signTx)` | **Yes** | Compliance admin |
+| `setJurisdictionRiskScore(adminAddress, jurisdiction, score, signTx)` | **Yes** | Compliance admin |
+| `clearJurisdictionRiskScore(adminAddress, jurisdiction, signTx)` | **Yes** | Compliance admin |
+
+### `RwaTokenClient`
+
+| Method | Signing? | On-chain caller |
+|---|---|---|
+| `balance(addr)` | No | — |
+| `totalSupply()` | No | — |
+| `allowance(from, spender)` | No | — |
+| `name()` | No | — |
+| `symbol()` | No | — |
+| `decimals()` | No | — |
+| `assetType()` | No | — |
+| `kycRegistry()` | No | — |
+| `complianceEngine()` | No | — |
+| `getComplianceMetadata(key)` | No | — |
+| `getTokenExport()` | No | — |
+| `getExternalUri()` | No | — |
+| `checkKycStatus(addr)` | No | — |
+| `health(opts?)` | No | — |
+| `mint(adminAddress, to, amount, signTx)` | **Yes** | Token admin |
+| `transfer(fromAddress, to, amount, signTx)` | **Yes** | Token holder (`from`) |
+| `transferFrom(spenderAddress, from, to, amount, signTx)` | **Yes** | Approved spender |
+| `approve(fromAddress, spender, amount, expirationLedger, signTx)` | **Yes** | Token holder (`from`) |
+| `burn(fromAddress, amount, signTx)` | **Yes** | Token holder (`from`) |
+| `burnFrom(spenderAddress, from, amount, signTx)` | **Yes** | Approved spender |
+| `setAdmin(callerAddress, newAdmin, signTx)` | **Yes** | Current admin |
+| `setComplianceMetadata(adminAddress, key, value, signTx)` | **Yes** | Token admin |
+| `setExternalUri(adminAddress, uri, signTx)` | **Yes** | Token admin |
+| `syncKycStatus(callerAddress, addr, signTx)` | **Yes** | Any authorized caller |
+
+### `InvoiceTokenClient`
+
+| Method | Signing? | On-chain caller |
+|---|---|---|
+| `getMeta()` | No | — |
+| `balance(addr)` | No | — |
+| `totalSupply()` | No | — |
+| `isSettled()` | No | — |
+| `allowance(from, spender)` | No | — |
+| `name()` | No | — |
+| `symbol()` | No | — |
+| `decimals()` | No | — |
+| `issue(adminAddress, to, amount, signTx)` | **Yes** | Token admin |
+| `settle(adminAddress, signTx)` | **Yes** | Token admin |
+| `redeem(fromAddress, amount, signTx)` | **Yes** | Token holder |
+| `transfer(fromAddress, to, amount, signTx)` | **Yes** | Token holder (`from`) |
+| `transferFrom(spenderAddress, from, to, amount, signTx)` | **Yes** | Approved spender |
+| `approve(fromAddress, spender, amount, expirationLedger, signTx)` | **Yes** | Token holder (`from`) |
+| `updateMeta(adminAddress, meta, signTx)` | **Yes** | Token admin |
+
+### `PropertyTokenClient`
+
+| Method | Signing? | On-chain caller |
+|---|---|---|
+| `getMeta()` | No | — |
+| `balance(addr)` | No | — |
+| `totalShares()` | No | — |
+| `pendingDividend(holder)` | No | — |
+| `name()` | No | — |
+| `symbol()` | No | — |
+| `decimals()` | No | — |
+| `mint(adminAddress, to, shares, signTx)` | **Yes** | Token admin |
+| `transfer(fromAddress, to, shares, signTx)` | **Yes** | Token holder (`from`) |
+| `depositDividend(adminAddress, amount, distributionType, signTx)` | **Yes** | Token admin |
+| `claimDividend(holderAddress, signTx)` | **Yes** | Token holder |
+
+### `CarbonTokenClient`
+
+| Method | Signing? | On-chain caller |
+|---|---|---|
+| `getMeta()` | No | — |
+| `balance(addr)` | No | — |
+| `totalSupply()` | No | — |
+| `totalRetired()` | No | — |
+| `retirementCount()` | No | — |
+| `getReceipt(index)` | No | — |
+| `getReceipts(start, limit)` | No | — |
+| `name()` | No | — |
+| `symbol()` | No | — |
+| `decimals()` | No | — |
+| `mint(adminAddress, to, amount, signTx)` | **Yes** | Token admin |
+| `transfer(fromAddress, to, amount, signTx)` | **Yes** | Token holder (`from`) |
+| `retire(retireeAddress, amount, beneficiary, reason, signTx)` | **Yes** | Token holder; returns `RetirementReceipt` |
+| `updateMeta(adminAddress, meta, signTx)` | **Yes** | Token admin |
 
 ---
 
