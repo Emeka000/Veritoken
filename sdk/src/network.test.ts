@@ -325,6 +325,100 @@ describe("custom network validation combinations", () => {
   });
 });
 
+// ── Explicit override vs conflicting env var — #976 ──────────────────────────
+
+describe("explicit override wins over a conflicting environment variable", () => {
+  // Verifies the documented precedence: explicit > env > default.
+  // An env var that disagrees with the caller's override must never win.
+  afterEach(() => {
+    clearEnv();
+  });
+
+  it("override network beats VERITOKEN_NETWORK env var", () => {
+    process.env.VERITOKEN_NETWORK = "mainnet";
+    const config = resolveNetworkConfig({ network: "futurenet" });
+    // The explicit override must win; the env var must be ignored.
+    expect(config.network).toBe("futurenet");
+    expect(config.rpcUrl).toBe(RPC_URLS.futurenet);
+    expect(config.networkPassphrase).toBe(NETWORK_PASSPHRASES.futurenet);
+  });
+
+  it("override rpcUrl beats VERITOKEN_RPC_URL env var", () => {
+    process.env.VERITOKEN_RPC_URL = "https://from-env.example.com";
+    const config = resolveNetworkConfig({
+      network: "testnet",
+      rpcUrl: "https://from-override.example.com",
+    });
+    expect(config.rpcUrl).toBe("https://from-override.example.com");
+  });
+
+  it("override networkPassphrase beats VERITOKEN_NETWORK_PASSPHRASE env var", () => {
+    process.env.VERITOKEN_NETWORK_PASSPHRASE = "Env Passphrase ; 2026";
+    const config = resolveNetworkConfig({
+      network: "testnet",
+      networkPassphrase: "Override Passphrase ; 2026",
+    });
+    expect(config.networkPassphrase).toBe("Override Passphrase ; 2026");
+  });
+
+  it("override allowHttp:false beats VERITOKEN_RPC_ALLOW_HTTP=true env var", () => {
+    process.env.VERITOKEN_RPC_ALLOW_HTTP = "true";
+    // A testnet URL is HTTPS, so allowHttp:false does not trigger the HTTP rejection.
+    const config = resolveNetworkConfig({ network: "testnet", allowHttp: false });
+    expect(config.allowHttp).toBe(false);
+  });
+
+  it("env var is restored after test: no state leaks to neighbours", () => {
+    // This test relies on afterEach clearEnv. If a previous test leaked
+    // VERITOKEN_NETWORK, this resolution would return something other than testnet.
+    const config = resolveNetworkConfig();
+    expect(config.network).toBe("testnet");
+  });
+});
+
+// ── Custom network: missing passphrase negative test — #977 ───────────────────
+
+describe("custom network with rpcUrl but no passphrase", () => {
+  beforeEach(() => {
+    clearEnv();
+  });
+
+  it("throws InvalidNetworkConfigError before a server is created", () => {
+    expect(() =>
+      resolveNetworkConfig({
+        network: "my-staging-net",
+        rpcUrl: "https://rpc.staging.example.com",
+        // networkPassphrase intentionally omitted
+      }),
+    ).toThrow(InvalidNetworkConfigError);
+  });
+
+  it("error message identifies the missing passphrase", () => {
+    let caught: unknown;
+    try {
+      resolveNetworkConfig({
+        network: "my-staging-net",
+        rpcUrl: "https://rpc.staging.example.com",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(InvalidNetworkConfigError);
+    // The message must reference the unknown network — do not assert on
+    // internal phrasing that could change, only on the stable diagnostic token.
+    expect((caught as Error).message).toMatch(/my-staging-net/);
+  });
+
+  it("createServer also rejects the incomplete config before connecting", () => {
+    expect(() =>
+      createServer({
+        network: "my-staging-net",
+        rpcUrl: "https://rpc.staging.example.com",
+      }),
+    ).toThrow(InvalidNetworkConfigError);
+  });
+});
+
 // ── Plaintext RPC override safety — #974 ──────────────────────────────────────
 
 describe("plaintext RPC override safety", () => {
