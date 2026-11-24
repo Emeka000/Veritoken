@@ -114,6 +114,8 @@ stellar contract invoke \
 
 Use this when a key is at risk of compromise but has not yet been used maliciously. If it has already been used, go to section 3 (Compromised Verifier Response) for immediate revocations, then return here.
 
+For the full first-response checklist for a possibly exposed deployment credential, including retiring the key at the account level and replacing CI and local copies, see [If a Deployment Credential May Have Been Exposed](secret-safe-deployment.md#if-a-deployment-credential-may-have-been-exposed).
+
 Admin rotation is a **two-step handover** to prevent accidental lockout.
 
 ### Step 1 — Propose the new admin (from the current admin key)

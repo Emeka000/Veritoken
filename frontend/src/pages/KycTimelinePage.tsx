@@ -166,6 +166,25 @@ export default function KycTimelinePage({ fetchHistory = unavailableHistoryFetch
             ) : null}
           </Card>
 
+          {/* Empty timeline — the history source answered, with zero transitions.
+              Kept distinct from the unavailable-source error above. */}
+          {history.length === 0 && (
+            <Card title="Transition History" style={{ marginTop: "1.25rem" }}>
+              <div
+                role="status"
+                aria-label="No KYC transition history"
+                style={{ padding: "0.85rem 1rem", borderRadius: 10, border: "1px dashed var(--border)", fontSize: "0.845rem" }}
+              >
+                <p style={{ fontWeight: 600, margin: 0 }}>No KYC transitions recorded yet</p>
+                <p className="muted" style={{ margin: "0.3rem 0 0" }}>
+                  The history source responded successfully, but this address has no
+                  approvals, rejections, revocations, or tier updates on record. This is
+                  expected for a subject that has not been reviewed yet.
+                </p>
+              </div>
+            </Card>
+          )}
+
           {/* Timeline */}
           {history.length > 0 && (
             <Card title="Transition History" style={{ marginTop: "1.25rem" }}>

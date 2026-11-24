@@ -187,3 +187,20 @@ If a secret has already been pushed to a public repository:
 3. Report the exposure via the [Security Policy](../SECURITY.md).
 
 Do not open a public issue for a secret exposure.
+
+---
+
+## If a Deployment Credential May Have Been Exposed
+
+A deployment credential is any key that deploys or administers contracts: the deployer key behind `TESTNET_DEPLOYER_SECRET` / `MAINNET_DEPLOYER_SECRET`, an `ADMIN_SECRET_KEY`, a Stellar CLI identity, or a verifier key. Treat a *possible* exposure (a leaked log, a lost laptop, a key pasted in chat) as a real one. This section points you to the first steps only. The [Incident Response Runbook](incident-response.md) is the canonical procedure.
+
+**First steps, in order:**
+
+1. **Stop using the credential.** Cancel any in-progress deploy workflows and do not run deploy or admin scripts with it.
+2. **Contain on-chain impact if the key holds a contract role.** Use [Emergency Pause](incident-response.md#1-emergency-pause) if transfers may be at risk. For a verifier key, follow [Compromised Verifier Response](incident-response.md#3-compromised-verifier-response).
+3. **Move contract admin roles to a new key** with the two-step handover in [Admin Key Rotation](incident-response.md#2-admin-key-rotation). Confirm every contract reports the new admin before you retire the old key.
+4. **Retire the exposed key at the account level, using the network's supported account process.** A Stellar keypair cannot be changed in place. You either change the account's signers (add a new signer, then remove the old key's signing weight) or move to a new account. Follow Stellar's [signatures and multisig documentation](https://developers.stellar.org/docs/learn/fundamentals/transactions/signatures-multisig) for the network you deploy to. Veritoken does not provide its own key recovery mechanism.
+5. **Replace every stored copy** with the new credential: GitHub Actions secrets (see GitHub's [using secrets in GitHub Actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions)), local `.env.docker` files, and Stellar CLI identities. If the old value was committed, deleting it does not make it safe (see GitHub's [removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)). Rotation is still required.
+6. **Report it privately** via the [Security Policy](../SECURITY.md).
+
+Rotation stops future misuse. It does not reverse actions already taken with the exposed key. If the key may already have been used, for example if admin was transferred, approvals were issued or funds moved, escalate through the Security Policy and follow the runbook. Do not attempt a workaround.

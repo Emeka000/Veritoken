@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from unittest import mock
 
 from deployment.models import (
+    MANIFEST_SCHEMA_VERSION,
     DeploymentConfig,
     DeploymentError,
     NetworkConfig,
@@ -17,6 +18,7 @@ from deployment.models import (
     canonical_json,
     load_json_object,
     sha256_file,
+    sha256_text,
 )
 from deployment.orchestrator import (
     DeploymentOrchestrator,
@@ -376,6 +378,105 @@ class DeploymentOrchestratorTest(unittest.TestCase):
             registry_id,
         )
         self.assertEqual(manifest["status"], "verified")
+
+    def test_resume_from_provided_state_skips_completed_step(self) -> None:
+        """A checkpoint marking ``registry`` completed and ``asset`` pending
+        resumes by running only the pending step, exactly once, against the
+        stub client. No real Stellar network is involved."""
+        client = FakeStellarClient()
+        registry_artifact = self.wasm_dir / "registry.wasm"
+        asset_artifact = self.wasm_dir / "asset.wasm"
+        registry_hash = sha256_file(registry_artifact)
+        registry_id = "C" + "B" * 55
+        # The completed step already exists "on chain" in the stub.
+        client.remote_hashes[registry_id] = registry_hash
+        client.remote_metadata[registry_id] = canonical_json(
+            {"wasm_hash": registry_hash}
+        )
+
+        def artifact_record(path: Path) -> dict[str, Any]:
+            return {
+                "path": path.relative_to(self.root).as_posix(),
+                "size_bytes": path.stat().st_size,
+                "sha256": sha256_file(path),
+                "contract_metadata_sha256": sha256_text(
+                    client.contract_metadata(artifact=path)
+                ),
+            }
+
+        specs = {contract.name: contract for contract in self.config.contracts}
+        checkpoint = {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "status": "in_progress",
+            "deployment_id": "fixture-resume",
+            "generation": 1,
+            "previous_manifest_sha256": None,
+            "started_at": "2026-07-29T06:00:00Z",
+            "updated_at": "2026-07-29T06:00:00Z",
+            "identity": "fixture",
+            "source_account": client.account_address("fixture"),
+            "network": self.network.as_public_dict(),
+            "network_name": self.network.name,
+            "config": {
+                "path": "deployment.json",
+                "sha256": sha256_file(self.config_path),
+                "profile": self.config.profile,
+            },
+            "contracts": {
+                "registry": {
+                    **specs["registry"].as_manifest_dict(),
+                    "stage": "initialized",
+                    "artifact": artifact_record(registry_artifact),
+                    "resolved_dependencies": {},
+                    "wasm_hash": registry_hash,
+                    "contract_id": registry_id,
+                    "initialize_function": "initialize",
+                    "initialize_args": {"admin": client.account_address("fixture")},
+                },
+                "asset": {
+                    **specs["asset"].as_manifest_dict(),
+                    "stage": "pending",
+                    "artifact": artifact_record(asset_artifact),
+                    "resolved_dependencies": {},
+                },
+            },
+        }
+        partial_path = partial_manifest_path(self.manifest_path)
+        partial_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+        client.calls.clear()
+
+        manifest, report = DeploymentOrchestrator(client, now=self.fixed_now).deploy(
+            config=self.config,
+            repo_root=self.root,
+            wasm_dir=self.wasm_dir,
+            identity="fixture",
+            network=self.network,
+            manifest_path=self.manifest_path,
+            report_path=self.report_path,
+            frontend_env_path=self.frontend_env,
+            resume=True,
+        )
+
+        uploads = [call[1] for call in client.calls if call[0] == "upload"]
+        deploys = [call for call in client.calls if call[0] == "deploy"]
+        initializers = [
+            call
+            for call in client.calls
+            if call[0] == "invoke" and call[2] == "initialize"
+        ]
+        # Completed step: not uploaded, deployed, or initialized again.
+        self.assertNotIn("registry.wasm", uploads)
+        self.assertEqual(initializers, [])
+        # Pending step: runs exactly once, wired to the completed step's ID.
+        self.assertEqual(uploads, ["asset.wasm"])
+        self.assertEqual(len(deploys), 1)
+        self.assertEqual(deploys[0][3]["registry"], registry_id)
+
+        self.assertEqual(manifest["contracts"]["registry"]["contract_id"], registry_id)
+        self.assertEqual(manifest["contracts"]["asset"]["stage"], "initialized")
+        self.assertEqual(manifest["status"], "verified")
+        self.assertEqual(report["status"], "passed")
+        self.assertFalse(partial_path.exists())
 
     def test_failed_stage_command_preserves_previous_manifest(self) -> None:
         client = FakeStellarClient()
